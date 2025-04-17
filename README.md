@@ -1,5 +1,4 @@
 # cogito
-The Brain Behind BitBuddy
 
 Cogito is a cutting-edge, local, privacy-focused LLM (Large Language Model) designed to bring intelligent, real-time interaction to BitBuddy. With Cogito powering BitBuddy’s thoughts, conversations, and actions, your desktop companion can think, learn, and grow alongside you. It’s like having your own personal AI brain on-demand — smart, secure, and totally in your control.
 
