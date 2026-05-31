@@ -1,0 +1,197 @@
+@font-face {
+  font-family: "Departure Mono";
+  src: url("/fonts/departure-mono/DepartureMono-Regular.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400;
+}
+
+:root {
+  color-scheme: dark;
+
+  --font-body:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --font-pixel: "Departure Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  /* BitBlue Theme - Dark (Default) */
+  --bg: #060b13;
+  --bg-soft: #0a111c;
+  --panel: #0d1726;
+  --panel-raised: #141f2f;
+
+  --text: #f4f8ff;
+  --text-muted: #a9bad2;
+  --text-soft: #8192aa;
+
+  --border: rgba(121, 184, 255, 0.16);
+  --border-strong: rgba(121, 184, 255, 0.26);
+
+  --accent: #79b8ff;
+  --accent-soft: rgba(121, 184, 255, 0.15);
+  --accent-strong: #a1ccff;
+  --on-accent: #06101d;
+
+  --danger: #ff6b7a;
+  --success: #6ee7b7;
+  --warning: #f59e0b;
+
+  --surface-glass: rgba(255, 255, 255, 0.045);
+  --surface-card: rgba(255, 255, 255, 0.025);
+  --surface-inset: rgba(0, 0, 0, 0.12);
+  --surface-code: rgba(0, 0, 0, 0.18);
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 22px;
+
+  --shadow-soft: 0 18px 60px rgba(0, 0, 0, 0.35);
+  --shadow-panel: 0 12px 36px rgba(0, 0, 0, 0.3);
+  --shadow-chat: none;
+
+  --glass-overlay: rgba(255, 255, 255, 0.045);
+  --toggle-bg: rgba(0, 0, 0, 0.2);
+  --toggle-hover-bg: rgba(255, 255, 255, 0.05);
+  --header-bg: rgba(255, 255, 255, 0.02);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.18);
+  --thinking-bg: rgba(5, 10, 18, 0.35);
+  --thinking-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.018));
+  --thinking-chip-bg: rgba(255, 255, 255, 0.055);
+
+  font-family: var(--font-body);
+}
+
+:root.light {
+  color-scheme: light;
+
+  --glass-overlay: rgba(37, 99, 235, 0.035);
+  --composer-gradient: rgba(37, 99, 235, 0.045);
+
+  --bg: #e8f0f8;
+  --bg-soft: #dbe7f3;
+  --panel: #f4f8fd;
+  --panel-raised: #edf5fc;
+
+  --text: #020617;
+  --text-muted: #253247;
+  --text-soft: #3f5068;
+
+  --border: rgba(15, 23, 42, 0.12);
+  --border-strong: rgba(15, 23, 42, 0.2);
+
+  --accent: #2563eb;
+  --accent-soft: rgba(37, 99, 235, 0.11);
+  --accent-strong: #1d4ed8;
+  --on-accent: #ffffff;
+
+  --surface-glass: rgba(37, 99, 235, 0.055);
+  --surface-card: rgba(37, 99, 235, 0.04);
+  --surface-inset: rgba(15, 60, 110, 0.06);
+  --surface-code: rgba(15, 60, 110, 0.08);
+
+  --shadow-soft: 0 12px 40px rgba(0, 0, 0, 0.06);
+  --shadow-panel: 0 8px 24px rgba(0, 0, 0, 0.04);
+  --shadow-chat: none;
+
+  --toggle-bg: rgba(37, 99, 235, 0.055);
+  --toggle-hover-bg: rgba(37, 99, 235, 0.08);
+  --header-bg: rgba(37, 99, 235, 0.055);
+  --scrollbar-thumb: rgba(100, 116, 139, 0.32);
+  --thinking-bg: rgba(234, 243, 252, 0.88);
+  --thinking-overlay: linear-gradient(180deg, rgba(37, 99, 235, 0.06), rgba(15, 60, 110, 0.022));
+  --thinking-chip-bg: rgba(37, 99, 235, 0.06);
+
+  /* Light mode semantic colour overrides */
+  --danger: #dc2626;
+  --success: #059669;
+  --warning: #d97706;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#svelte {
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  line-height: 1.5;
+  overflow-x: hidden;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  transition: all 0.2s ease;
+}
+
+button {
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+:where(
+  h1,
+  h2,
+  h3,
+  button,
+  .brand,
+  .nav-link,
+  .group-label,
+  .status-card,
+  .growth-meter,
+  .mode-toggle,
+  .code-header,
+  .badge,
+  .eyebrow,
+  .section-kicker,
+  .theme-label,
+  .theme-desc,
+  .metadata-block span,
+  dt
+) {
+  font-family: var(--font-pixel);
+}
+
+input,
+textarea {
+  border: 0;
+  outline: none;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+img,
+svg,
+video,
+canvas {
+  display: block;
+  max-width: 100%;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}

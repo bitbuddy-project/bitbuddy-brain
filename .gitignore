@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+dist/
+build/
+
+# Node / SvelteKit
+web/node_modules/
+web/.svelte-kit/
+web/build/
+web/.output/
+
+# Local config and generated data
+.env
+.env.*
+*.sqlite
+.run
+
+# OS/editor
+.DS_Store
+Thumbs.db

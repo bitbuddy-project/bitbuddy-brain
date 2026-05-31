@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bitbuddy"
+version = "0.1.0"
+description = "Local-first AI companion scaffold."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "questionary>=2.0.1",
+  "PyYAML>=6.0.2"
+]
+
+[project.scripts]
+bitbuddy = "bitbuddy.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "brain" }
+
+[tool.setuptools.packages.find]
+where = ["brain"]
