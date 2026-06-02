@@ -1,120 +1,303 @@
 <script lang="ts">
 	import DevicesIcon from 'phosphor-svelte/lib/DevicesIcon';
-	import ArrowLeftIcon from 'phosphor-svelte/lib/ArrowLeftIcon';
+	import MicrophoneIcon from 'phosphor-svelte/lib/MicrophoneIcon';
+	import EyeIcon from 'phosphor-svelte/lib/EyeIcon';
+	import SparkleIcon from 'phosphor-svelte/lib/SparkleIcon';
+
+	const signals = [
+		{ icon: MicrophoneIcon, label: 'Voice' },
+		{ icon: EyeIcon, label: 'Face' },
+		{ icon: DevicesIcon, label: 'Presence' },
+		{ icon: SparkleIcon, label: 'Reactions' }
+	];
 </script>
 
-<div class="placeholder-page">
-	<header class="page-header">
-		<div class="fancy-title">
-			<div class="title-icon">
-				<DevicesIcon size={32} weight="duotone" />
-			</div>
-			<div class="title-text">
+<div class="devices-page">
+	<section class="devices-panel" aria-label="BitBuddy devices">
+		<header class="devices-header">
+			<div class="title-mark" aria-hidden="true"><DevicesIcon size={30} weight="duotone" /></div>
+			<div class="title-copy">
+				<p class="eyebrow">Physical Presence</p>
 				<h1>Devices</h1>
-				<p>Connect and manage your local and remote companion devices.</p>
+				<p>Not phone sync. Something more personal is being built here.</p>
 			</div>
-		</div>
-	</header>
+			<span class="status-pill">Coming soon</span>
+		</header>
 
-	<div class="content">
-		<div class="icon-wrap">
-			<DevicesIcon size={48} weight="duotone" />
+		<div class="devices-content">
+			<section class="coming-card">
+				<div class="device-orb" aria-hidden="true"></div>
+				<div class="device-glyph"><DevicesIcon size={54} weight="duotone" /></div>
+				<div class="coming-copy">
+					<p class="eyebrow">Next Layer</p>
+					<h2>BitBuddy is getting closer to the room.</h2>
+					<p>
+						This space will eventually connect the desktop mind to a local companion presence: voice, an expressive face, environmental awareness, and physical reactions that stay private and user-controlled.
+					</p>
+					<div class="signal-row" aria-label="Planned device signals">
+						{#each signals as signal}
+							<div class="signal-chip">
+								<signal.icon size={18} weight="duotone" />
+								<span>{signal.label}</span>
+							</div>
+						{/each}
+					</div>
+				</div>
+			</section>
+
+			<section class="teaser-card">
+				<p class="eyebrow">Still under wraps</p>
+				<h2>The details stay quiet for now.</h2>
+				<p>
+					The important part: this will not be cloud gadget sync. It is the beginning of BitBuddy becoming more present while staying local, modular, inspectable, and yours.
+				</p>
+			</section>
 		</div>
-		<p>Sync your memories and activity across your desktop, mobile, and other BitBuddy devices.</p>
-		<span class="badge">Coming Soon</span>
-	</div>
+	</section>
 </div>
 
 <style>
-	.placeholder-page {
+	.devices-page {
 		--page-accent: #2dd4bf;
 		--page-soft: rgba(45, 212, 191, 0.12);
 		--page-border: rgba(45, 212, 191, 0.25);
+		--page-glow: rgba(45, 212, 191, 0.14);
 
 		width: 100%;
 		max-width: 100%;
 		padding: 0 1rem;
+		height: 100%;
 		margin: 0 auto;
-		animation: fade-in 0.3s ease-out;
+		display: flex;
+		min-height: 0;
+		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
 
 	@keyframes fade-in {
-		from { opacity: 0; transform: translateY(10px); }
+		from { opacity: 0; transform: translateY(12px); }
 		to { opacity: 1; transform: translateY(0); }
 	}
 
-	.page-header {
-		margin-bottom: 2.5rem;
-	}
-
-	.fancy-title {
-		display: flex;
-		align-items: center;
-		gap: 1.25rem;
-	}
-
-	.title-icon {
-		width: 4rem;
-		height: 4rem;
-		display: grid;
-		place-items: center;
-		border-radius: 1.25rem;
-		background: var(--surface-glass);
-		border: 1px solid var(--page-border);
-		color: var(--page-accent);
-		box-shadow: 0 0 20px var(--page-soft);
-	}
-
-	.title-text h1 {
-		font-size: 2.5rem;
-		font-weight: 900;
-		letter-spacing: -0.02em;
-		margin-bottom: 0.25rem;
-	}
-
-	.title-text p {
-		color: var(--text-soft);
-		font-size: 1.05rem;
-	}
-
-	.content {
+	.devices-panel {
+		width: 100%;
+		height: 100%;
+		max-height: calc(100vh - 3rem);
+		min-height: 0;
 		display: flex;
 		flex-direction: column;
-		align-items: center;
-		gap: 1.5rem;
-		padding: 5rem 2rem;
-		border: 1px dashed var(--border-strong);
-		border-radius: 2rem;
-		background: var(--surface-card);
-		text-align: center;
+		border: 1px solid var(--page-border);
+		border-radius: 1.45rem;
+		background:
+			linear-gradient(135deg, var(--glass-overlay), transparent 22rem),
+			radial-gradient(circle at top right, var(--page-glow), transparent 30rem),
+			var(--panel-shell, var(--panel));
+		box-shadow: var(--shadow-chat);
+		overflow: hidden;
 	}
 
-	.icon-wrap {
-		width: 6rem;
-		height: 6rem;
+	.devices-header {
+		flex: 0 0 auto;
+		padding: 1.35rem 1.5rem;
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		border-bottom: 1px solid var(--card-border, var(--border));
+		background:
+			linear-gradient(135deg, var(--page-soft), transparent 70%),
+			var(--panel-header, var(--header-bg));
+	}
+
+	.title-mark,
+	.device-glyph,
+	.signal-chip {
 		display: grid;
 		place-items: center;
-		border-radius: 2rem;
-		background: var(--page-soft);
+		border: 1px solid var(--page-border);
+		background: var(--chip-bg, var(--surface-glass));
 		color: var(--page-accent);
-		margin-bottom: 1rem;
 	}
 
-	p {
-		color: var(--text-soft);
-		font-size: 1.1rem;
-		max-width: 24rem;
+	.title-mark {
+		width: 3.5rem;
+		height: 3.5rem;
+		border-radius: 1.1rem;
+		box-shadow: 0 0 20px var(--page-soft);
+		flex: 0 0 auto;
 	}
 
-	.badge {
-		padding: 0.4rem 1rem;
-		border-radius: 999px;
-		background: var(--bg-soft);
-		border: 1px solid var(--border);
-		color: var(--text-muted);
-		font-size: 0.75rem;
-		font-weight: 700;
+	.title-copy {
+		min-width: 0;
+		flex: 1;
+	}
+
+	.eyebrow {
+		color: var(--page-accent);
+		font-size: 0.72rem;
+		font-weight: 850;
+		letter-spacing: 0.09em;
 		text-transform: uppercase;
-		letter-spacing: 0.1em;
+	}
+
+	h1,
+	h2 {
+		letter-spacing: -0.04em;
+		line-height: 1.05;
+	}
+
+	h1 {
+		font-size: 1.65rem;
+		font-weight: 900;
+	}
+
+	h2 {
+		font-size: clamp(2.2rem, 6vw, 4.8rem);
+		font-weight: 950;
+	}
+
+	.title-copy p:last-child,
+	.coming-copy p,
+	.teaser-card p {
+		color: var(--text-soft);
+	}
+
+	.status-pill {
+		padding: 0.3rem 0.7rem;
+		border: 1px solid var(--chip-border, var(--border));
+		border-radius: 999px;
+		background: var(--chip-bg, var(--surface-glass));
+		color: var(--page-accent);
+		font-size: 0.72rem;
+		font-weight: 850;
+		letter-spacing: 0.07em;
+		text-transform: uppercase;
+	}
+
+	.devices-content {
+		min-height: 0;
+		flex: 1 1 auto;
+		padding: 1.25rem;
+		display: grid;
+		grid-template-rows: minmax(0, 1fr) auto;
+		gap: 1rem;
+		overflow-y: auto;
+		scrollbar-color: var(--scrollbar-thumb) transparent;
+	}
+
+	.coming-card,
+	.teaser-card {
+		position: relative;
+		overflow: hidden;
+		border: 1px solid var(--card-border, var(--border));
+		border-radius: 1.35rem;
+		background: var(--card-bg, var(--surface-card));
+	}
+
+	.coming-card {
+		min-height: 28rem;
+		padding: clamp(1.4rem, 4vw, 3rem);
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		gap: clamp(1rem, 3vw, 2rem);
+		align-items: center;
+	}
+
+	.device-orb {
+		position: absolute;
+		inset: -8rem -6rem auto auto;
+		width: 24rem;
+		height: 24rem;
+		border-radius: 999px;
+		background: radial-gradient(circle, color-mix(in srgb, var(--page-accent) 18%, transparent), transparent 68%);
+		filter: blur(18px);
+		pointer-events: none;
+	}
+
+	.device-glyph {
+		position: relative;
+		width: clamp(5.5rem, 12vw, 8rem);
+		height: clamp(5.5rem, 12vw, 8rem);
+		border-radius: 1.65rem;
+		box-shadow: 0 0 48px color-mix(in srgb, var(--page-accent) 18%, transparent);
+	}
+
+	.coming-copy {
+		position: relative;
+		min-width: 0;
+		display: grid;
+		gap: 0.8rem;
+	}
+
+	.coming-copy p:last-of-type {
+		max-width: 58rem;
+		font-size: 1.04rem;
+		line-height: 1.65;
+	}
+
+	.signal-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.55rem;
+		margin-top: 0.4rem;
+	}
+
+	.signal-chip {
+		grid-auto-flow: column;
+		gap: 0.4rem;
+		padding: 0.38rem 0.7rem;
+		border-radius: 999px;
+		font-size: 0.75rem;
+		font-weight: 850;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+	}
+
+	.teaser-card {
+		padding: 1.1rem 1.2rem;
+		display: grid;
+		gap: 0.45rem;
+		background:
+			linear-gradient(135deg, color-mix(in srgb, var(--page-soft) 64%, transparent), transparent),
+			var(--event-bg, var(--surface-card));
+	}
+
+	.teaser-card h2 {
+		font-size: clamp(1.2rem, 2.4vw, 1.7rem);
+	}
+
+	.teaser-card p {
+		max-width: 58rem;
+		line-height: 1.6;
+	}
+
+	@media (max-width: 980px) {
+		.devices-page,
+		.devices-panel {
+			height: auto;
+			max-height: none;
+		}
+
+		.devices-content {
+			grid-template-rows: auto auto;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.devices-page {
+			padding: 0;
+		}
+
+		.devices-header {
+			align-items: flex-start;
+			flex-wrap: wrap;
+		}
+
+		.coming-card {
+			grid-template-columns: 1fr;
+		}
+
+		.status-pill {
+			width: 100%;
+			text-align: center;
+		}
 	}
 </style>

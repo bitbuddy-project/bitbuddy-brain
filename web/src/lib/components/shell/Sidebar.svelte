@@ -48,7 +48,7 @@
 			label: 'Control',
 			items: [
 				{ label: 'Permissions', href: '/permissions', icon: ShieldCheckIcon, hint: 'Trust gates' },
-				{ label: 'Devices', href: '/devices', icon: DevicesIcon, hint: 'Companions' }
+				{ label: 'Devices', href: '/devices', icon: DevicesIcon, hint: 'Coming soon' }
 			]
 		}
 	];
