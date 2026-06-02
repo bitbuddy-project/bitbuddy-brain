@@ -766,6 +766,16 @@ export async function respondToPermission(granted: boolean) {
 
 function upsertTimelineItem(event: ChatMessage) {
 	if (!event.id) {
+		if (event.kind === 'permission' && event.status === 'running') {
+			let updated = false;
+			chatSession.messages = chatSession.messages.map((message) => {
+				if (!isSamePendingPermission(message, event)) return message;
+				updated = true;
+				return { ...message, ...event, metadata: { ...(message.metadata ?? {}), ...(event.metadata ?? {}) } };
+			});
+			if (updated) return;
+		}
+
 		chatSession.messages = [...chatSession.messages, event];
 		return;
 	}
@@ -778,6 +788,30 @@ function upsertTimelineItem(event: ChatMessage) {
 	});
 
 	if (!updated) chatSession.messages = [...chatSession.messages, event];
+}
+
+function isSamePendingPermission(message: ChatMessage, event: ChatMessage) {
+	if (message.kind !== 'permission' || message.status !== 'running') return false;
+	return message.metadata?.tool === event.metadata?.tool
+		&& stableJson(message.metadata?.arguments_summary ?? {}) === stableJson(event.metadata?.arguments_summary ?? {});
+}
+
+function stableJson(value: unknown) {
+	try {
+		return JSON.stringify(sortJsonValue(value));
+	} catch {
+		return '';
+	}
+}
+
+function sortJsonValue(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(sortJsonValue);
+	if (!value || typeof value !== 'object') return value;
+	return Object.fromEntries(
+		Object.entries(value as Record<string, unknown>)
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([key, entry]) => [key, sortJsonValue(entry)])
+	);
 }
 
 function normalizeTimelineItem(message: ChatMessage): ChatMessage {

@@ -4,6 +4,7 @@
 	import BlueprintIcon from 'phosphor-svelte/lib/BlueprintIcon';
 	import CaretRightIcon from 'phosphor-svelte/lib/CaretRightIcon';
 	import type { ChatMessage } from '$lib/api/bitbuddy';
+	import DiffEventCard from './DiffEventCard.svelte';
 	import MarkdownMessage from './MarkdownMessage.svelte';
 	import { slide } from 'svelte/transition';
 
@@ -30,6 +31,8 @@
 	);
 	let summary = $derived(metadata.result_summary || metadata.error || message.content || 'Tool event');
 	let displayStatus = $derived(status === 'success' ? 'completed' : status);
+	let diff = $derived(metadata.diff);
+	let hasDiff = $derived(Boolean(diff?.files?.length));
 
 	let isMemoryTool = $derived(['record_episode', 'update_episode', 'forget_episode', 'record_project_memory', 'record_memory', 'write_memory', 'update_memory', 'archive_memory', 'move_memory', 'merge_memory'].includes(String(toolName)));
 	let isFailedMemory = $derived(isMemoryTool && status === 'error');
@@ -105,6 +108,9 @@
 		</div>
 	</div>
 {:else if !isMemoryTool}
+	{#if hasDiff && diff}
+		<DiffEventCard {diff} toolName={displayToolName} status={displayStatus} />
+	{:else}
 	<div class:error={status === 'error'} class:success={status === 'success' || status === 'completed'} class="tool-card">
 		<div class="tool-icon"><WrenchIcon size={15} weight="bold" /></div>
 		<div class="tool-body">
@@ -127,6 +133,7 @@
 			{/if}
 		</div>
 	</div>
+	{/if}
 {/if}
 {/if}
 
@@ -139,24 +146,24 @@
 		gap: 0.7rem;
 		align-items: start;
 		padding: 0.75rem 0.85rem;
-		border: 1px solid rgba(121, 184, 255, 0.24);
+		border: 1px solid color-mix(in srgb, var(--mode-border, var(--event-border)) 88%, transparent);
 		border-radius: 1rem;
 		background:
-			linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01)),
-			rgba(121, 184, 255, 0.055);
+			linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.008)),
+			var(--event-bg, rgba(121, 184, 255, 0.055));
 		color: var(--text-muted);
 	}
 
 	.tool-card.success {
-		border-color: rgba(110, 231, 183, 0.28);
+		border-color: color-mix(in srgb, var(--success) 38%, transparent);
 		background:
-			linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
-			rgba(110, 231, 183, 0.055);
+			linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.008)),
+			color-mix(in srgb, var(--success) 8%, var(--event-bg));
 	}
 
 	.tool-card.error {
 		border-color: rgba(255, 107, 122, 0.32);
-		background: rgba(255, 107, 122, 0.045);
+		background: color-mix(in srgb, var(--danger) 8%, var(--event-bg));
 	}
 
 	.tool-icon {
@@ -195,7 +202,7 @@
 	.status {
 		padding: 0.12rem 0.45rem;
 		border-radius: 999px;
-		border: 1px solid var(--border);
+		border: 1px solid var(--chip-border, var(--border));
 		color: var(--text-soft);
 		font-size: 0.68rem;
 		font-weight: 800;

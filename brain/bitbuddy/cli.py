@@ -208,6 +208,7 @@ def run_setup(_args: argparse.Namespace) -> int:
     location_label_default = ""
     timezone_default = "UTC"
     locale_default = "en-US"
+    max_tool_rounds_default = 99
     if setup_action == "Modify current setup" and current_config is not None:
         buddy_name_default = current_config.name
         presentation_default = current_config.presentation.style
@@ -218,6 +219,7 @@ def run_setup(_args: argparse.Namespace) -> int:
         location_label_default = current_config.user_context.location_label
         timezone_default = current_config.user_context.timezone
         locale_default = current_config.user_context.locale
+        max_tool_rounds_default = current_config.chat.max_tool_rounds
         provider_default = provider_label_from_key(current_config.provider.type)
         provider_url_default = current_config.provider.url or provider_url_default_for(current_config.provider.type)
         provider_model_default = current_config.provider.model
@@ -330,6 +332,13 @@ def run_setup(_args: argparse.Namespace) -> int:
         ).ask()
         or locale_default
     )
+    max_tool_rounds_answer = questionary.text(
+        "Max tool calls per chat turn",
+        default=str(max_tool_rounds_default),
+        qmark="◆",
+        style=style,
+    ).ask()
+    max_tool_rounds = parse_tool_round_limit(max_tool_rounds_answer or str(max_tool_rounds_default))
 
     configure_provider = True
     configure_project_memory: bool | None = None
@@ -426,6 +435,9 @@ def run_setup(_args: argparse.Namespace) -> int:
         "timezone": timezone,
         "locale": locale,
     }
+    chat_config = {
+        "max_tool_rounds": max_tool_rounds,
+    }
     write_config(
         provider,
         provider_url,
@@ -435,6 +447,7 @@ def run_setup(_args: argparse.Namespace) -> int:
         presentation_config,
         personality_config,
         user_context_config,
+        chat_config,
         preserve_existing=setup_action == "Modify current setup",
     )
 
@@ -456,6 +469,7 @@ def run_setup(_args: argparse.Namespace) -> int:
             "location_label": location_label,
             "timezone": timezone,
             "locale": locale,
+            "max_tool_rounds": max_tool_rounds,
         },
     )
 
@@ -549,6 +563,16 @@ def parse_scan_interval(value: str) -> int:
     if interval < 0:
         raise ValueError("Project memory scan interval cannot be negative.")
     return interval
+
+
+def parse_tool_round_limit(value: str) -> int:
+    try:
+        limit = int(value)
+    except ValueError as error:
+        raise ValueError("Max tool calls per chat turn must be a whole number.") from error
+    if limit < 1:
+        raise ValueError("Max tool calls per chat turn must be at least 1.")
+    return limit
 
 
 def run_web(args: argparse.Namespace) -> int:

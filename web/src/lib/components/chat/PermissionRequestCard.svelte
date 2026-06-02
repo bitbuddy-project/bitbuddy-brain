@@ -6,7 +6,6 @@
 	import Terminal from 'phosphor-svelte/lib/Terminal';
 	import CaretDown from 'phosphor-svelte/lib/CaretDown';
 	import CaretRight from 'phosphor-svelte/lib/CaretRight';
-	import { slide } from 'svelte/transition';
 	import MessageBubble from './MessageBubble.svelte';
 
 	let { message, buddyName = 'BitBuddy' } = $props<{
@@ -29,6 +28,8 @@
 	const tool = $derived(message.metadata?.tool || 'unknown tool');
 	const argumentsSummary = $derived(message.metadata?.arguments_summary || {});
 	const hasArguments = $derived(Object.keys(argumentsSummary).length > 0);
+	const detailsId = $derived(`permission-details-${message.id ?? tool}`);
+	const argumentsJson = $derived.by(() => prettyJson(argumentsSummary));
 
 	const effectiveDecision = $derived.by(() => {
 		if (isApproved) return 'approved';
@@ -96,6 +97,18 @@
 		}
 	}
 
+	function prettyJson(value: unknown) {
+		try {
+			return JSON.stringify(value, null, 2);
+		} catch {
+			return 'Arguments unavailable.';
+		}
+	}
+
+	function toggleExpanded() {
+		expanded = !expanded;
+	}
+
 	async function handleApprove() {
 		if (submitting) return;
 
@@ -139,11 +152,11 @@
 		<div class="header">
 			<div class="icon">
 				{#if isApproved}
-					<ShieldCheck size={18} class="success-icon" weight="fill" />
+					<ShieldCheck size={18} weight="fill" />
 				{:else if isDenied}
-					<ShieldWarning size={18} class="error-icon" weight="fill" />
+					<ShieldWarning size={18} weight="fill" />
 				{:else}
-					<ShieldWarning size={18} class="warning-icon" weight="fill" />
+					<ShieldWarning size={18} weight="fill" />
 				{/if}
 			</div>
 
@@ -168,7 +181,7 @@
 				</div>
 
 				{#if hasArguments}
-					<button class="details-toggle" type="button" onclick={() => (expanded = !expanded)}>
+					<button class="details-toggle" type="button" onclick={toggleExpanded} aria-expanded={expanded} aria-controls={detailsId}>
 						{#if expanded}
 							<CaretDown size={14} weight="bold" />
 						{:else}
@@ -180,8 +193,8 @@
 			</div>
 
 			{#if expanded && hasArguments}
-				<div class="details" transition:slide>
-					<pre>{JSON.stringify(argumentsSummary, null, 2)}</pre>
+				<div class="details" id={detailsId}>
+					<pre>{argumentsJson}</pre>
 				</div>
 			{/if}
 		</div>
@@ -218,17 +231,16 @@
 		display: grid;
 		place-items: center;
 		padding: 1rem;
-		background: rgba(6, 11, 19, 0.12);
-		background: color-mix(in srgb, var(--bg) 14%, transparent);
-		backdrop-filter: blur(4px);
-		-webkit-backdrop-filter: blur(4px);
+		background: color-mix(in srgb, var(--bg) 28%, transparent);
+		backdrop-filter: blur(8px);
+		-webkit-backdrop-filter: blur(8px);
 		animation: overlayFadeIn 0.18s ease-out;
 	}
 
 	.permission-dialog {
 		width: min(34rem, 100%);
 		max-height: calc(100vh - 2rem);
-		overflow: visible;
+		overflow: hidden;
 		border-radius: var(--radius-md);
 		box-shadow: var(--shadow-soft);
 	}
@@ -241,7 +253,7 @@
 		max-height: calc(100vh - 2rem);
 		border: 1px solid var(--permission-status);
 		border-radius: var(--radius-md);
-		background: var(--panel-raised);
+		background: var(--card-bg, var(--panel-raised));
 		color: var(--text);
 		overflow: hidden;
 		margin: 0.5rem 0;
@@ -267,7 +279,7 @@
 
 	.header,
 	.actions {
-		background: var(--panel-raised);
+		background: var(--panel-header, var(--panel-raised));
 	}
 
 	.header {
@@ -299,17 +311,11 @@
 		color: var(--text);
 	}
 
-	.warning-icon,
-	.success-icon,
-	.error-icon {
-		color: var(--permission-status);
-	}
-
 	.body {
 		min-height: 0;
 		overflow-y: auto;
 		padding: 1rem;
-		background: var(--panel-raised);
+		background: var(--card-bg, var(--panel-raised));
 	}
 
 	.reason {
@@ -334,8 +340,8 @@
 		font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
 		font-size: 0.85rem;
 		color: var(--text-muted);
-		background: var(--panel);
-		border: 1px solid var(--border);
+		background: var(--chip-bg, var(--panel));
+		border: 1px solid var(--chip-border, var(--border));
 		padding: 0.38rem 0.6rem;
 		border-radius: var(--radius-sm);
 	}
@@ -362,13 +368,15 @@
 	}
 
 	.details-toggle:hover {
-		background: var(--panel);
+		background: var(--chip-bg, var(--panel));
 		border-color: var(--border);
 		color: var(--text);
 	}
 
 	.details {
 		margin-top: 0.85rem;
+		max-height: min(22rem, 42vh);
+		overflow: auto;
 		background: var(--panel);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
@@ -379,7 +387,7 @@
 		margin: 0;
 		font-size: 0.8rem;
 		line-height: 1.45;
-		overflow-x: auto;
+		overflow: visible;
 		color: var(--text-muted);
 	}
 

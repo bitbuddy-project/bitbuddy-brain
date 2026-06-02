@@ -68,7 +68,7 @@
 <style>
 	.chat-wrap {
 		width: 100%;
-		max-width: 90rem;
+		max-width: 100%;
 		padding: 0 1rem;
 		height: 100%;
 		display: flex;
@@ -87,10 +87,9 @@
 		border: 1px solid var(--mode-border, var(--border));
 		border-radius: 1.45rem;
 		background:
-			linear-gradient(135deg, var(--glass-overlay, rgba(255, 255, 255, 0.045)), transparent 22rem),
-			radial-gradient(circle at top right, var(--mode-glow), transparent 30rem),
-			radial-gradient(circle at bottom left, rgba(110, 231, 183, 0.055), transparent 34rem),
-			var(--panel);
+			linear-gradient(135deg, var(--glass-overlay, rgba(255, 255, 255, 0.04)), transparent 24rem),
+			radial-gradient(circle at top right, color-mix(in srgb, var(--mode-glow) 72%, transparent), transparent 30rem),
+			var(--panel-shell, var(--panel));
 		box-shadow: var(--shadow-chat);
 		overflow: hidden;
 		min-width: 0;

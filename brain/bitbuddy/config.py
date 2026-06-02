@@ -44,6 +44,9 @@ class ProviderConfig:
     type: str
     url: str
     model: str
+    embedding_model: str = "nomic-embed-text"
+    embedding_url: str = ""
+    native_tools: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,8 @@ class ChatConfig:
     return_greeting_enabled: bool
     return_greeting_idle_minutes: int
     return_greeting_phrases: tuple[str, ...]
+    max_tool_rounds: int
+    reasoning_budget_tokens: int
 
 
 @dataclass(frozen=True)
@@ -180,6 +185,8 @@ def default_config(
             "return_greeting_enabled": True,
             "return_greeting_idle_minutes": 60,
             "return_greeting_phrases": ["Hey, welcome back.", "Hi, welcome back."],
+            "max_tool_rounds": 99,
+            "reasoning_budget_tokens": -1,
         },
         "autonomy": {
             "enabled": True,
@@ -244,6 +251,7 @@ def write_config(
     presentation: dict[str, Any] | None = None,
     personality: dict[str, Any] | None = None,
     user_context: dict[str, Any] | None = None,
+    chat_config: dict[str, Any] | None = None,
     preserve_existing: bool = False,
 ) -> None:
     ensure_app_dirs()
@@ -264,6 +272,15 @@ def write_config(
         data["personality"] = personality
     if user_context is not None:
         data["user_context"] = normalize_user_context(user_context)
+    if chat_config is not None:
+        existing_chat = data.get("chat") if isinstance(data.get("chat"), dict) else {}
+        parsed_chat = parse_chat_config({**existing_chat, **chat_config})
+        data["chat"] = {
+            "return_greeting_enabled": parsed_chat.return_greeting_enabled,
+            "return_greeting_idle_minutes": parsed_chat.return_greeting_idle_minutes,
+            "return_greeting_phrases": list(parsed_chat.return_greeting_phrases),
+            "max_tool_rounds": parsed_chat.max_tool_rounds,
+        }
     CONFIG_PATH.write_text(
         yaml.safe_dump(data, sort_keys=False),
         encoding="utf-8",
@@ -304,6 +321,9 @@ def load_config() -> BitBuddyConfig:
             type=str(provider.get("type") or "none"),
             url=str(provider.get("url") or ""),
             model=str(provider.get("model") or ""),
+            embedding_model=str(provider.get("embedding_model") or "nomic-embed-text"),
+            embedding_url=str(provider.get("embedding_url") or ""),
+            native_tools=str(provider.get("native_tools") or "auto").strip().lower(),
         ),
         presentation=parse_presentation(raw.get("presentation")),
         personality=parse_personality_selection(raw.get("personality")),
@@ -446,6 +466,17 @@ def parse_autonomy_config(raw: Any) -> AutonomyConfig:
     )
 
 
+def normalize_reasoning_budget(value: Any) -> int:
+    """Reasoning token budget for thinking turns: -1 means unlimited, >= 0 caps it."""
+    try:
+        budget = int(value)
+    except (TypeError, ValueError):
+        return -1
+    if budget < 0:
+        return -1
+    return budget
+
+
 def parse_chat_config(raw: Any) -> ChatConfig:
     if not isinstance(raw, dict):
         raw = {}
@@ -453,7 +484,41 @@ def parse_chat_config(raw: Any) -> ChatConfig:
         return_greeting_enabled=bool(raw.get("return_greeting_enabled", True)),
         return_greeting_idle_minutes=max(1, int(raw.get("return_greeting_idle_minutes", 60))),
         return_greeting_phrases=tuple(clean_phrase_list(raw.get("return_greeting_phrases"), ["Hey, welcome back.", "Hi, welcome back."])),
+        max_tool_rounds=max(1, int(raw.get("max_tool_rounds", 99))),
+        reasoning_budget_tokens=normalize_reasoning_budget(raw.get("reasoning_budget_tokens", -1)),
     )
+
+
+def update_chat_config(chat: dict[str, Any]) -> BitBuddyConfig:
+    if not CONFIG_PATH.exists():
+        write_config("none", "", "")
+
+    raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    existing = raw.get("chat") if isinstance(raw.get("chat"), dict) else {}
+    next_raw = {**existing}
+    for key in (
+        "return_greeting_enabled",
+        "return_greeting_idle_minutes",
+        "return_greeting_phrases",
+        "max_tool_rounds",
+        "reasoning_budget_tokens",
+    ):
+        if key in chat:
+            next_raw[key] = chat[key]
+
+    parsed = parse_chat_config(next_raw)
+    raw["chat"] = {
+        "return_greeting_enabled": parsed.return_greeting_enabled,
+        "return_greeting_idle_minutes": parsed.return_greeting_idle_minutes,
+        "return_greeting_phrases": list(parsed.return_greeting_phrases),
+        "max_tool_rounds": parsed.max_tool_rounds,
+        "reasoning_budget_tokens": parsed.reasoning_budget_tokens,
+    }
+    CONFIG_PATH.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    return load_config()
 
 
 def parse_dreaming_config(raw: Any) -> DreamingConfig:

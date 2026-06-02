@@ -19,6 +19,15 @@
   --bg-soft: #0a111c;
   --panel: #0d1726;
   --panel-raised: #141f2f;
+  --panel-shell: color-mix(in srgb, var(--panel) 92%, #050914);
+  --panel-header: color-mix(in srgb, var(--panel-raised) 72%, transparent);
+  --card-bg: color-mix(in srgb, var(--panel-raised) 82%, transparent);
+  --card-border: color-mix(in srgb, var(--border-strong) 78%, transparent);
+  --card-hover: color-mix(in srgb, var(--panel-raised) 92%, var(--accent-soft));
+  --event-bg: color-mix(in srgb, var(--panel-raised) 58%, transparent);
+  --event-border: color-mix(in srgb, var(--border-strong) 82%, transparent);
+  --chip-bg: color-mix(in srgb, var(--surface-glass) 86%, transparent);
+  --chip-border: color-mix(in srgb, var(--border) 80%, transparent);
 
   --text: #f4f8ff;
   --text-muted: #a9bad2;
@@ -45,8 +54,8 @@
   --radius-md: 14px;
   --radius-lg: 22px;
 
-  --shadow-soft: 0 18px 60px rgba(0, 0, 0, 0.35);
-  --shadow-panel: 0 12px 36px rgba(0, 0, 0, 0.3);
+  --shadow-soft: 0 16px 44px rgba(0, 0, 0, 0.24);
+  --shadow-panel: 0 10px 28px rgba(0, 0, 0, 0.22);
   --shadow-chat: none;
 
   --glass-overlay: rgba(255, 255, 255, 0.045);
@@ -71,6 +80,15 @@
   --bg-soft: #dbe7f3;
   --panel: #f4f8fd;
   --panel-raised: #edf5fc;
+  --panel-shell: color-mix(in srgb, var(--panel) 94%, #dbe7f3);
+  --panel-header: color-mix(in srgb, var(--panel-raised) 88%, transparent);
+  --card-bg: color-mix(in srgb, var(--panel-raised) 94%, transparent);
+  --card-border: color-mix(in srgb, var(--border-strong) 74%, transparent);
+  --card-hover: color-mix(in srgb, var(--panel-raised) 88%, var(--accent-soft));
+  --event-bg: color-mix(in srgb, var(--panel-raised) 88%, transparent);
+  --event-border: color-mix(in srgb, var(--border-strong) 76%, transparent);
+  --chip-bg: color-mix(in srgb, var(--surface-glass) 88%, transparent);
+  --chip-border: color-mix(in srgb, var(--border) 84%, transparent);
 
   --text: #020617;
   --text-muted: #253247;
@@ -89,8 +107,8 @@
   --surface-inset: rgba(15, 60, 110, 0.06);
   --surface-code: rgba(15, 60, 110, 0.08);
 
-  --shadow-soft: 0 12px 40px rgba(0, 0, 0, 0.06);
-  --shadow-panel: 0 8px 24px rgba(0, 0, 0, 0.04);
+  --shadow-soft: 0 12px 32px rgba(15, 23, 42, 0.07);
+  --shadow-panel: 0 8px 22px rgba(15, 23, 42, 0.05);
   --shadow-chat: none;
 
   --toggle-bg: rgba(37, 99, 235, 0.055);
@@ -194,4 +212,60 @@ canvas {
 ::selection {
   background: var(--accent-soft);
   color: var(--text);
+}
+
+body :is(
+  .history-panel,
+  .memory-panel,
+  .projects-panel,
+  .skills-panel,
+  .space-panel,
+  .permissions-card,
+  .settings-page,
+  .autonomy-page,
+  .panel-card
+) {
+  border-color: var(--card-border);
+  background:
+    linear-gradient(135deg, var(--glass-overlay), transparent 24rem),
+    var(--panel-shell);
+  box-shadow: var(--shadow-chat);
+}
+
+body :is(
+  .history-header,
+  .memory-header,
+  .projects-header,
+  .skills-header,
+  .space-header,
+  .permissions-header,
+  .settings-header,
+  .autonomy-header,
+  .page-header,
+  .panel-heading
+) {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 62%, transparent), transparent 72%),
+    var(--panel-header);
+  border-bottom-color: var(--card-border);
+}
+
+body :is(
+  .chat-card,
+  .theme-card,
+  .animation-card,
+  .diagnostic-card,
+  .goal-card,
+  .memory-card,
+  .project-card,
+  .skill-card
+) {
+  border-color: var(--card-border);
+  background: var(--card-bg);
+  box-shadow: none;
+}
+
+body :is(.badge, .chip, .mode-badge, .status, .file-status, .auto-note) {
+  border-color: var(--chip-border);
+  background: var(--chip-bg);
 }

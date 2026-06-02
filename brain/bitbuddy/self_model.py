@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from .database import db_connection
@@ -553,6 +554,46 @@ def get_goal(goal_id: int) -> Goal:
     if row is None:
         raise ValueError("Goal not found")
     return goal_from_row(row)
+
+
+GOAL_TASK_STATUSES = {"in_progress", "blocked", "done"}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def goal_task_state(goal: Goal) -> dict[str, Any]:
+    """Multi-step task continuity state stored in a goal's metadata.
+
+    Lets an autonomy cycle resume an in-progress task across ticks instead of
+    re-deciding from scratch. Returns {} when no task has been started.
+    """
+    state = goal.metadata.get("task_state") if isinstance(goal.metadata, dict) else None
+    return dict(state) if isinstance(state, dict) else {}
+
+
+def set_goal_task_state(
+    goal_id: int,
+    *,
+    status: str,
+    plan: list[str] | None = None,
+    step_index: int = 0,
+    blocked_reason: str = "",
+    last_cycle_id: str = "",
+) -> Goal:
+    """Persist task continuity state onto a goal (merged into metadata)."""
+    clean_status = status if status in GOAL_TASK_STATUSES else "in_progress"
+    clean_plan = [str(step).strip()[:300] for step in (plan or []) if str(step).strip()][:20]
+    task_state = {
+        "status": clean_status,
+        "plan": clean_plan,
+        "step_index": max(0, int(step_index)),
+        "blocked_reason": str(blocked_reason).strip()[:500],
+        "last_cycle_id": str(last_cycle_id).strip()[:120],
+        "updated_at": _now_iso(),
+    }
+    return update_goal(int(goal_id), {"metadata_patch": {"task_state": task_state}})
 
 
 def fetch_goal_row(connection: Any, goal_id: int) -> Any:

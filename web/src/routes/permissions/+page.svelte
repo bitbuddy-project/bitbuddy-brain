@@ -72,7 +72,7 @@
 <style>
 	.permissions-page {
 		width: 100%;
-		max-width: 90rem;
+		max-width: 100%;
 		padding: 0 1rem;
 		height: 100%;
 		margin: 0 auto;

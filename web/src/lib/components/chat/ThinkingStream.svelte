@@ -116,11 +116,11 @@
 		min-width: 0;
 		box-sizing: border-box;
 		padding: 0.85rem 1rem;
-		border: 1px dashed var(--mode-border, var(--border));
+		border: 1px dashed color-mix(in srgb, var(--mode-border, var(--border)) 86%, transparent);
 		border-radius: 1.1rem;
 		background:
-			var(--thinking-overlay, rgba(255, 255, 255, 0.02)),
-			var(--thinking-bg, rgba(0, 0, 0, 0.1));
+			var(--thinking-overlay, rgba(255, 255, 255, 0.018)),
+			var(--event-bg, var(--thinking-bg, rgba(0, 0, 0, 0.1)));
 		color: var(--text-muted);
 		transition: all 0.3s ease;
 	}
@@ -166,8 +166,8 @@
 		gap: 0.35rem;
 		padding: 0.2rem 0.6rem;
 		border-radius: 999px;
-		background: var(--bg-soft);
-		border: 1px solid var(--border);
+		background: var(--chip-bg, var(--bg-soft));
+		border: 1px solid var(--chip-border, var(--border));
 		color: var(--text-soft);
 		font-size: 0.72rem;
 		font-weight: 700;
@@ -179,7 +179,7 @@
 	.toggle-btn:hover {
 		color: var(--text-muted);
 		border-color: var(--border-strong);
-		background: var(--panel-raised);
+		background: var(--card-hover, var(--panel-raised));
 	}
 
 	.caret {

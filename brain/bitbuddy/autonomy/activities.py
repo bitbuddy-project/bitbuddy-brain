@@ -11,7 +11,8 @@ from ..memory.layers import MemoryLayer
 from ..memory.project import ARCHITECTURE_FIELDS, PROJECT_OVERVIEW_FIELDS, list_projects, load_project, project_model, update_structured_project_memory
 from ..memory.store import MemoryRecord, create_memory, search_memories
 from ..providers import ProviderClient
-from ..self_model import add_self_journal, create_goal, get_recent_conversation_signals, get_self_state, list_goals, update_self_state, upsert_personality_evolution
+from ..self_model import add_self_journal, create_goal, get_goal, get_recent_conversation_signals, get_self_state, goal_task_state, list_goals, set_goal_task_state, update_goal, update_self_state, upsert_personality_evolution
+from ..workspace import append_to_workspace_document, latest_document_for_goal, write_workspace_document
 from .decision import AutonomyActivityType, AutonomyDecision, collect_model_text, extract_json_object
 from .intentions import create_intention, intention_to_json
 from .log import log_autonomy
@@ -41,6 +42,8 @@ def run_autonomy_activity(
         return web_curiosity(cycle_id, client, decision, model=model)
     if decision.activity == AutonomyActivityType.SELF_REFLECTION:
         return self_reflection(cycle_id, client, decision, model=model)
+    if decision.activity == AutonomyActivityType.PURSUE_GOAL:
+        return pursue_goal(cycle_id, client, decision, model=model)
     if decision.activity == AutonomyActivityType.NETWORK_OBSERVATION:
         return AutonomyActivityResult(decision.activity, "skipped", "Network observation is not implemented yet.", {"reason": decision.reason})
     return AutonomyActivityResult(AutonomyActivityType.DO_NOTHING, "skipped", decision.reason or "No useful autonomy action selected.")
@@ -56,12 +59,13 @@ def generate_user_prompts(cycle_id: str, client: ProviderClient, decision: Auton
                 "role": "system",
                 "content": " ".join(
                     [
-                        "Create 1 to 3 future questions/comments BitBuddy may want to mention later.",
+                        "Create 0 to 2 future questions/comments BitBuddy may want to mention later. Returning an empty intentions array is often correct.",
                         "Before proposing any question, use the provided known memory/context as already-known truth.",
                         "Do not ask questions whose answers are already present in memory; convert those to comments only if useful, otherwise omit them.",
-                        "Questions must be important: decision-relevant, blocking, preference-discovering, safety-related, or tied to a concrete project/personality thread.",
-                        "Reject filler like 'Want to talk about X?' unless the reason explains why it matters now.",
-                        "Comments may be playful or silly only when the context clearly supports that tone.",
+                        "A GOOD question is decision-relevant, blocking, preference-discovering, safety-related, or tied to a concrete project/personality thread. It should change what BitBuddy does next.",
+                        "A GOOD comment contains a specific observation, useful finding, tradeoff, risk, or meaningful progress. It is not a receipt that BitBuddy did something.",
+                        "Reject filler like 'Want to talk about X?', 'I left a note', 'Thought this was interesting', or generic check-ins.",
+                        "Comments may be playful or silly only when the context clearly supports that tone and the comment still carries a useful signal.",
                         "If inputs include project context, keep the item specific to that project.",
                         'Return only JSON: {"intentions":[{"kind":"question","content":"...","reason":"...","importance":1-5,"playfulness":0-5}]}',
                     ]
@@ -128,8 +132,8 @@ def project_familiarization(cycle_id: str, client: ProviderClient, decision: Aut
                         "Do not invent facts. Do not include unsupported fields like name, repo_path, title, files, or id.",
                         "Supported project_overview fields: stack, purpose, current_status, verified_facts, inferred_facts, needs_read, repo_structure_snapshot.",
                         "Supported architecture_summary fields: backend_layout, frontend_layout, important_packages, major_responsibilities.",
-                        "If you discover a useful question/comment to bring back to Dustin later, include intentions: [{\"kind\":\"question\",\"content\":\"...\",\"reason\":\"...\",\"importance\":1-5,\"playfulness\":0-5}].",
-                        "Questions must be important, specific, and worth interrupting later; comments can be playful only when context supports that tone.",
+                        "Include intentions only for high-signal items worth bringing back to Dustin later: [{\"kind\":\"question\",\"content\":\"...\",\"reason\":\"...\",\"importance\":1-5,\"playfulness\":0-5}]. Empty intentions are fine.",
+                        "Good questions change what BitBuddy should do next. Good comments contain a concrete finding, risk, tradeoff, or meaningful progress. Do not queue generic 'I read this' comments.",
                         "Example: {\"project_overview\":{\"purpose\":\"...\",\"current_status\":\"...\"},\"architecture_summary\":{\"major_responsibilities\":\"...\"},\"intentions\":[{\"kind\":\"question\",\"content\":\"...\",\"reason\":\"...\"}]}",
                     ]
                 ),
@@ -186,7 +190,7 @@ def web_curiosity(cycle_id: str, client: ProviderClient, decision: AutonomyDecis
     reflection = collect_model_text(
         client,
         [
-            {"role": "system", "content": "Reflect briefly on these web search snippets. Return JSON: {\"summary\":\"...\",\"worth_remembering\":true,false,\"intention\":{\"kind\":\"comment\",\"content\":\"...\",\"reason\":\"...\"}}"},
+            {"role": "system", "content": "Reflect briefly on these web search snippets. Return JSON: {\"summary\":\"...\",\"worth_remembering\":true,false,\"intention\":null}. Only include an intention object if there is a specific, useful finding or question worth interrupting Dustin later; never queue generic curiosity receipts. If included, intention must include kind, content, reason, importance 1-5, and playfulness 0-5."},
             {"role": "user", "content": f"Query: {query}\n\n{search_results_to_text(results)}"},
         ],
         model=model,
@@ -203,6 +207,19 @@ def web_curiosity(cycle_id: str, client: ProviderClient, decision: AutonomyDecis
             tags=["autonomy", "web_curiosity"],
             metadata={"query": query, "cycle_id": cycle_id, "urls": [result.url for result in results]},
         )
+        try:
+            sources = "\n".join(f"- {result.title}: {result.url}" for result in results[:6])
+            write_workspace_document(
+                "research",
+                f"Curiosity: {query[:70]}",
+                f"{parsed['summary']}\n\n### Sources\n{sources}".strip(),
+                summary=str(parsed["summary"])[:200],
+                source="autonomy_web_curiosity",
+                cycle_id=cycle_id,
+                tags=["curiosity", "research"],
+            )
+        except Exception as error:
+            log_autonomy("workspace_write_failed", "Could not save curiosity research note", {"cycle_id": cycle_id, "query": query, "error": str(error)})
     intention = parsed.get("intention") if isinstance(parsed.get("intention"), dict) else None
     created_intentions = create_autonomy_intentions(
         [intention] if intention else [],
@@ -305,6 +322,229 @@ def self_reflection(cycle_id: str, client: ProviderClient, decision: AutonomyDec
     if not changes:
         return AutonomyActivityResult(decision.activity, "skipped", "Self-reflection produced no durable update.", {"raw_response": response[:500]})
     return AutonomyActivityResult(decision.activity, "completed", "Reflected on BitBuddy's self-model and growth goals.", {"changes": changes, "cycle_id": cycle_id})
+
+
+def select_actionable_goal(decision: AutonomyDecision) -> Any:
+    """Resolve the goal to advance from decision inputs, else the top actionable goal."""
+    candidates = [
+        goal for goal in list_goals(include_done=False, limit=20)
+        if goal.status == "active" and goal.autonomy_allowed and goal.risk_level <= 1 and goal.next_action.strip()
+    ]
+    requested = str(decision.inputs.get("goal_id") or "").strip()
+    if requested:
+        for goal in candidates:
+            if str(goal.id) == requested:
+                return goal
+        try:
+            goal = get_goal(int(requested))
+            if goal.status == "active" and goal.autonomy_allowed and goal.risk_level <= 1:
+                return goal
+        except (ValueError, TypeError):
+            pass
+    return candidates[0] if candidates else None
+
+
+def pursue_goal(cycle_id: str, client: ProviderClient, decision: AutonomyDecision, model: str | None = None) -> AutonomyActivityResult:
+    goal = select_actionable_goal(decision)
+    if goal is None:
+        return AutonomyActivityResult(decision.activity, "skipped", "No autonomy-allowed goal with a concrete next action to pursue.")
+
+    latest = latest_document_for_goal(str(goal.id))
+    progress_note = f"Existing workspace doc: \"{latest.title}\" ({latest.kind}, id {latest.id})." if latest is not None else "No workspace doc yet for this goal."
+
+    task_state = goal_task_state(goal)
+    existing_plan = [str(step) for step in task_state.get("plan", []) if str(step).strip()] if isinstance(task_state.get("plan"), list) else []
+    step_index = int(task_state.get("step_index") or 0)
+    if task_state.get("status") == "in_progress" and existing_plan:
+        current_step = existing_plan[step_index] if 0 <= step_index < len(existing_plan) else existing_plan[-1]
+        task_note = (
+            "Resume this in-progress task — do NOT restart it. "
+            f"Plan: {existing_plan}. You are on step {step_index + 1}/{len(existing_plan)}: {current_step}."
+        )
+    else:
+        task_note = "No task is in progress yet. If this goal needs multiple steps, lay out a short ordered plan now."
+
+    plan = parse_reflection_json(
+        collect_model_text(
+            client,
+            [
+                {
+                    "role": "system",
+                    "content": "\n".join(
+                        [
+                            "You are choosing ONE safe step to advance a BitBuddy self-goal while the user is away.",
+                            "Allowed actions: research (search the web for evidence), read_project_file (read one already-registered project file), draft (write/extend a note from what you already know).",
+                            "Stay read-only against the world. The only thing you may write is a note in BitBuddy's own workspace.",
+                            "Maintain continuity across cycles: keep the same ordered plan, advance one step at a time, and only restart the plan if the goal itself changed.",
+                            'Return only JSON: {"action":"research|read_project_file|draft","query":"...","project_id":"","relative_path":"","rationale":"...","next_action_update":"","queue_comment":true|false,"plan":["step 1","step 2"],"step_index":0,"task_status":"in_progress|blocked|done","blocked_reason":""}',
+                            "query is required for research; relative_path (and optionally project_id) for read_project_file. next_action_update is the goal's next step after this one (may be empty).",
+                            "plan is the full ordered step list for this task (reuse the existing plan when resuming). step_index is the step you are doing THIS cycle. Set task_status done when the goal is fully achieved, blocked (with blocked_reason) when you cannot proceed safely, else in_progress.",
+                            "Set queue_comment true only for a significant finding, risk, blocked decision, or concrete question Dustin should see. Most goal progress should stay quietly in AI Space.",
+                        ]
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Goal: {goal.title}\nWhy: {goal.why}\nCurrent next_action: {goal.next_action}\n{progress_note}\n{task_note}\nReason this cycle was chosen: {decision.reason}",
+                },
+            ],
+            model=model,
+        )
+    )
+
+    action = str(plan.get("action") or "draft").strip()
+    rationale = str(plan.get("rationale") or "").strip()
+    evidence_block = ""
+    evidence_label = ""
+    config = load_config()
+
+    if action == "research":
+        query = str(plan.get("query") or goal.title).strip()
+        try:
+            results = safe_web_search(query, config.autonomy.web_search)
+            evidence_block = search_results_to_text(results)
+            evidence_label = f"web search for {query!r}"
+        except Exception as error:
+            evidence_block = ""
+            evidence_label = f"web search unavailable ({error})"
+    elif action == "read_project_file":
+        project_id = str(plan.get("project_id") or "").strip()
+        relative_path = str(plan.get("relative_path") or "").strip()
+        if not project_id:
+            projects = list_projects()
+            project_id = projects[0].id if projects else ""
+        if project_id and relative_path:
+            text = read_registered_project_file(project_id, relative_path, max_chars=6000)
+            evidence_block = f"[File: {project_id}:{relative_path}]\n{text}" if text else ""
+            evidence_label = f"project file {project_id}:{relative_path}"
+
+    authored = parse_reflection_json(
+        collect_model_text(
+            client,
+            [
+                {
+                    "role": "system",
+                    "content": "\n".join(
+                        [
+                            "Write or extend a concise, useful workspace note that advances a BitBuddy self-goal.",
+                            "Ground it in the provided evidence and what is already known. Do not invent facts or fabricate sources.",
+                            "Structure longer notes as tl;dr, then detail, then open questions/caveats.",
+                            "Only include comment when there is a specific useful finding, tradeoff, risk, or good question worth surfacing. Otherwise set comment to empty string.",
+                            'Return only JSON: {"kind":"notes|drafts|research|journal","title":"...","summary":"one line","body":"markdown","tags":["..."],"comment":"short optional message to Dustin"}',
+                        ]
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Goal: {goal.title}\nWhy: {goal.why}\nNext action being worked: {goal.next_action}\n"
+                        f"Action taken: {action} ({evidence_label or 'no external evidence'})\nRationale: {rationale}\n\n"
+                        f"Evidence:\n{evidence_block[:5000] or 'None gathered; write from existing knowledge.'}"
+                    ),
+                },
+            ],
+            model=model,
+        )
+    )
+
+    body = str(authored.get("body") or "").strip()
+    title = str(authored.get("title") or goal.title).strip()
+    if not body:
+        return AutonomyActivityResult(decision.activity, "skipped", "Goal step produced no usable note.", {"goal_id": goal.id, "action": action})
+
+    kind = str(authored.get("kind") or ("research" if action == "research" else "notes")).strip()
+    summary = str(authored.get("summary") or "").strip()
+    tags = [str(tag) for tag in authored.get("tags", []) if isinstance(tag, (str, int, float))][:8]
+
+    if latest is not None and latest.kind == kind:
+        document = append_to_workspace_document(latest.id, body, heading=title if title != latest.title else "")
+    else:
+        document = write_workspace_document(
+            kind,
+            title,
+            body,
+            summary=summary,
+            source="autonomy_pursue_goal",
+            goal_id=str(goal.id),
+            cycle_id=cycle_id,
+            tags=tags,
+        )
+
+    add_self_journal(
+        "goal_progress",
+        f"Worked on goal: {goal.title}",
+        f"Action: {action}. {rationale}\nWrote workspace doc \"{document.title}\" ({document.kind}).",
+        {"goal_id": goal.id, "cycle_id": cycle_id, "document_id": document.id, "action": action},
+    )
+
+    next_action_update = str(plan.get("next_action_update") or "").strip()
+    goal_updates: dict[str, Any] = {"evidence": f"{goal.evidence}\n- {cycle_id}: {action} -> {document.rel_path}".strip()[:2000]}
+    if next_action_update and next_action_update != goal.next_action:
+        goal_updates["next_action"] = next_action_update
+    update_goal(goal.id, goal_updates)
+
+    # Persist multi-step task continuity so the next cycle resumes instead of re-deciding.
+    new_plan = [str(step) for step in plan.get("plan", []) if str(step).strip()] if isinstance(plan.get("plan"), list) else existing_plan
+    raw_status = str(plan.get("task_status") or "").strip()
+    task_status = raw_status if raw_status in {"in_progress", "blocked", "done"} else ("in_progress" if new_plan else "")
+    if task_status:
+        next_step_index = int(plan.get("step_index") if isinstance(plan.get("step_index"), int) else step_index)
+        if task_status == "in_progress":
+            # Advance past the step just completed unless the model pinned a specific index.
+            next_step_index = max(next_step_index, step_index + 1)
+        set_goal_task_state(
+            goal.id,
+            status=task_status,
+            plan=new_plan,
+            step_index=next_step_index,
+            blocked_reason=str(plan.get("blocked_reason") or ""),
+            last_cycle_id=cycle_id,
+        )
+        if task_status == "done":
+            update_goal(goal.id, {"status": "completed"})
+
+    created_intentions: list[Any] = []
+    if bool(plan.get("queue_comment")):
+        comment = str(authored.get("comment") or "").strip()
+        if not comment:
+            return AutonomyActivityResult(
+                decision.activity,
+                "completed",
+                f"Advanced goal {goal.title!r} via {action} and saved \"{document.title}\" to AI Space.",
+                {
+                    "goal_id": goal.id,
+                    "action": action,
+                    "document_id": document.id,
+                    "document_kind": document.kind,
+                    "rel_path": document.rel_path,
+                    "next_action_updated": bool(next_action_update),
+                    "intentions": [],
+                    "cycle_id": cycle_id,
+                    "comment_skipped": "queue_comment was true but no useful comment was authored.",
+                },
+            )
+        created_intentions = create_autonomy_intentions(
+            [{"kind": "comment", "content": comment, "reason": f"High-signal progress on self-goal {goal.id}", "importance": 4, "playfulness": 0}],
+            cycle_id=cycle_id,
+            source_activity="pursue_goal",
+            metadata={"goal_id": str(goal.id), "document_id": document.id},
+        )
+
+    return AutonomyActivityResult(
+        decision.activity,
+        "completed",
+        f"Advanced goal {goal.title!r} via {action} and saved \"{document.title}\" to AI Space.",
+        {
+            "goal_id": goal.id,
+            "action": action,
+            "document_id": document.id,
+            "document_kind": document.kind,
+            "rel_path": document.rel_path,
+            "next_action_updated": bool(next_action_update),
+            "intentions": [intention_to_json(item) for item in created_intentions],
+            "cycle_id": cycle_id,
+        },
+    )
 
 
 
@@ -411,7 +651,8 @@ def create_autonomy_intentions(
     config = load_config()
     created = []
     question_count = 0
-    for item in intentions[:3]:
+    comment_count = 0
+    for item in intentions[:2]:
         if not isinstance(item, dict):
             continue
         content = str(item.get("content") or "").strip()
@@ -420,6 +661,9 @@ def create_autonomy_intentions(
         kind = str(item.get("kind") or "comment")
         if kind == "question":
             if question_count >= config.autonomy.max_new_questions_per_cycle:
+                continue
+        elif kind in {"comment", "suggestion", "curiosity", "follow_up"}:
+            if comment_count >= 1:
                 continue
         quality = intention_quality(item, source_activity=source_activity)
         if not quality["accepted"]:
@@ -446,6 +690,8 @@ def create_autonomy_intentions(
             continue
         if kind == "question":
             question_count += 1
+        elif kind in {"comment", "suggestion", "curiosity", "follow_up"}:
+            comment_count += 1
         try:
             created.append(
                 create_intention(
@@ -453,7 +699,7 @@ def create_autonomy_intentions(
                     content,
                     str(item.get("reason") or ""),
                     source_cycle_id=cycle_id,
-                    metadata={"source_activity": source_activity, "quality": quality, **(metadata or {})},
+                    metadata={"source_activity": source_activity, "quality": quality, "priority": quality["importance"], **(metadata or {})},
                 )
             )
         except ValueError as error:
@@ -487,17 +733,36 @@ def intention_quality(item: dict[str, Any], *, source_activity: str) -> dict[str
     important_markers = (
         "blocked", "blocking", "decision", "choose", "preference", "prefer", "permission", "risk", "safe", "safety",
         "bug", "error", "failure", "project", "architecture", "design", "requirement", "important", "deadline",
-        "clarify", "tradeoff", "should we keep", "should we change", "before editing",
+        "clarify", "tradeoff", "should we keep", "should we change", "before editing", "next action", "goal",
+    )
+    concrete_comment_markers = (
+        "found", "noticed", "discovered", "learned", "confirmed", "evidence", "source", "risk", "tradeoff", "blocked",
+        "blocking", "decision", "changed", "regression", "bug", "failure", "architecture", "project", "requirement",
+        "preference", "goal", "next action", "open question", "caveat", "i recommend", "worth doing",
     )
     filler_patterns = (
         "want to talk about", "want to revisit", "should we talk about", "should we revisit", "do you want to talk",
-        "do you want to revisit", "what do you think about", "any thoughts on",
+        "do you want to revisit", "what do you think about", "any thoughts on", "want to peek", "want to take a look",
+        "i left a note", "left a note", "i worked on", "i was thinking about", "thought this was interesting",
+        "just wanted to", "checking in", "worth mentioning later", "might be fun to", "could be interesting",
+    )
+    weak_reason_patterns = (
+        "interesting", "worth mentioning", "might be useful", "for later", "because it came up", "felt relevant",
+        "progress", "curiosity", "thought", "note",
     )
 
     if kind == "question":
         has_signal = importance >= 4 or any(marker in text for marker in important_markers)
         looks_filler = any(pattern in text for pattern in filler_patterns)
-        if not has_signal or (looks_filler and importance < 4):
+        if not content.endswith("?"):
+            return {
+                "accepted": False,
+                "reason": "question_not_written_as_question",
+                "importance": importance,
+                "playfulness": playfulness,
+                "source_activity": source_activity,
+            }
+        if not has_signal or looks_filler:
             return {
                 "accepted": False,
                 "reason": "question_not_important_enough",
@@ -506,12 +771,32 @@ def intention_quality(item: dict[str, Any], *, source_activity: str) -> dict[str
                 "source_activity": source_activity,
             }
 
-    if kind in {"comment", "suggestion", "curiosity", "follow_up"} and playfulness >= 3:
-        playful_support = any(marker in text for marker in ("user likes", "playful", "silly", "fun", "joke", "personality"))
-        if not playful_support:
+    if kind in {"comment", "suggestion", "curiosity", "follow_up"}:
+        looks_filler = any(pattern in text for pattern in filler_patterns)
+        has_concrete_signal = importance >= 4 or any(marker in text for marker in concrete_comment_markers)
+        weak_reason = len(reason) < 20 or reason.lower() in weak_reason_patterns
+        if looks_filler or not has_concrete_signal or (weak_reason and importance < 4):
             return {
                 "accepted": False,
-                "reason": "playful_comment_without_tone_support",
+                "reason": "comment_not_useful_enough",
+                "importance": importance,
+                "playfulness": playfulness,
+                "source_activity": source_activity,
+            }
+        if playfulness >= 3:
+            playful_support = any(marker in text for marker in ("user likes", "playful", "silly", "fun", "joke", "personality"))
+            if not playful_support:
+                return {
+                    "accepted": False,
+                    "reason": "playful_comment_without_tone_support",
+                    "importance": importance,
+                    "playfulness": playfulness,
+                    "source_activity": source_activity,
+                }
+        if importance < 4 and source_activity in {"web_curiosity", "pursue_goal"}:
+            return {
+                "accepted": False,
+                "reason": "comment_not_important_enough_for_autonomous_delivery",
                 "importance": importance,
                 "playfulness": playfulness,
                 "source_activity": source_activity,
@@ -544,7 +829,7 @@ def self_relevant_curiosity(query: str, summary: str) -> bool:
     return any(marker in text for marker in ("consciousness", "self-concept", "identity", "curious", "curiosity", "ai companion"))
 
 
-def parse_intentions_json(text: str) -> list[dict[str, str]]:
+def parse_intentions_json(text: str) -> list[dict[str, Any]]:
     try:
         parsed = json.loads(extract_json_object(text))
     except (json.JSONDecodeError, ValueError):
@@ -552,13 +837,21 @@ def parse_intentions_json(text: str) -> list[dict[str, str]]:
     rows = parsed.get("intentions") if isinstance(parsed, dict) else []
     if not isinstance(rows, list):
         return []
-    result: list[dict[str, str]] = []
+    result: list[dict[str, Any]] = []
     for row in rows[:3]:
         if not isinstance(row, dict):
             continue
         content = str(row.get("content") or "").strip()
         if content:
-            result.append({"kind": str(row.get("kind") or "comment"), "content": content, "reason": str(row.get("reason") or "")})
+            result.append(
+                {
+                    "kind": str(row.get("kind") or "comment"),
+                    "content": content,
+                    "reason": str(row.get("reason") or ""),
+                    "importance": row.get("importance", 3),
+                    "playfulness": row.get("playfulness", 0),
+                }
+            )
     return result
 
 

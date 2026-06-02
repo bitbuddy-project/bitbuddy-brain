@@ -12,50 +12,42 @@
 	let { children } = $props();
 	let sidebarCollapsed = $state(false);
 	let userSidebarCollapsed = $state(false);
-	let viewportZone = $state<'desktop' | 'tablet' | 'mobile'>('desktop');
+	let viewportZone = $state<'desktop' | 'drawer'>('desktop');
 	let mobileSidebarOpen = $state(false);
 
-	const tabletQuery = '(min-width: 761px) and (max-width: 1100px)';
-	const mobileQuery = '(max-width: 760px)';
+	const drawerQuery = '(max-width: 1100px)';
 
 	onMount(() => {
 		initializeChat();
 		initializeNotifications();
 		void initializeTimePreferences();
 
-		const tabletMedia = window.matchMedia(tabletQuery);
-		const mobileMedia = window.matchMedia(mobileQuery);
+		const drawerMedia = window.matchMedia(drawerQuery);
 		const syncSidebarForViewport = () => {
-			const nextZone = mobileMedia.matches ? 'mobile' : tabletMedia.matches ? 'tablet' : 'desktop';
+			const nextZone = drawerMedia.matches ? 'drawer' : 'desktop';
 
 			if (nextZone === viewportZone) return;
 			viewportZone = nextZone;
 			mobileSidebarOpen = false;
 
-			if (nextZone === 'tablet') {
-				sidebarCollapsed = true;
-			} else if (nextZone === 'desktop') {
+			if (nextZone === 'desktop') {
 				sidebarCollapsed = userSidebarCollapsed;
 			}
 		};
 
 		syncSidebarForViewport();
-		tabletMedia.addEventListener('change', syncSidebarForViewport);
-		mobileMedia.addEventListener('change', syncSidebarForViewport);
+		drawerMedia.addEventListener('change', syncSidebarForViewport);
 
 		return () => {
-			tabletMedia.removeEventListener('change', syncSidebarForViewport);
-			mobileMedia.removeEventListener('change', syncSidebarForViewport);
+			drawerMedia.removeEventListener('change', syncSidebarForViewport);
 		};
 	});
 
 	function toggleSidebar() {
-		if (viewportZone === 'mobile') {
+		if (viewportZone === 'drawer') {
 			mobileSidebarOpen = !mobileSidebarOpen;
 			return;
 		}
-
-		if (viewportZone === 'tablet') return;
 
 		sidebarCollapsed = !sidebarCollapsed;
 		userSidebarCollapsed = sidebarCollapsed;
@@ -78,12 +70,12 @@
 		onclick={closeMobileSidebar}
 	></button>
 
-	<Sidebar collapsed={viewportZone === 'mobile' ? false : sidebarCollapsed} mobileOpen={mobileSidebarOpen} onNavigate={closeMobileSidebar} />
+	<Sidebar collapsed={viewportZone === 'drawer' ? false : sidebarCollapsed} mobileOpen={mobileSidebarOpen} onNavigate={closeMobileSidebar} />
 	<button
 		class="sidebar-toggle"
 		type="button"
-		aria-label={viewportZone === 'mobile' ? (mobileSidebarOpen ? 'Close navigation' : 'Open navigation') : sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-		aria-pressed={viewportZone === 'mobile' ? mobileSidebarOpen : sidebarCollapsed}
+		aria-label={viewportZone === 'drawer' ? (mobileSidebarOpen ? 'Close navigation' : 'Open navigation') : sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+		aria-pressed={viewportZone === 'drawer' ? mobileSidebarOpen : sidebarCollapsed}
 		onclick={toggleSidebar}
 	>
 		<ListIcon size={18} weight="bold" />
@@ -160,7 +152,7 @@
 		background: var(--bg);
 	}
 
-	@media (max-width: 760px) {
+	@media (max-width: 1100px) {
 		.app-shell {
 			grid-template-columns: 1fr;
 		}
@@ -174,6 +166,7 @@
 			background: color-mix(in srgb, var(--panel) 88%, transparent);
 			transform: none;
 			backdrop-filter: blur(16px);
+			-webkit-backdrop-filter: blur(16px);
 		}
 
 		.mobile-sidebar-backdrop {
@@ -197,12 +190,6 @@
 			height: auto;
 			min-height: calc(100vh - 5rem);
 			padding-top: 4.25rem;
-		}
-	}
-
-	@media (min-width: 761px) and (max-width: 1100px) {
-		.sidebar-toggle {
-			display: none;
 		}
 	}
 

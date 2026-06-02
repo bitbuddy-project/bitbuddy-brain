@@ -32,7 +32,7 @@
 		--page-border: rgba(45, 212, 191, 0.25);
 
 		width: 100%;
-		max-width: 90rem;
+		max-width: 100%;
 		padding: 0 1rem;
 		margin: 0 auto;
 		animation: fade-in 0.3s ease-out;

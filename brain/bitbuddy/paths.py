@@ -10,6 +10,8 @@ PERSONALITIES_DIR = APP_DIR / "personalities"
 PROJECTS_DIR = APP_DIR / "projects"
 SKILLS_DIR = APP_DIR / "skills"
 ARTIFACTS_DIR = APP_DIR / "artifacts"
+WORKSPACE_DIR = APP_DIR / "workspace"
+WORKSPACE_KINDS = ("notes", "drafts", "research", "journal")
 GLOBAL_DB_PATH = APP_DIR / "bitbuddy.sqlite"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR = REPO_ROOT / "web"
@@ -21,3 +23,6 @@ def ensure_app_dirs() -> None:
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+    for kind in WORKSPACE_KINDS:
+        (WORKSPACE_DIR / kind).mkdir(parents=True, exist_ok=True)

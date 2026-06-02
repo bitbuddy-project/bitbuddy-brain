@@ -73,6 +73,26 @@ class ProviderImageTest(unittest.TestCase):
         self.assertIn("Thinking/reasoning mode is disabled", payloads[0]["messages"][0]["content"])
         self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("response", "visible")])
 
+    def test_llama_cpp_thinking_enabled_sends_reasoning_budget(self) -> None:
+        client = ProviderClient(ProviderConfig(type="llama.cpp", url="http://provider.test", model="reasoning-model"))
+        payloads = []
+
+        def fake_post_sse_json(_url, payload):
+            payloads.append(payload)
+            return iter([
+                {"choices": [{"delta": {"reasoning_content": "plan", "content": "answer"}}]},
+            ])
+
+        with patch("bitbuddy.providers.post_sse_json", side_effect=fake_post_sse_json), \
+                patch("bitbuddy.providers.reasoning_budget_tokens", return_value=-1):
+            chunks = list(client.stream_chat([{"role": "user", "content": "Hi"}], thinking_enabled=True))
+
+        self.assertEqual(payloads[0]["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertNotIn("reasoning_format", payloads[0])
+        self.assertEqual(payloads[0]["thinking_budget_tokens"], -1)
+        self.assertEqual(payloads[0]["reasoning_budget_tokens"], -1)
+        self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("thinking", "plan"), ("response", "answer")])
+
 
 if __name__ == "__main__":
     unittest.main()

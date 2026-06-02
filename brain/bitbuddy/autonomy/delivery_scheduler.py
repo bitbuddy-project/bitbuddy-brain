@@ -18,6 +18,7 @@ from .intentions import (
     cleanup_intention_queue,
     intention_is_expired,
     intention_priority,
+    intention_quality_allows_surface,
     list_pending_intentions,
     parse_timestamp,
     recent_intention_surface_for_chat,
@@ -202,6 +203,8 @@ def select_autonomous_intention(chat_id: str, *, quiet_mode: bool = False, now: 
     candidates = []
     for intention in list_pending_intentions(limit=50):
         if intention_is_expired(intention, current):
+            continue
+        if not intention_quality_allows_surface(intention):
             continue
         priority = intention_priority(intention)
         if priority < MIN_AUTONOMOUS_PRIORITY:

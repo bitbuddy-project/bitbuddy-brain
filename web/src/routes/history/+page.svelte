@@ -70,117 +70,182 @@
 </script>
 
 <svelte:head>
-	<title>BitBuddy — Chat History</title>
+	<title>BitBuddy — History</title>
 </svelte:head>
 
 <div class="history-page">
-	<header class="page-header">
-		<div class="header-icon"><ClockCounterClockwiseIcon size={28} weight="duotone" /></div>
-		<div class="header-copy">
-			<h1>Chat History</h1>
-			<p>{allChats.length} conversation{allChats.length === 1 ? '' : 's'}</p>
-		</div>
-	</header>
+	<section class="history-panel" aria-label="Chat history">
+		<header class="history-header">
+			<div class="title-mark" aria-hidden="true"><ClockCounterClockwiseIcon size={30} weight="duotone" /></div>
+			<div class="title-copy">
+				<p class="eyebrow">Conversation Log</p>
+				<h1>History</h1>
+				<p>{allChats.length} conversation{allChats.length === 1 ? '' : 's'} saved locally.</p>
+			</div>
+		</header>
 
-	<div class="toolbar">
-		<div class="search-wrap">
-			<MagnifyingGlassIcon size={16} />
-			<input
-				class="search-input"
-				type="search"
-				placeholder="Search by title…"
-				bind:value={search}
-				aria-label="Search chats"
-			/>
-		</div>
-		<div class="mode-chips" role="group" aria-label="Filter by mode">
-			{#each modes as mode}
-				<button
-					class="chip"
-					class:active={modeFilter === mode}
-					type="button"
-					onclick={() => { modeFilter = mode; }}
-				>
-					{mode === 'all' ? 'All' : mode}
-				</button>
-			{/each}
-		</div>
-	</div>
+		<div class="history-content">
+			<div class="toolbar">
+				<div class="search-wrap">
+					<MagnifyingGlassIcon size={16} />
+					<input
+						class="search-input"
+						type="search"
+						placeholder="Search by title..."
+						bind:value={search}
+						aria-label="Search chats"
+					/>
+				</div>
+				<div class="mode-chips" role="group" aria-label="Filter by mode">
+					{#each modes as mode}
+						<button
+							class="chip"
+							class:active={modeFilter === mode}
+							type="button"
+							onclick={() => { modeFilter = mode; }}
+						>
+							{mode === 'all' ? 'All' : mode}
+						</button>
+					{/each}
+				</div>
+			</div>
 
-	{#if error}
-		<div class="error-banner">{error}</div>
-	{:else if loading}
-		<div class="loading-state">Loading history…</div>
-	{:else if filtered.length === 0}
-		<div class="empty-state">
-			{search || modeFilter !== 'all' ? 'No chats match your filters.' : 'No saved chats yet.'}
+			{#if error}
+				<div class="error-banner">{error}</div>
+			{:else if loading}
+				<div class="loading-state">Loading history...</div>
+			{:else if filtered.length === 0}
+				<div class="empty-state">
+					{search || modeFilter !== 'all' ? 'No chats match your filters.' : 'No saved chats yet.'}
+				</div>
+			{:else}
+				<ul class="chat-list" aria-label="Chat history">
+					{#each filtered as chat (chat.id)}
+						<li class="chat-card" role="presentation">
+							<button class="chat-body" type="button" onclick={() => openChat(chat.id)}>
+								<span class="chat-title">{chat.title}</span>
+								<span class="chat-meta">
+									<span class="mode-badge {modeClass(chat.mode)}">{chat.mode}</span>
+									<span class="chat-time">{formatTimestamp(chat.updated_at)}</span>
+								</span>
+							</button>
+							<button
+								class="delete-btn"
+								class:confirm={deletingId === chat.id}
+								type="button"
+								aria-label={deletingId === chat.id ? 'Confirm delete' : `Delete ${chat.title}`}
+								onclick={(e) => doDelete(chat.id, e)}
+								onblur={() => { if (deletingId === chat.id) deletingId = null; }}
+							>
+								<TrashIcon size={15} />
+								{#if deletingId === chat.id}<span class="confirm-label">Delete?</span>{/if}
+							</button>
+						</li>
+					{/each}
+				</ul>
+			{/if}
 		</div>
-	{:else}
-		<ul class="chat-list" aria-label="Chat history">
-			{#each filtered as chat (chat.id)}
-				<li class="chat-card" role="presentation">
-					<button class="chat-body" type="button" onclick={() => openChat(chat.id)}>
-						<span class="chat-title">{chat.title}</span>
-						<span class="chat-meta">
-							<span class="mode-badge {modeClass(chat.mode)}">{chat.mode}</span>
-							<span class="chat-time">{formatTimestamp(chat.updated_at)}</span>
-						</span>
-					</button>
-					<button
-						class="delete-btn"
-						class:confirm={deletingId === chat.id}
-						type="button"
-						aria-label={deletingId === chat.id ? 'Confirm delete' : `Delete ${chat.title}`}
-						onclick={(e) => doDelete(chat.id, e)}
-						onblur={() => { if (deletingId === chat.id) deletingId = null; }}
-					>
-						<TrashIcon size={15} />
-						{#if deletingId === chat.id}<span class="confirm-label">Delete?</span>{/if}
-					</button>
-				</li>
-			{/each}
-		</ul>
-	{/if}
+	</section>
 </div>
 
 <style>
 	.history-page {
+		--page-accent: #a78bfa;
+		--page-soft: rgba(167, 139, 250, 0.12);
+		--page-border: rgba(167, 139, 250, 0.25);
+		--page-glow: rgba(167, 139, 250, 0.14);
+
 		width: 100%;
-		max-width: 56rem;
+		max-width: 100%;
+		padding: 0 1rem;
+		height: 100%;
+		margin: 0 auto;
 		display: flex;
-		flex-direction: column;
-		gap: 1.5rem;
-		padding: 0.5rem 0 2rem;
+		min-height: 0;
+		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
 
-	.page-header {
+	@keyframes fade-in {
+		from { opacity: 0; transform: translateY(12px); }
+		to { opacity: 1; transform: translateY(0); }
+	}
+
+	.history-panel {
+		width: 100%;
+		height: 100%;
+		max-height: calc(100vh - 3rem);
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		border: 1px solid var(--page-border);
+		border-radius: 1.45rem;
+		background:
+			linear-gradient(135deg, var(--glass-overlay), transparent 22rem),
+			radial-gradient(circle at top right, var(--page-glow), transparent 30rem),
+			radial-gradient(circle at bottom left, rgba(110, 231, 183, 0.055), transparent 34rem),
+			var(--panel);
+		box-shadow: var(--shadow-chat);
+		overflow: hidden;
+	}
+
+	.history-header {
+		flex: 0 0 auto;
+		padding: 1.35rem 1.5rem;
 		display: flex;
 		align-items: center;
 		gap: 1rem;
+		border-bottom: 1px solid var(--border);
+		background:
+			linear-gradient(135deg, var(--page-soft), transparent 70%),
+			var(--header-bg);
 	}
 
-	.header-icon {
-		width: 3rem;
-		height: 3rem;
+	.title-mark {
+		width: 3.5rem;
+		height: 3.5rem;
 		display: grid;
 		place-items: center;
-		border-radius: 1rem;
-		background: color-mix(in srgb, var(--accent) 14%, transparent);
-		color: var(--accent);
-		flex-shrink: 0;
+		border-radius: 1.1rem;
+		background: var(--surface-glass);
+		border: 1px solid var(--page-border);
+		color: var(--page-accent);
+		box-shadow: 0 0 20px var(--page-soft);
+		flex: 0 0 auto;
 	}
 
-	.header-copy h1 {
-		font-size: 1.5rem;
+	.title-copy {
+		min-width: 0;
+	}
+
+	.eyebrow {
+		color: var(--page-accent);
+		font-size: 0.72rem;
 		font-weight: 800;
-		color: var(--text);
-		margin: 0;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
 	}
 
-	.header-copy p {
+	h1 {
+		font-size: 1.65rem;
+		font-weight: 900;
+		letter-spacing: -0.03em;
+		line-height: 1.1;
+	}
+
+	.title-copy p:last-child {
 		margin: 0.15rem 0 0;
-		font-size: 0.85rem;
 		color: var(--text-soft);
+	}
+
+	.history-content {
+		min-height: 0;
+		flex: 1 1 auto;
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+		padding: 1.25rem;
+		overflow-y: auto;
+		scrollbar-color: var(--scrollbar-thumb) transparent;
 	}
 
 	.toolbar {
@@ -199,12 +264,12 @@
 		padding: 0.5rem 0.85rem;
 		border: 1px solid var(--border-strong);
 		border-radius: 0.75rem;
-		background: var(--bg-soft);
+		background: var(--surface-inset);
 		color: var(--text-muted);
 	}
 
 	.search-wrap:focus-within {
-		border-color: var(--accent);
+		border-color: var(--page-accent);
 		color: var(--text);
 	}
 
@@ -245,9 +310,9 @@
 	}
 
 	.chip.active {
-		border-color: var(--accent);
-		background: color-mix(in srgb, var(--accent) 14%, transparent);
-		color: var(--accent);
+		border-color: var(--page-accent);
+		background: var(--page-soft);
+		color: var(--page-accent);
 	}
 
 	.chat-list {
@@ -266,7 +331,8 @@
 		padding: 0.25rem;
 		border-radius: 0.85rem;
 		border: 1px solid var(--border);
-		background: var(--panel);
+		background: var(--surface-card);
+		box-shadow: var(--shadow-panel);
 		transition: border-color 120ms ease, background 120ms ease;
 	}
 
@@ -356,7 +422,12 @@
 
 	.loading-state,
 	.empty-state {
+		flex: 1 1 auto;
+		min-height: 18rem;
 		padding: 3rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
 		text-align: center;
 		color: var(--text-soft);
 		font-size: 0.95rem;
@@ -369,5 +440,34 @@
 		border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
 		color: var(--danger);
 		font-size: 0.9rem;
+	}
+
+	@media (max-width: 900px) {
+		.history-page,
+		.history-panel {
+			height: auto;
+			max-height: none;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.history-page {
+			padding: 0;
+		}
+
+		.history-header {
+			align-items: flex-start;
+		}
+
+		.title-mark {
+			width: 3rem;
+			height: 3rem;
+		}
+
+		.mode-chips {
+			width: 100%;
+			overflow-x: auto;
+			padding-bottom: 0.2rem;
+		}
 	}
 </style>

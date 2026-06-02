@@ -35,6 +35,7 @@ class CollectedResponse:
     response_text: str
     response_emitted: bool = False
     thinking_emitted: bool = False
+    tool_calls: list[ToolCall] | None = None
 
 
 def may_be_tool_call_prefix(text: str) -> bool:

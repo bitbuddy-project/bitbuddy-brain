@@ -1,11 +1,15 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { onMount } from 'svelte';
+	import { getAutonomyStatus, getLifecycleStatus, type AutonomyStatus, type LifecycleState } from '$lib/api/bitbuddy';
+	import { chatSession } from '$lib/stores/chat.svelte';
 	import BookOpenIcon from 'phosphor-svelte/lib/BookOpenIcon';
 	import BrainIcon from 'phosphor-svelte/lib/BrainIcon';
 	import BlueprintIcon from 'phosphor-svelte/lib/BlueprintIcon';
 	import ChatCircleTextIcon from 'phosphor-svelte/lib/ChatCircleTextIcon';
 	import ClockCounterClockwiseIcon from 'phosphor-svelte/lib/ClockCounterClockwiseIcon';
 	import DevicesIcon from 'phosphor-svelte/lib/DevicesIcon';
+	import HouseLineIcon from 'phosphor-svelte/lib/HouseLineIcon';
 	import GearSixIcon from 'phosphor-svelte/lib/GearSixIcon';
 	import ShieldCheckIcon from 'phosphor-svelte/lib/ShieldCheckIcon';
 	import SparkleIcon from 'phosphor-svelte/lib/SparkleIcon';
@@ -34,6 +38,7 @@
 		{
 			label: 'Workspace',
 			items: [
+				{ label: 'AI Space', href: '/space', icon: HouseLineIcon, hint: 'Notes and drafts' },
 				{ label: 'Projects', href: '/projects', icon: BlueprintIcon, hint: 'Context maps' },
 				{ label: 'Memories', href: '/memory', icon: BrainIcon, hint: 'Recall' },
 				{ label: 'Skills', href: '/skills', icon: BookOpenIcon, hint: 'Playbooks' }
@@ -47,6 +52,74 @@
 			]
 		}
 	];
+
+	let autonomyStatus = $state<AutonomyStatus | null>(null);
+	let lifecycleStatus = $state<LifecycleState | null>(null);
+
+	let statusTone = $derived.by(() => {
+		if (!chatSession.initialized) return 'pending';
+		if (!chatSession.serverAvailable) return 'offline';
+		if (chatSession.isStreaming) return 'thinking';
+		if (lifecycleStatus?.state === 'Dreaming') return 'dreaming';
+		if (lifecycleStatus?.state === 'Sleep') return 'quiet';
+		if (autonomyStatus?.state === 'running') return 'working';
+		if (autonomyStatus?.state === 'scheduled') return 'scheduled';
+		if (autonomyStatus?.state === 'disabled') return 'quiet';
+		if (autonomyStatus?.state === 'blocked_by_lifecycle' || lifecycleStatus?.quiet_mode) return 'quiet';
+		return 'ready';
+	});
+
+	let statusLabel = $derived.by(() => {
+		if (!chatSession.initialized) return 'Starting';
+		if (!chatSession.serverAvailable) return 'Offline';
+		if (chatSession.isStreaming) return 'Thinking';
+		if (lifecycleStatus?.state === 'Dreaming') return 'Dreaming';
+		if (lifecycleStatus?.state === 'Sleep') return 'Sleeping';
+		if (autonomyStatus?.state === 'running') return 'Working';
+		if (autonomyStatus?.state === 'scheduled') return 'Scheduled';
+		if (autonomyStatus?.state === 'disabled') return 'Manual';
+		if (autonomyStatus?.state === 'blocked_by_lifecycle' || lifecycleStatus?.quiet_mode) return 'Quiet';
+		return 'Ready';
+	});
+
+	let statusDetail = $derived.by(() => {
+		if (!chatSession.initialized) return 'booting local state';
+		if (!chatSession.serverAvailable) return 'server unavailable';
+		if (chatSession.isStreaming) return 'answering now';
+		if (lifecycleStatus?.state === 'Dreaming') return 'night work active';
+		if (lifecycleStatus?.state === 'Sleep') return 'resting until activity';
+		if (autonomyStatus?.state === 'running') return autonomyStatus.message || 'autonomy in progress';
+		if (autonomyStatus?.state === 'scheduled') return autonomyStatus.message || 'autonomy queued';
+		if (autonomyStatus?.state === 'disabled') return 'autonomy disabled';
+		if (autonomyStatus?.state === 'blocked_by_lifecycle' || lifecycleStatus?.quiet_mode) return 'autonomy paused';
+		return 'memory close · autonomy bounded';
+	});
+
+	let statusTitle = $derived(`${statusLabel}: ${statusDetail}`);
+
+	onMount(() => {
+		let cancelled = false;
+		let timer: ReturnType<typeof setInterval> | undefined;
+
+		async function refreshStatus() {
+			if (!chatSession.serverAvailable) return;
+			try {
+				const [nextAutonomy, nextLifecycle] = await Promise.all([getAutonomyStatus(), getLifecycleStatus()]);
+				if (cancelled) return;
+				autonomyStatus = nextAutonomy;
+				lifecycleStatus = nextLifecycle;
+			} catch {
+				// The chat store already owns server availability. Keep the last known sidebar state.
+			}
+		}
+
+		void refreshStatus();
+		timer = setInterval(() => void refreshStatus(), 15000);
+		return () => {
+			cancelled = true;
+			if (timer) clearInterval(timer);
+		};
+	});
 
 	function isActive(href: string) {
 		return href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
@@ -69,11 +142,11 @@
 			</span>
 		</a>
 
-		<div class="status-card" aria-label="BitBuddy status">
-			<span class="status-dot"></span>
+		<div class="status-card" aria-label={`BitBuddy status: ${statusTitle}`} title={statusTitle}>
+			<span class={`status-dot ${statusTone}`}></span>
 			<div class="status-copy">
-				<strong>Awake</strong>
-				<small>memory close · autonomy bounded</small>
+				<strong>{statusLabel}</strong>
+				<small>{statusDetail}</small>
 			</div>
 		</div>
 
@@ -283,7 +356,30 @@
 		flex: 0 0 auto;
 		border-radius: 999px;
 		background: var(--success);
-		box-shadow: 0 0 0 5px color-mix(in srgb, var(--success) 12%, transparent), 0 0 18px color-mix(in srgb, var(--success) 68%, transparent);
+		box-shadow: 0 0 0 5px color-mix(in srgb, var(--success) 12%, transparent), 0 0 18px color-mix(in srgb, var(--success) 58%, transparent);
+	}
+
+	.status-dot.pending,
+	.status-dot.scheduled {
+		background: var(--accent);
+		box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 12%, transparent), 0 0 18px color-mix(in srgb, var(--accent) 54%, transparent);
+	}
+
+	.status-dot.thinking,
+	.status-dot.working,
+	.status-dot.dreaming {
+		background: var(--warning);
+		box-shadow: 0 0 0 5px color-mix(in srgb, var(--warning) 13%, transparent), 0 0 18px color-mix(in srgb, var(--warning) 54%, transparent);
+	}
+
+	.status-dot.quiet {
+		background: var(--text-soft);
+		box-shadow: 0 0 0 5px color-mix(in srgb, var(--text-soft) 10%, transparent), 0 0 14px color-mix(in srgb, var(--text-soft) 32%, transparent);
+	}
+
+	.status-dot.offline {
+		background: var(--danger);
+		box-shadow: 0 0 0 5px color-mix(in srgb, var(--danger) 12%, transparent), 0 0 18px color-mix(in srgb, var(--danger) 48%, transparent);
 	}
 
 	.nav-list {
@@ -420,8 +516,21 @@
 		pointer-events: none;
 	}
 
-	.sidebar.collapsed .status-card,
 	.sidebar.collapsed .group-label {
+		display: none;
+	}
+
+	.sidebar.collapsed .status-card {
+		width: 3.2rem;
+		height: 3.2rem;
+		min-height: 3.2rem;
+		padding: 0;
+		display: grid;
+		place-items: center;
+		border-radius: 1rem;
+	}
+
+	.sidebar.collapsed .status-copy {
 		display: none;
 	}
 
@@ -509,18 +618,20 @@
 		left: 0.12rem;
 	}
 
-	@media (max-width: 760px) {
+	@media (max-width: 1100px) {
 		.sidebar {
 			position: fixed;
 			inset: 0 auto 0 0;
 			z-index: 40;
-			width: min(19.5rem, calc(100vw - 2.4rem));
+			width: min(21rem, calc(100vw - 2.4rem));
 			height: 100dvh;
 			padding: 1rem;
 			gap: 1.5rem;
-			border-right: 1px solid var(--border);
-			background: var(--panel);
-			box-shadow: 18px 0 48px rgba(0, 0, 0, 0.38);
+			border-right: 1px solid var(--border-strong);
+			background:
+				linear-gradient(180deg, color-mix(in srgb, var(--panel-raised) 96%, transparent), color-mix(in srgb, var(--panel) 94%, transparent)),
+				var(--panel);
+			box-shadow: 18px 0 52px rgba(0, 0, 0, 0.42);
 			justify-content: flex-start;
 			transform: translateX(-105%);
 			transition:
@@ -545,6 +656,14 @@
 
 		.sidebar.collapsed .status-card {
 			display: flex;
+			width: auto;
+			height: auto;
+			min-height: auto;
+			padding: 0.85rem;
+		}
+
+		.sidebar.collapsed .status-copy {
+			display: block;
 		}
 
 		.sidebar.collapsed .group-label {

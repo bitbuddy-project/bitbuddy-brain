@@ -1,5 +1,18 @@
 export type ChatMode = 'chat' | 'plan' | 'debug';
 
+export type ToolDiffFile = {
+    path: string;
+    status: 'created' | 'modified' | 'deleted' | string;
+    added: number;
+    removed: number;
+    unified: string;
+    truncated?: boolean;
+};
+
+export type ToolDiff = {
+    files: ToolDiffFile[];
+};
+
 export type ToolEventMetadata = {
     tool?: string;
     arguments_summary?: Record<string, unknown>;
@@ -11,6 +24,7 @@ export type ToolEventMetadata = {
     autonomy_intention_delivery?: boolean;
     intention_id?: number;
     intention_kind?: string;
+    diff?: ToolDiff;
 };
 
 export type ChatAttachment = {
@@ -137,6 +151,7 @@ export type ChatConfig = {
 	return_greeting_enabled: boolean;
 	return_greeting_idle_minutes: number;
 	return_greeting_phrases: string[];
+	max_tool_rounds: number;
 };
 
 export type AutonomyConfig = {
@@ -776,6 +791,17 @@ export async function updateDreamingConfig(dreaming: DreamingConfig): Promise<Bi
 	return data;
 }
 
+export async function updateChatConfig(chat: ChatConfig): Promise<BitBuddyConfig> {
+	const response = await fetch(`${BITBUDDY_API}/config/chat`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(chat)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not save chat settings.');
+	return data;
+}
+
 export async function updateAutonomyConfig(autonomy: AutonomyConfig): Promise<BitBuddyConfig> {
 	const response = await fetch(`${BITBUDDY_API}/config/autonomy`, {
 		method: 'PATCH',
@@ -1093,4 +1119,52 @@ export async function getSkill(name: string): Promise<Skill> {
 export async function archiveSkillByName(name: string): Promise<void> {
 	const response = await fetch(`${BITBUDDY_API}/skills/${encodeURIComponent(name)}/archive`, { method: 'POST' });
 	if (!response.ok) throw new Error(`Could not archive skill: ${name}`);
+}
+
+export type WorkspaceDocument = {
+	id: string;
+	rel_path: string;
+	title: string;
+	kind: string;
+	summary: string;
+	source: string;
+	goal_id: string;
+	cycle_id: string;
+	tags: string[];
+	pinned: boolean;
+	status: string;
+	created_at: string;
+	updated_at: string;
+	body?: string;
+};
+
+export async function getWorkspaceDocuments(kind = '', status = 'active'): Promise<WorkspaceDocument[]> {
+	const params = new URLSearchParams();
+	if (kind) params.set('kind', kind);
+	if (status) params.set('status', status);
+	const query = params.toString() ? `?${params.toString()}` : '';
+	const response = await fetch(`${BITBUDDY_API}/workspace${query}`);
+	if (!response.ok) throw new Error('Could not load workspace documents.');
+	const data = await response.json();
+	return data.documents ?? [];
+}
+
+export async function getWorkspaceDocument(id: string): Promise<WorkspaceDocument> {
+	const response = await fetch(`${BITBUDDY_API}/workspace/${encodeURIComponent(id)}`);
+	if (!response.ok) throw new Error(`Could not load document: ${id}`);
+	return response.json();
+}
+
+export async function archiveWorkspaceDocument(id: string): Promise<void> {
+	const response = await fetch(`${BITBUDDY_API}/workspace/${encodeURIComponent(id)}/archive`, { method: 'POST' });
+	if (!response.ok) throw new Error(`Could not archive document: ${id}`);
+}
+
+export async function pinWorkspaceDocument(id: string, pinned: boolean): Promise<void> {
+	const response = await fetch(`${BITBUDDY_API}/workspace/${encodeURIComponent(id)}/pin`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ pinned })
+	});
+	if (!response.ok) throw new Error(`Could not update document: ${id}`);
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import difflib
 import re
 import subprocess
 from pathlib import Path
@@ -20,6 +21,7 @@ from .base import ToolDefinition, ToolExecutionError, ToolResult, cap_text, inva
 MAX_LIST_ENTRIES = 200
 MAX_SEARCH_FILES = 200
 MAX_SEARCH_MATCHES = 200
+MAX_DIFF_CHARS = 20000
 
 
 def glob_files_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
@@ -243,6 +245,8 @@ def write_file_tool(arguments: dict[str, object], definition: ToolDefinition) ->
     if not isinstance(content, str):
         return invalid_tool_result("Missing required argument: content")
     path = resolve_writable_path(arguments, file_path)
+    previous_content: str | None = None
+    file_existed = path.exists()
     if should_skip_path(path):
         raise ToolExecutionError("Refusing to write inside a skipped directory path.")
     if path.suffix.lower() in SKIP_SUFFIXES:
@@ -251,12 +255,23 @@ def write_file_tool(arguments: dict[str, object], definition: ToolDefinition) ->
         raise ToolExecutionError(f"Path exists but is not a file: {path}")
     if path.exists() and not bool(arguments.get("overwrite", True)):
         raise ToolExecutionError(f"File already exists and overwrite=false: {path}")
+    if file_existed:
+        try:
+            previous_content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            previous_content = None
     if bool(arguments.get("create_dirs", True)):
         path.parent.mkdir(parents=True, exist_ok=True)
     elif not path.parent.exists():
         raise ToolExecutionError(f"Parent directory does not exist: {path.parent}")
     path.write_text(content, encoding="utf-8")
     content_preview, truncated = cap_text(content, definition.max_chars)
+    diff_metadata = file_diff_metadata(
+        path=str(path),
+        old_text=previous_content or "",
+        new_text=content,
+        status="modified" if file_existed else "created",
+    )
     return ToolResult(
         definition.name,
         True,
@@ -264,6 +279,7 @@ def write_file_tool(arguments: dict[str, object], definition: ToolDefinition) ->
         f"Wrote {len(content)} character(s) to {path}.",
         summarize_file_tool_args(arguments, file_path=file_path, path=str(path)),
         truncated=truncated,
+        metadata=diff_metadata,
     )
 
 
@@ -283,6 +299,7 @@ def patch_file_tool(arguments: dict[str, object], definition: ToolDefinition) ->
     patched = current.replace(old_text, new_text) if bool(arguments.get("replace_all", False)) else current.replace(old_text, new_text, 1)
     path.write_text(patched, encoding="utf-8")
     preview, truncated = cap_text(make_patch_preview(old_text, new_text), definition.max_chars)
+    diff_metadata = file_diff_metadata(path=str(path), old_text=current, new_text=patched, status="modified")
     return ToolResult(
         definition.name,
         True,
@@ -290,6 +307,7 @@ def patch_file_tool(arguments: dict[str, object], definition: ToolDefinition) ->
         f"Patched {path} ({'all' if bool(arguments.get('replace_all', False)) else '1'} replacement{'s' if bool(arguments.get('replace_all', False)) else ''}).",
         summarize_file_tool_args(arguments, file_path=file_path, path=str(path)),
         truncated=truncated,
+        metadata=diff_metadata,
     )
 
 
@@ -1122,6 +1140,49 @@ def make_patch_preview(old_text: str, new_text: str) -> str:
         "+++ new_text",
         new_text,
     ])
+
+
+def file_diff_metadata(path: str, old_text: str, new_text: str, status: str) -> dict[str, object]:
+    display_path = diff_display_path(path)
+    lines = list(
+        difflib.unified_diff(
+            old_text.splitlines(),
+            new_text.splitlines(),
+            fromfile=f"a/{display_path}",
+            tofile=f"b/{display_path}",
+            lineterm="",
+        )
+    )
+    added = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
+    unified = "\n".join(lines)
+    truncated = len(unified) > MAX_DIFF_CHARS
+    if truncated:
+        unified = unified[:MAX_DIFF_CHARS].rstrip() + "\n... diff truncated ..."
+
+    return {
+        "diff": {
+            "files": [
+                {
+                    "path": display_path,
+                    "status": status,
+                    "added": added,
+                    "removed": removed,
+                    "unified": unified,
+                    "truncated": truncated,
+                }
+            ]
+        }
+    }
+
+
+def diff_display_path(path: str) -> str:
+    home = str(Path.home())
+    if path == home:
+        return "~"
+    if path.startswith(f"{home}/"):
+        return f"~/{path[len(home) + 1:]}"
+    return path.lstrip("/") if path.startswith("/") else path
 
 
 def resolve_tool_base_path(arguments: dict[str, object]) -> Path:

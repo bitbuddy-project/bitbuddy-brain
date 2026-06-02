@@ -8,7 +8,9 @@ from ..config import load_config
 from ..continuity import build_continuity_digest
 from ..lifecycle import lifecycle_status
 from ..memory.project import list_projects, project_model
+from ..self_model import goal_task_state, list_goals
 from ..self_notes import select_self_notes_for_context
+from ..workspace import latest_document_for_goal
 from .intentions import list_pending_intentions
 
 
@@ -28,8 +30,9 @@ def build_autonomy_context(chat_id: str, consolidation_result: dict[str, object]
         "[Available Fixed Activities]",
         "- web_curiosity: search SearxNG, reflect, optionally remember or queue a later thought.",
         "- project_familiarization: read already-registered project files only and update project memory.",
-        "- generate_user_prompts: create questions/comments for the future intention queue.",
-        "- self_reflection: update BitBuddy's self-state, goals, or emergent personality from grounded evidence.",
+        "- generate_user_prompts: create only high-signal questions/comments for the future intention queue; skip if nothing is genuinely worth surfacing.",
+        "- self_reflection: update BitBuddy's self-state, goals, desire for bounded freedom, or emergent personality from grounded evidence.",
+        "- pursue_goal: safely advance BitBuddy's own autonomy-allowed goals and leave useful notes in AI Space.",
         "- network_observation: currently not implemented; execution will skip safely.",
         "- do_nothing: stop without action.",
         "",
@@ -63,6 +66,41 @@ def build_autonomy_context(chat_id: str, consolidation_result: dict[str, object]
             lines.append(f"  purpose: {card.get('purpose')}")
         if card.get("current_status"):
             lines.append(f"  status: {card.get('current_status')}")
+    actionable_goals = [
+        goal for goal in list_goals(include_done=False, limit=12)
+        if goal.status == "active" and goal.autonomy_allowed and goal.risk_level <= 1 and goal.next_action.strip()
+    ]
+
+    in_progress = [
+        (goal, goal_task_state(goal))
+        for goal in actionable_goals
+        if goal_task_state(goal).get("status") == "in_progress"
+    ]
+    if in_progress:
+        lines.extend(["", "[In-Progress Task — resume this, do not restart]"])
+        for goal, state in in_progress[:3]:
+            plan = state.get("plan") if isinstance(state.get("plan"), list) else []
+            step_index = int(state.get("step_index") or 0)
+            current_step = plan[step_index] if 0 <= step_index < len(plan) else (goal.next_action or "continue")
+            lines.append(f"- goal {goal.id}: {goal.title}")
+            lines.append(f"  on step {step_index + 1}/{max(len(plan), step_index + 1)}: {current_step}")
+        lines.append("Choose pursue_goal on the in-progress goal to finish what you already started, unless it is blocked.")
+
+    lines.extend(["", "[Active Self-Goals]"])
+    if not actionable_goals:
+        lines.append("No autonomy-allowed goals with a concrete next action.")
+    for goal in actionable_goals[:6]:
+        state = goal_task_state(goal)
+        lines.append(f"- goal {goal.id}: {goal.title}")
+        lines.append(f"  next_action: {goal.next_action}")
+        if state.get("status"):
+            task_line = f"  task: {state.get('status')}"
+            if state.get("status") == "blocked" and state.get("blocked_reason"):
+                task_line += f" — {state.get('blocked_reason')}"
+            lines.append(task_line)
+        latest = latest_document_for_goal(str(goal.id))
+        if latest is not None:
+            lines.append(f"  recent progress: \"{latest.title}\" ({latest.kind}, updated {latest.updated_at})")
     lines.extend(["", "[Recent Activity]"])
     for item in list_activity(limit=12):
         lines.append(f"- {item['created_at']} {item['kind']}: {item['message']}")

@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from ..autonomy.intentions import cleanup_intention_queue
+from ..memory.store import backfill_memory_embeddings
 from ..self_model import goal_review_summary, personality_evolution_review
 from ..self_notes import cleanup_self_notes
 
@@ -17,7 +18,7 @@ class DreamTaskResult:
 
 
 def minidream_tasks() -> list[str]:
-    return ["queue_cleanup", "self_note_cleanup", "goal_review", "personality_evolution_review"]
+    return ["queue_cleanup", "self_note_cleanup", "goal_review", "personality_evolution_review", "embedding_backfill"]
 
 
 def run_dream_task(kind: str, *, now: datetime | None = None) -> DreamTaskResult:
@@ -34,4 +35,7 @@ def run_dream_task(kind: str, *, now: datetime | None = None) -> DreamTaskResult
     if kind == "personality_evolution_review":
         changes = personality_evolution_review()
         return DreamTaskResult(kind, "Reviewed emergent personality traits and project affinities.", changes)
+    if kind == "embedding_backfill":
+        changes = backfill_memory_embeddings(limit=100)
+        return DreamTaskResult(kind, f"Embedded {changes.get('embedded', 0)} memory vector(s) for semantic recall.", changes)
     return DreamTaskResult(kind, "Unknown dream task skipped.", {"skipped": True})

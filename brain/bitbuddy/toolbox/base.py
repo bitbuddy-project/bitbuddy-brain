@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..memory.layers import layer_catalog
-from ..paths import ARTIFACTS_DIR
+from ..paths import ARTIFACTS_DIR, WORKSPACE_DIR
 
 TOOL_CALL_PREFIX = "tool_call:"
 XML_TOOL_CALL_TAGS = ("bitbuddy_tool_call", "tool_call")
@@ -185,6 +185,7 @@ class ToolResult:
     arguments_summary: dict[str, object]
     truncated: bool = False
     error: str = ""
+    metadata: dict[str, object] | None = None
 
     def to_model_message(self) -> dict[str, str]:
         """Return the completed tool result as provider-visible working context.
@@ -366,7 +367,33 @@ def is_debug_related_call(call: ToolCall, mode_context: str = "") -> bool:
     return any(keyword in text for keyword in DEBUG_RELATED_KEYWORDS)
 
 
-def tool_instruction_message(registry: ToolRegistry) -> dict[str, str]:
+def openai_tools_schema(registry: ToolRegistry, mode: str = "chat") -> list[dict[str, object]]:
+    """Build an OpenAI-style tools array for native function calling.
+
+    Each registered ToolDefinition becomes a {"type":"function","function":{...}}
+    entry using its existing JSON-Schema arguments. In Plan mode only read-only
+    tools are advertised so the model does not attempt writes the executor would
+    block; the ToolExecutor still enforces all mode boundaries regardless.
+    """
+    normalized = normalize_mode(mode)
+    tools: list[dict[str, object]] = []
+    for definition in registry.definitions():
+        if normalized == "plan" and definition.name not in READ_ONLY_TOOLS and not is_mcp_read_only_tool(definition):
+            continue
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": definition.name,
+                    "description": definition.description,
+                    "parameters": definition.arguments_schema,
+                },
+            }
+        )
+    return tools
+
+
+def tool_instruction_message(registry: ToolRegistry, native_tools: bool = False) -> dict[str, str]:
     tool_lines = []
     for definition in registry.definitions():
         schema = json.dumps(definition.arguments_schema, sort_keys=True)
@@ -390,24 +417,27 @@ def tool_instruction_message(registry: ToolRegistry) -> dict[str, str]:
         "- Do not run desktop input tools concurrently; desktop control is stateful.",
     ] if has_desktop_mcp else []
 
-    content = "\n".join(
-        [
-            "You may use tools when they help. You may also answer directly.",
-            "Do not claim tools are unavailable when this [Available Tools] section is present.",
-            "",
+    if native_tools:
+        format_lines = [
+            "Tool calling:",
+            "- Tools are provided through the native function-calling interface. To use one, issue a real tool/function call — do not write tool calls as text in your reply.",
+            "- Call a tool only when it genuinely helps; otherwise answer normally in plain prose.",
+            "Tool results are working context. Do not paste raw tool/file output unless the user explicitly asks to see the full raw contents.",
+            "When the user asks you to create/save/write/generate/export/update/edit/modify/tweak a file, you must actually call write_file/patch_file/make_directory (or a script + run_shell_command). Do not say 'saved to' or 'updated' or provide only a code block unless such a tool call actually succeeded.",
+            "Do not invent tools. If asked to list tools, list only the exact tools in [Available Tools]; do not mention web browsing, external browsing, hidden tools, or permission behavior unless such a tool is actually listed.",
+        ]
+        example_lines: list[str] = []
+    else:
+        format_lines = [
             "Tool call format:",
             'tool_call: {"name": "TOOL_NAME", "arguments": {"ARG": "VALUE"}}',
-			"",
-			"When calling tools, output only one or more valid tool_call lines, one JSON object per line. Otherwise, respond normally.",
+            "",
+            "When calling tools, output only one or more valid tool_call lines, one JSON object per line. Otherwise, respond normally.",
             "Tool results are working context. Do not paste raw tool/file output unless the user explicitly asks to see the full raw contents.",
             "When the user asks you to create/save/write/generate/export/update/edit/modify/tweak a file, you must use tools to create or change it. Do not say 'saved to' or 'updated' or provide only a code block unless a write_file/patch_file/make_directory or script+run_shell_command tool sequence actually succeeded.",
             "Do not invent tools. If asked to list tools, list only the exact tools in [Available Tools]; do not mention web browsing, external browsing, hidden tools, or permission behavior unless such a tool is actually listed.",
-            "",
-            "Mode boundaries:",
-            "- Chat: mode boundaries do not restrict tool use; normal runtime permission checks still apply.",
-            "- Plan: strictly read-only. You may search/read/inspect only. Do not write, create, update, archive, move, merge, delete, install, test/build, or mutate files, memories, projects, or system state.",
-            "- Debug: read freely. Write/create/update/archive/move/merge/delete only when directly related to diagnosing, reproducing, testing, or fixing a bug/error/failure.",
-            "- The runtime enforces these boundaries. If a tool is blocked, answer with what you can do in the current mode or ask the user to switch modes.",
+        ]
+        example_lines = [
             "",
             "Useful examples:",
             'tool_call: {"name": "glob_files", "arguments": {"pattern": "**/*.py"}}',
@@ -420,6 +450,21 @@ def tool_instruction_message(registry: ToolRegistry) -> dict[str, str]:
             'tool_call: {"name": "move_memory", "arguments": {"memory_id": "abc-123", "new_layer": "semantic", "reason": "This was saved as episodic, but it is a durable factual concept."}}',
             'tool_call: {"name": "record_project_memory", "arguments": {"project_id": "stasis-c3804eb0", "category": "decision", "content": "We chose SQLite over JSON for the local cache."}}',
             'tool_call: {"name": "update_project_memory", "arguments": {"project_id": "stasis-c3804eb0", "section": "project_overview", "data": {"current_status": "Settings now includes a saved local-context timezone setup."}}}',
+        ]
+
+    content = "\n".join(
+        [
+            "You may use tools when they help. You may also answer directly.",
+            "Do not claim tools are unavailable when this [Available Tools] section is present.",
+            "",
+            *format_lines,
+            "",
+            "Mode boundaries:",
+            "- Chat: mode boundaries do not restrict tool use; normal runtime permission checks still apply.",
+            "- Plan: strictly read-only. You may search/read/inspect only. Do not write, create, update, archive, move, merge, delete, install, test/build, or mutate files, memories, projects, or system state.",
+            "- Debug: read freely. Write/create/update/archive/move/merge/delete only when directly related to diagnosing, reproducing, testing, or fixing a bug/error/failure.",
+            "- The runtime enforces these boundaries. If a tool is blocked, answer with what you can do in the current mode or ask the user to switch modes.",
+            *example_lines,
             "",
             "Memory Stewardship:",
             "- You have six canonical durable memory layers:",
@@ -752,8 +797,7 @@ def is_default_artifact_write(call: ToolCall) -> bool:
         try:
             candidate = Path(file_path).expanduser()
             if candidate.is_absolute():
-                candidate.resolve().relative_to(ARTIFACTS_DIR.resolve())
-                return True
+                return _is_under_managed_root(candidate)
         except Exception:
             return False
 
@@ -765,11 +809,21 @@ def is_default_artifact_write(call: ToolCall) -> bool:
         root_path = Path(root).expanduser()
         if not root_path.is_absolute():
             root_path = (Path.cwd() / root_path).resolve()
-        root_path = root_path.resolve()
-        root_path.relative_to(ARTIFACTS_DIR.resolve())
-        return True
+        return _is_under_managed_root(root_path)
     except Exception:
         return False
+
+
+def _is_under_managed_root(candidate: Path) -> bool:
+    """True when an absolute path resolves inside a BitBuddy-managed write root."""
+    resolved = candidate.resolve()
+    for root in (ARTIFACTS_DIR, WORKSPACE_DIR):
+        try:
+            resolved.relative_to(root.resolve())
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def is_path_outside_home(path_str: str) -> bool:

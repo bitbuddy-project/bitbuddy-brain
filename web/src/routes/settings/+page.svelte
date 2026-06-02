@@ -13,11 +13,13 @@
 		installComputerUseLinux,
 		doctorComputerUseLinux,
 		updateAutonomyConfig,
+		updateChatConfig,
 		updateDreamingConfig,
 		updateMcpConfig,
 		updateModelRuntimeConfig,
 		updateUserContext,
 		type AutonomyConfig,
+		type ChatConfig,
 		type DreamingConfig,
 		type McpConfig,
 		type McpStatus,
@@ -59,6 +61,15 @@
 	let contextStatus = $state('');
 	let localContextOpen = $state(false);
 	let chatBehaviorOpen = $state(false);
+	let chatConfigSaving = $state(false);
+	let chatConfigError = $state('');
+	let chatConfigStatus = $state('');
+	let chatConfig = $state<ChatConfig>({
+		return_greeting_enabled: true,
+		return_greeting_idle_minutes: 60,
+		return_greeting_phrases: ['Hey, welcome back.', 'Hi, welcome back.'],
+		max_tool_rounds: 99
+	});
 	let modelRuntimeOpen = $state(false);
 	let mcpOpen = $state(false);
 	let autonomyControlsOpen = $state(false);
@@ -139,6 +150,7 @@
 		try {
 			const config = await getConfig();
 			userContext = config.user_context ?? userContext;
+			chatConfig = config.chat ?? chatConfig;
 			modelRuntime = {
 				provider: config.provider,
 				project_scan_interval_seconds: config.runtime?.project_scan_interval_seconds ?? modelRuntime.project_scan_interval_seconds
@@ -157,11 +169,13 @@
 			await refreshMcpStatus();
 			contextError = '';
 			modelError = '';
+			chatConfigError = '';
 			mcpError = '';
 			autonomyError = '';
 			dreamingError = '';
 		} catch (caught) {
 			contextError = caught instanceof Error ? caught.message : 'Could not load local context.';
+			chatConfigError = caught instanceof Error ? caught.message : 'Could not load chat settings.';
 			modelError = caught instanceof Error ? caught.message : 'Could not load model and runtime settings.';
 			autonomyError = caught instanceof Error ? caught.message : 'Could not load autonomy settings.';
 			dreamingError = caught instanceof Error ? caught.message : 'Could not load dreaming settings.';
@@ -298,6 +312,26 @@
 			contextStatus = '';
 		} finally {
 			contextSaving = false;
+		}
+	}
+
+	async function saveChatConfig() {
+		const next: ChatConfig = {
+			...chatConfig,
+			max_tool_rounds: Math.max(1, Number(chatConfig.max_tool_rounds) || 99)
+		};
+
+		chatConfigSaving = true;
+		try {
+			const config = await updateChatConfig(next);
+			chatConfig = config.chat ?? next;
+			chatConfigStatus = 'Chat settings saved. New chat turns will use this tool-call budget.';
+			chatConfigError = '';
+		} catch (caught) {
+			chatConfigError = caught instanceof Error ? caught.message : 'Could not save chat settings.';
+			chatConfigStatus = '';
+		} finally {
+			chatConfigSaving = false;
 		}
 	}
 
@@ -510,17 +544,22 @@
 				>
 					<span>
 						Chat behavior
-						<small>Typing speed and response display preferences</small>
+						<small>Typing speed, response display, and tool-call budget</small>
 					</span>
 					<div class="row-meta">
 						<span class="badge">{chatBehavior.replyAnimation}</span>
+						<span class="badge">{chatConfig.max_tool_rounds} tools</span>
 						<span class="row-caret"><CaretRightIcon size={18} /></span>
 					</div>
 				</button>
 
 				{#if chatBehaviorOpen}
 					<div class="collapsible-panel">
-						<p class="section-intro">Choose how assistant replies appear while they stream into chat.</p>
+						<p class="section-intro">Choose how assistant replies appear while they stream into chat, and cap how many tool calls a single chat turn may run.</p>
+
+						{#if chatConfigError}
+							<div class="inline-error">{chatConfigError}</div>
+						{/if}
 
 						<div class="animation-grid">
 							{#each replyAnimations as option}
@@ -537,6 +576,26 @@
 								</button>
 							{/each}
 						</div>
+
+						<div class="context-panel compact-context-panel">
+							<label class="mock-item field-row">
+								<span>
+									Tool call budget
+									<small>Maximum tool calls BitBuddy can run in one chat turn; lower is faster, higher allows deeper multi-step work</small>
+								</span>
+								<input type="number" min="1" bind:value={chatConfig.max_tool_rounds} disabled={contextLoading || chatConfigSaving} />
+							</label>
+						</div>
+
+						<div class="context-actions">
+							<button class="primary-action" onclick={saveChatConfig} disabled={contextLoading || chatConfigSaving}>
+								{chatConfigSaving ? 'Saving...' : 'Save chat settings'}
+							</button>
+						</div>
+
+						{#if chatConfigStatus}
+							<p class="save-status">{chatConfigStatus}</p>
+						{/if}
 					</div>
 				{/if}
 			</div>
@@ -999,7 +1058,7 @@
 	.settings-page {
 		box-sizing: border-box;
 		width: 100%;
-		max-width: 90rem;
+		max-width: 100%;
 		min-width: 0;
 		height: 100%;
 		min-height: 0;
@@ -1224,6 +1283,10 @@
 		border: 1px solid var(--border);
 		border-radius: 1.25rem;
 		background: var(--panel);
+	}
+
+	.compact-context-panel {
+		margin-top: 1rem;
 	}
 
 	.animation-grid {

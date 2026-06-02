@@ -416,19 +416,19 @@
 	}
 
 	.message {
-		padding: 1.3rem 1.1rem;
-		border: 1px solid var(--border-strong);
+		padding: 1.12rem 1.05rem;
+		border: 1px solid var(--card-border, var(--border-strong));
 		border-radius: 1.15rem;
 		background:
-			linear-gradient(180deg, var(--glass-overlay, rgba(255, 255, 255, 0.04)), rgba(255, 255, 255, 0.01)),
-			var(--panel-raised);
+			linear-gradient(180deg, var(--glass-overlay, rgba(255, 255, 255, 0.035)), rgba(255, 255, 255, 0.008)),
+			var(--card-bg, var(--panel-raised));
 		box-shadow: var(--shadow-soft);
 	}
 
 	.message-row.user .message {
 		border-color: var(--mode-border, var(--border));
 		background:
-			linear-gradient(180deg, var(--glass-overlay, rgba(255, 255, 255, 0.06)), rgba(255, 255, 255, 0.01)),
+			linear-gradient(180deg, var(--glass-overlay, rgba(255, 255, 255, 0.045)), rgba(255, 255, 255, 0.008)),
 			var(--mode-soft);
 	}
 

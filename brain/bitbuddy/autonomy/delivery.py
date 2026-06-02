@@ -8,7 +8,7 @@ from ..continuity import record_continuity_event
 from ..memory.project import load_project
 from ..providers import ProviderClient
 from .decision import collect_model_text
-from .intentions import Intention, list_pending_intentions, mark_intention_used, mark_intention_shown, next_eligible_intention, record_intention_surface
+from .intentions import Intention, list_pending_intentions, mark_intention_used, mark_intention_shown, next_eligible_intention, record_intention_surface, update_intention_status
 
 
 def deliver_pending_intention(chat_id: str, model: str | None = None) -> Intention | None:
@@ -16,11 +16,13 @@ def deliver_pending_intention(chat_id: str, model: str | None = None) -> Intenti
     if config.provider.type == "none":
         return None
 
-    intentions = list_pending_intentions(limit=1)
-    if not intentions:
+    if not list_pending_intentions(limit=1):
         return None
 
-    return deliver_intention(chat_id, intentions[0], model=model, delivery_source="autonomy")
+    intention = next_eligible_intention(chat_id, latest_user_text="", response_text="")
+    if intention is None:
+        return None
+    return deliver_intention(chat_id, intention, model=model, delivery_source="autonomy")
 
 
 def deliver_intention(
@@ -53,8 +55,10 @@ def deliver_intention(
         "[Intention Delivery]",
         "You have a pending question or comment from idle autonomy.",
         "Generate a single natural chat message to the user that brings this up.",
+        "If the stored content is generic, low-signal, or not worth interrupting with, return exactly SKIP.",
         "Only ask a question if it is important and specific enough to be worth the interruption. Do not turn filler into a question.",
-        "Playful or silly comments are allowed only when the stored content/context shows that tone is welcome.",
+        "Comments must contain a specific useful finding, tradeoff, risk, or meaningful progress. Do not deliver receipts like 'I left a note'.",
+        "Playful or silly comments are allowed only when the stored content/context shows that tone is welcome and still useful.",
         "Be specific and natural, mentioning relevant context so the user knows what you are referring to.",
         "If project context is provided, mention the project name unless the content already makes the project obvious.",
         "Write it as if you are spontaneously speaking to the user. Do not mention autonomy, intentions, or that this was generated.",
@@ -76,6 +80,9 @@ def deliver_intention(
 
     response = collect_model_text(client, messages, model=model)
     if not response:
+        return None
+    if response.strip().upper() == "SKIP":
+        update_intention_status(intention.id, "stale")
         return None
 
     append_chat_message(

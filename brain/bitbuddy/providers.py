@@ -10,18 +10,43 @@ from typing import Any, Iterable, Literal
 from .config import ProviderConfig
 
 
-StreamKind = Literal["thinking", "response"]
+StreamKind = Literal["thinking", "response", "tool_call"]
 STREAM_READ_TIMEOUT_SECONDS = 900
+NATIVE_TOOL_PROBE_TIMEOUT_SECONDS = 30
 NO_THINKING_SYSTEM_MESSAGE = (
     "Thinking/reasoning mode is disabled for this request. "
     "Do not emit hidden reasoning, reasoning_content, or <think> blocks; answer directly."
 )
 
 
+def reasoning_budget_tokens() -> int:
+    """Configured reasoning budget for thinking turns (-1 = unlimited)."""
+    try:
+        from .config import load_config
+
+        return load_config().chat.reasoning_budget_tokens
+    except Exception:
+        return -1
+
+
+@dataclass(frozen=True)
+class StreamToolCall:
+    """A complete native (function-calling) tool call assembled from the stream."""
+
+    name: str
+    arguments: str  # raw JSON string as emitted by the provider
+    call_id: str = ""
+
+
 @dataclass(frozen=True)
 class StreamChunk:
     kind: StreamKind
     text: str
+    tool_call: "StreamToolCall | None" = None
+
+
+# Per-process cache for native-tool capability, keyed by (type, url, model).
+_native_tools_cache: dict[tuple[str, str, str], bool] = {}
 
 
 class ThinkingSplitter:
@@ -103,14 +128,66 @@ class ProviderClient:
         model: str | None = None,
         should_cancel: Callable[[], bool] | None = None,
         thinking_enabled: bool = True,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
     ) -> Iterable[StreamChunk]:
         if self.config.type == "ollama":
-            yield from self._stream_ollama(messages, model or self.config.model, should_cancel, thinking_enabled)
+            yield from self._stream_ollama(messages, model or self.config.model, should_cancel, thinking_enabled, tools, tool_choice)
             return
         if self.config.type == "llama.cpp":
-            yield from self._stream_llama_cpp(messages, model or self.config.model, should_cancel, thinking_enabled)
+            yield from self._stream_llama_cpp(messages, model or self.config.model, should_cancel, thinking_enabled, tools, tool_choice)
             return
         raise ValueError("No model provider configured.")
+
+    def supports_native_tools(self, model: str | None = None) -> bool:
+        """Whether the provider reliably supports OpenAI-style native tool calling.
+
+        Honors config.provider.native_tools ("auto" | "on" | "off"). On "auto" this
+        runs one cheap probe and caches the result for the process lifetime; on any
+        failure it returns False so callers fall back to the text tool protocol.
+        """
+        setting = str(getattr(self.config, "native_tools", "auto") or "auto").lower()
+        if setting == "off" or self.config.type not in ("llama.cpp", "ollama"):
+            return False
+        if setting == "on":
+            return True
+        selected = model or self.config.model
+        key = (self.config.type, self.config.url, selected)
+        if key not in _native_tools_cache:
+            _native_tools_cache[key] = self._probe_native_tools(selected)
+        return _native_tools_cache[key]
+
+    def _probe_native_tools(self, model: str) -> bool:
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "_probe",
+                    "description": "Capability probe. Call it once to confirm tool support.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok"],
+                    },
+                },
+            }
+        ]
+        messages = [{"role": "user", "content": "Call the _probe tool with ok=true now."}]
+        try:
+            if self.config.type == "llama.cpp":
+                payload: dict[str, object] = {"messages": messages, "tools": tools, "tool_choice": "auto", "stream": False, "max_tokens": 64}
+                if model:
+                    payload["model"] = model
+                data = post_json(f"{self.config.url.rstrip('/')}/v1/chat/completions", payload, timeout=NATIVE_TOOL_PROBE_TIMEOUT_SECONDS)
+                choices = data.get("choices") or []
+                message = (choices[0].get("message") if choices else {}) or {}
+                return bool(message.get("tool_calls"))
+            payload = {"model": model, "messages": messages, "tools": tools, "stream": False}
+            data = post_json(f"{self.config.url.rstrip('/')}/api/chat", payload, timeout=NATIVE_TOOL_PROBE_TIMEOUT_SECONDS)
+            message = data.get("message") or {}
+            return bool(message.get("tool_calls"))
+        except (OSError, urllib.error.URLError, urllib.error.HTTPError, ValueError, KeyError, IndexError):
+            return False
 
     def models(self) -> list[str]:
         if self.config.type == "ollama":
@@ -192,12 +269,61 @@ class ProviderClient:
             return result
         return result
 
+    def embedding_model_name(self, model: str | None = None) -> str:
+        return (model or getattr(self.config, "embedding_model", "") or "").strip()
+
+    def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
+        """Return embedding vectors for texts. Empty list when unavailable (caller falls back to FTS)."""
+        clean_texts = [str(text or "").strip() for text in texts]
+        if not clean_texts or all(not text for text in clean_texts):
+            return []
+        selected_model = self.embedding_model_name(model)
+        base_url = (getattr(self.config, "embedding_url", "") or self.config.url).rstrip("/")
+
+        if self.config.type == "ollama":
+            if not selected_model:
+                return []
+            vectors: list[list[float]] = []
+            for text in clean_texts:
+                try:
+                    data = post_json(f"{base_url}/api/embeddings", {"model": selected_model, "prompt": text})
+                except (OSError, urllib.error.URLError, urllib.error.HTTPError):
+                    return []
+                embedding = data.get("embedding")
+                if not isinstance(embedding, list) or not embedding:
+                    return []
+                vectors.append([float(value) for value in embedding])
+            return vectors
+
+        if self.config.type == "llama.cpp":
+            payload: dict[str, object] = {"input": clean_texts}
+            if selected_model:
+                payload["model"] = selected_model
+            try:
+                data = post_json(f"{base_url}/v1/embeddings", payload)
+            except (OSError, urllib.error.URLError, urllib.error.HTTPError):
+                return []
+            rows = data.get("data")
+            if not isinstance(rows, list) or not rows:
+                return []
+            vectors = []
+            for row in rows:
+                embedding = row.get("embedding") if isinstance(row, dict) else None
+                if not isinstance(embedding, list) or not embedding:
+                    return []
+                vectors.append([float(value) for value in embedding])
+            return vectors
+
+        return []
+
     def _stream_ollama(
         self,
         messages: list[dict[str, Any]],
         model: str,
         should_cancel: Callable[[], bool] | None = None,
         thinking_enabled: bool = True,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
     ) -> Iterable[StreamChunk]:
         if not model:
             raise ValueError("Ollama requires a model name.")
@@ -210,6 +336,8 @@ class ProviderClient:
                 "num_ctx": 16384,
             },
         }
+        if tools:
+            payload["tools"] = tools
         splitter = ThinkingSplitter(emit_thinking=thinking_enabled)
         try:
             for data in post_json_lines(f"{self.config.url.rstrip('/')}/api/chat", payload):
@@ -219,6 +347,15 @@ class ProviderClient:
                 thinking = data.get("thinking") or message.get("thinking") or data.get("reasoning")
                 if thinking and thinking_enabled:
                     yield StreamChunk("thinking", str(thinking))
+                # Ollama returns fully-formed tool calls (arguments as an object), not fragments.
+                for call in message.get("tool_calls") or []:
+                    function = call.get("function") or {} if isinstance(call, dict) else {}
+                    name = str(function.get("name") or "").strip()
+                    if not name:
+                        continue
+                    raw_arguments = function.get("arguments")
+                    arguments = json.dumps(raw_arguments) if isinstance(raw_arguments, (dict, list)) else str(raw_arguments or "{}")
+                    yield StreamChunk("tool_call", "", StreamToolCall(name=name, arguments=arguments))
                 content = message.get("content") or data.get("response") or ""
                 if content:
                     yield from splitter.feed(str(content))
@@ -236,6 +373,8 @@ class ProviderClient:
         model: str,
         should_cancel: Callable[[], bool] | None = None,
         thinking_enabled: bool = True,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
     ) -> Iterable[StreamChunk]:
         payload = {
             "messages": openai_messages(provider_messages(messages, thinking_enabled=thinking_enabled)),
@@ -248,9 +387,20 @@ class ProviderClient:
             payload["reasoning_format"] = "none"
             payload["thinking_budget_tokens"] = 0
             payload["reasoning_budget_tokens"] = 0
+        else:
+            # Explicitly request a generous reasoning budget so the server does not
+            # truncate mid-plan and inject a forced "answer now" continuation, which
+            # pushes the model into narrating work instead of issuing tool calls.
+            budget = reasoning_budget_tokens()
+            payload["thinking_budget_tokens"] = budget
+            payload["reasoning_budget_tokens"] = budget
         if model:
             payload["model"] = model
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
         splitter = ThinkingSplitter(emit_thinking=thinking_enabled)
+        tool_accumulator: dict[int, dict[str, str]] = {}
         try:
             for data in post_sse_json(f"{self.config.url.rstrip('/')}/v1/chat/completions", payload):
                 if should_cancel and should_cancel():
@@ -262,6 +412,8 @@ class ProviderClient:
                 reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                 if reasoning and thinking_enabled:
                     yield StreamChunk("thinking", str(reasoning))
+                for fragment in delta.get("tool_calls") or []:
+                    accumulate_tool_call_fragment(tool_accumulator, fragment)
                 content = delta.get("content") or ""
                 if content:
                     yield from splitter.feed(str(content))
@@ -272,6 +424,49 @@ class ProviderClient:
             raise
         if not should_cancel or not should_cancel():
             yield from splitter.flush()
+            yield from emit_accumulated_tool_calls(tool_accumulator)
+
+
+def accumulate_tool_call_fragment(accumulator: dict[int, dict[str, str]], fragment: dict[str, Any]) -> None:
+    """Merge one streamed OpenAI tool_call delta fragment into the accumulator.
+
+    Streamed tool calls arrive in pieces: the first fragment for an index carries
+    the id and function name, later fragments append argument-string chunks.
+    """
+    if not isinstance(fragment, dict):
+        return
+    index = fragment.get("index")
+    index = int(index) if isinstance(index, int) else 0
+    slot = accumulator.setdefault(index, {"id": "", "name": "", "arguments": ""})
+    call_id = fragment.get("id")
+    if isinstance(call_id, str) and call_id:
+        slot["id"] = call_id
+    function = fragment.get("function") or {}
+    if isinstance(function, dict):
+        name = function.get("name")
+        if isinstance(name, str) and name:
+            slot["name"] = name
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            slot["arguments"] += arguments
+
+
+def emit_accumulated_tool_calls(accumulator: dict[int, dict[str, str]]) -> Iterable[StreamChunk]:
+    """Yield one tool_call StreamChunk per fully-assembled call, in index order."""
+    for index in sorted(accumulator):
+        slot = accumulator[index]
+        if not slot.get("name"):
+            continue
+        yield StreamChunk(
+            "tool_call",
+            "",
+            StreamToolCall(name=slot["name"], arguments=slot.get("arguments", ""), call_id=slot.get("id", "")),
+        )
+
+
+def provider_supports_native_tools(config: ProviderConfig, model: str | None = None) -> bool:
+    """Convenience wrapper so prompt building and the runtime share the cached probe."""
+    return ProviderClient(config).supports_native_tools(model)
 
 
 def provider_health_endpoints(config: ProviderConfig) -> list[str]:
@@ -296,14 +491,14 @@ def post_json_lines(url: str, payload: dict[str, object]) -> Iterable[dict[str, 
                 yield json.loads(line)
 
 
-def post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
+def post_json(url: str, payload: dict[str, object], timeout: int = 10) -> dict[str, object]:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8") or "{}")
 
 

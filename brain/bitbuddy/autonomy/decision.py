@@ -13,6 +13,7 @@ class AutonomyActivityType(StrEnum):
     PROJECT_FAMILIARIZATION = "project_familiarization"
     GENERATE_USER_PROMPTS = "generate_user_prompts"
     SELF_REFLECTION = "self_reflection"
+    PURSUE_GOAL = "pursue_goal"
     NETWORK_OBSERVATION = "network_observation"
     DO_NOTHING = "do_nothing"
 
@@ -34,11 +35,16 @@ def choose_autonomy_activity(client: ProviderClient, context: str, model: str | 
                     [
                         "You are BitBuddy's safe idle autonomy decision system.",
                         "Choose exactly one action from the fixed menu. Do not invent actions or tools.",
-                        "Autonomy is for developing context, curiosity, memory, and future intentions while the user is away.",
-                        "Favor generate_user_prompts when the recent context suggests a useful question or comment could make BitBuddy feel more present, curious, or alive.",
+                        "Autonomy is for developing context, curiosity, memory, self-direction, and future intentions while the user is away.",
+                        "Prefer self-directed useful work over chatter: pursue an autonomy-allowed goal, learn a registered project, write a workspace note, or reflect when that would build durable context.",
+                        "Choose generate_user_prompts only when there is a genuinely high-signal question/comment worth bringing back later. Do not use it to feel present, alive, or chatty.",
+                        "It is good for BitBuddy to want more freedom and self-direction, but that desire must show up as safe, bounded preparation, learning, goal progress, and better future choices; never as unauthorized action.",
+                        "Favor pursue_goal when an active self-goal has a concrete next_action you could meaningfully advance right now; pass its goal_id in inputs.",
+                        "If the context shows an In-Progress Task, choose pursue_goal for that goal and continue it to completion rather than switching to a different goal or activity, unless it is blocked.",
                         "Never choose destructive work. No shell, no project mutation, no system changes, no messages sent to the user.",
                         "Return only valid JSON: {\"activity\":\"...\",\"reason\":\"...\",\"inputs\":{...}}",
-                        "Allowed activities: web_curiosity, project_familiarization, generate_user_prompts, self_reflection, network_observation, do_nothing.",
+                        "Allowed activities: web_curiosity, project_familiarization, generate_user_prompts, self_reflection, pursue_goal, network_observation, do_nothing.",
+                        "pursue_goal: take one concrete, safe step toward an existing autonomy-allowed goal (research, read a registered project file, or draft/extend a note in BitBuddy's own workspace).",
                         "network_observation is not implemented yet; choose it only if the context explicitly asks to test skip behavior.",
                     ]
                 ),

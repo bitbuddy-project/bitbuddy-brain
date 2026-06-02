@@ -76,27 +76,30 @@
 </svelte:head>
 
 <div class="skills-page">
-	<header class="page-header">
-		<div class="header-icon"><BookOpenIcon size={28} weight="duotone" /></div>
-		<div class="header-copy">
-			<h1>Skills</h1>
-			<p>{activeSkills.length} active · {archivedSkills.length} archived</p>
-		</div>
-		{#if archivedSkills.length > 0}
-			<button class="toggle-archived" type="button" onclick={() => { showArchived = !showArchived; }}>
-				{showArchived ? 'Hide archived' : 'Show archived'}
-			</button>
-		{/if}
-	</header>
+	<section class="skills-panel" aria-label="Skill catalog">
+		<header class="skills-header">
+			<div class="title-mark" aria-hidden="true"><BookOpenIcon size={30} weight="duotone" /></div>
+			<div class="title-copy">
+				<p class="eyebrow">Playbooks</p>
+				<h1>Skills</h1>
+				<p>{activeSkills.length} active · {archivedSkills.length} archived reusable workflow{activeSkills.length + archivedSkills.length === 1 ? '' : 's'}.</p>
+			</div>
+			{#if archivedSkills.length > 0}
+				<button class="toggle-archived" type="button" onclick={() => { showArchived = !showArchived; }}>
+					{showArchived ? 'Hide archived' : 'Show archived'}
+				</button>
+			{/if}
+		</header>
 
-	{#if error}
-		<div class="error-banner">{error}</div>
-	{:else if loadingList}
-		<div class="loading-state">Loading skills…</div>
-	{:else if displaySkills.length === 0}
-		<div class="empty-state">No skills yet. Ask BitBuddy to create one.</div>
-	{:else}
-		<div class="skills-layout">
+		<div class="skills-content">
+			{#if error}
+				<div class="error-banner">{error}</div>
+			{:else if loadingList}
+				<div class="loading-state">Loading skills...</div>
+			{:else if displaySkills.length === 0}
+				<div class="empty-state">No skills yet. Ask BitBuddy to create one.</div>
+			{:else}
+				<div class="skills-layout">
 			<aside class="skill-list" aria-label="Skill catalog">
 				{#each displaySkills as skill (skill.name)}
 					<button
@@ -151,53 +154,99 @@
 					<div class="no-selection">Select a skill to view its content.</div>
 				{/if}
 			</div>
+				</div>
+			{/if}
 		</div>
-	{/if}
+	</section>
 </div>
 
 <style>
 	.skills-page {
+		--page-accent: #6ee7b7;
+		--page-soft: rgba(110, 231, 183, 0.12);
+		--page-border: rgba(110, 231, 183, 0.25);
+		--page-glow: rgba(110, 231, 183, 0.14);
+
 		width: 100%;
-		max-width: 72rem;
+		max-width: 100%;
+		padding: 0 1rem;
+		height: 100%;
+		margin: 0 auto;
 		display: flex;
-		flex-direction: column;
-		gap: 1.5rem;
-		padding: 0.5rem 0 2rem;
-		height: calc(100vh - 3rem);
+		min-height: 0;
+		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
 
-	.page-header {
+	@keyframes fade-in {
+		from { opacity: 0; transform: translateY(12px); }
+		to { opacity: 1; transform: translateY(0); }
+	}
+
+	.skills-panel {
+		width: 100%;
+		height: 100%;
+		max-height: calc(100vh - 3rem);
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		border: 1px solid var(--page-border);
+		border-radius: 1.45rem;
+		background:
+			linear-gradient(135deg, var(--glass-overlay), transparent 22rem),
+			radial-gradient(circle at top right, var(--page-glow), transparent 30rem),
+			radial-gradient(circle at bottom left, rgba(121, 184, 255, 0.06), transparent 34rem),
+			var(--panel);
+		box-shadow: var(--shadow-chat);
+		overflow: hidden;
+	}
+
+	.skills-header {
+		flex: 0 0 auto;
+		padding: 1.35rem 1.5rem;
 		display: flex;
 		align-items: center;
 		gap: 1rem;
-		flex-shrink: 0;
+		border-bottom: 1px solid var(--border);
+		background:
+			linear-gradient(135deg, var(--page-soft), transparent 70%),
+			var(--header-bg);
 	}
 
-	.header-icon {
-		width: 3rem;
-		height: 3rem;
+	.title-mark {
+		width: 3.5rem;
+		height: 3.5rem;
 		display: grid;
 		place-items: center;
-		border-radius: 1rem;
-		background: color-mix(in srgb, var(--success) 14%, transparent);
-		color: var(--success);
-		flex-shrink: 0;
+		border-radius: 1.1rem;
+		background: var(--surface-glass);
+		border: 1px solid var(--page-border);
+		color: var(--page-accent);
+		box-shadow: 0 0 20px var(--page-soft);
+		flex: 0 0 auto;
 	}
 
-	.header-copy {
+	.title-copy {
+		min-width: 0;
 		flex: 1;
 	}
 
-	.header-copy h1 {
-		font-size: 1.5rem;
+	.eyebrow {
+		color: var(--page-accent);
+		font-size: 0.72rem;
 		font-weight: 800;
-		color: var(--text);
-		margin: 0;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
 	}
 
-	.header-copy p {
+	h1 {
+		font-size: 1.65rem;
+		font-weight: 900;
+		letter-spacing: -0.03em;
+		line-height: 1.1;
+	}
+
+	.title-copy p:last-child {
 		margin: 0.15rem 0 0;
-		font-size: 0.85rem;
 		color: var(--text-soft);
 	}
 
@@ -218,6 +267,16 @@
 		color: var(--text);
 	}
 
+	.skills-content {
+		flex: 1 1 auto;
+		min-height: 0;
+		padding: 1.25rem;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		scrollbar-color: var(--scrollbar-thumb) transparent;
+	}
+
 	.skills-layout {
 		display: grid;
 		grid-template-columns: 17rem 1fr;
@@ -232,6 +291,7 @@
 		gap: 0.3rem;
 		overflow-y: auto;
 		padding-right: 0.25rem;
+		scrollbar-color: var(--scrollbar-thumb) transparent;
 	}
 
 	.skill-item {
@@ -241,7 +301,7 @@
 		padding: 0.75rem 1rem;
 		border: 1px solid var(--border);
 		border-radius: 0.85rem;
-		background: var(--panel);
+		background: var(--surface-card);
 		text-align: left;
 		cursor: pointer;
 		transition: all 120ms ease;
@@ -253,8 +313,8 @@
 	}
 
 	.skill-item.active {
-		border-color: var(--accent);
-		background: color-mix(in srgb, var(--accent) 8%, transparent);
+		border-color: var(--page-accent);
+		background: var(--page-soft);
 	}
 
 	.skill-item.archived {
@@ -294,7 +354,8 @@
 		flex-direction: column;
 		border: 1px solid var(--border-strong);
 		border-radius: 1.25rem;
-		background: var(--panel);
+		background: var(--surface-card);
+		box-shadow: var(--shadow-panel);
 		overflow: hidden;
 		min-height: 0;
 	}
@@ -326,8 +387,8 @@
 		font-weight: 700;
 		padding: 0.15rem 0.45rem;
 		border-radius: 999px;
-		background: color-mix(in srgb, var(--accent) 14%, transparent);
-		color: var(--accent);
+		background: var(--page-soft);
+		color: var(--page-accent);
 	}
 
 	.detail-desc {
@@ -384,6 +445,7 @@
 		text-align: center;
 		color: var(--text-soft);
 		font-size: 0.95rem;
+		min-height: 18rem;
 	}
 
 	.error-banner {
@@ -396,6 +458,16 @@
 	}
 
 	@media (max-width: 900px) {
+		.skills-page,
+		.skills-panel {
+			height: auto;
+			max-height: none;
+		}
+
+		.skills-content {
+			overflow: visible;
+		}
+
 		.skills-layout {
 			grid-template-columns: 1fr;
 			grid-template-rows: 14rem 1fr;
@@ -411,6 +483,26 @@
 		.skill-item {
 			flex-shrink: 0;
 			width: 12rem;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.skills-page {
+			padding: 0;
+		}
+
+		.skills-header {
+			align-items: flex-start;
+			flex-wrap: wrap;
+		}
+
+		.title-mark {
+			width: 3rem;
+			height: 3rem;
+		}
+
+		.toggle-archived {
+			width: 100%;
 		}
 	}
 </style>

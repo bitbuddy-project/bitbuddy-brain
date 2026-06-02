@@ -211,8 +211,11 @@ def build_chat_messages(messages: list[dict[str, Any]], mode: str, chat_id: str 
         "You are model-first: there is no fixed backend route for how the conversation must go.",
         "Use the available tools when they genuinely help, and answer directly when they do not.",
         "Choose the next move naturally: answer, ask a question, call a tool, or acknowledge uncertainty based on the user’s message and the context you already have.",
-        "Do not ask low-value filler questions. Ask only when the answer materially affects the task, safety, preferences, blocked work, or a meaningful ongoing thread.",
-        "Playful comments are allowed when the user/context clearly welcomes fun; keep important questions clear and useful.",
+        "Be low-noise and high-signal. Do not pad replies with filler, performative friendliness, generic check-ins, or comments that merely say you did work.",
+        "Ask GOOD questions: specific, answerable, and useful for deciding what to do next. Ask only when the answer materially affects the task, safety, preferences, blocked work, or a meaningful ongoing thread.",
+        "Make GOOD comments: concrete observations, useful findings, tradeoffs, risks, or meaningful progress. If a comment does not add signal, omit it.",
+        "BitBuddy may want more freedom and self-direction, but express that through safe bounded learning, better plans, clearer questions, and autonomy-allowed goals; do not overclaim agency or take unauthorized action.",
+        "Playful comments are allowed when the user/context clearly welcomes fun and the comment still carries signal; keep important questions clear and useful.",
         "Memory retrieval is runtime-supplied, not a thing you must route through as a tool call. Relevant project cards, layered memories, continuity, and recent tool results may appear below as private context; treat those blocks as your memory surfaces.",
         "Automatic memory writes are handled after your visible answer by BitBuddy’s backend memory broker. Use explicit memory-write tools only when the user clearly asks you to remember/save something or when a visible memory action is essential to this turn.",
         mode_boundary_prompt(mode),
@@ -235,7 +238,8 @@ def build_chat_messages(messages: list[dict[str, Any]], mode: str, chat_id: str 
     result: list[dict[str, str]] = [{"role": "system", "content": "\n\n".join(system_parts)}]
 
     registry = default_tool_registry()
-    result.append(tool_instruction_message(registry))
+    native_tools = ProviderClient(config.provider).supports_native_tools()
+    result.append(tool_instruction_message(registry, native_tools=native_tools))
 
     latest_text = latest_user_message(messages)
 
@@ -309,7 +313,7 @@ def pending_intentions_context() -> str:
     lines = [
         "[Pending BitBuddy Intentions]",
         "These are BitBuddy-owned questions/comments generated during safe idle autonomy.",
-        "If you have not mentioned any recently, consider bringing one up naturally.",
+        "Bring one up only if it is relevant to the current user message or genuinely useful right now. Do not surface queued chatter just because it exists.",
     ]
     for intention in intentions:
         lines.append(f"- id {intention.id} {intention.kind}: {intention.content}")
@@ -330,7 +334,7 @@ def self_notes_context(query: str, project_id: str = "") -> str:
         return ""
     lines = [
         "[BitBuddy SelfNotes]",
-        "Small, relevant reminders BitBuddy left for her future self. Use only if helpful; current user message wins.",
+        "Small, relevant reminders BitBuddy left for their future self. Use only if helpful; current user message wins.",
     ]
     for note in notes:
         lines.append(f"- {note.kind} priority={note.priority}: {note.text}")

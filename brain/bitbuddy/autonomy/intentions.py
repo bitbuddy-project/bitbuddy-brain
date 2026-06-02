@@ -360,14 +360,41 @@ def intention_quality_allows_surface(intention: Intention) -> bool:
     """Respect quality metadata for newly generated intentions while preserving old rows."""
     quality = intention.metadata.get("quality") if isinstance(intention.metadata, dict) else None
     if not isinstance(quality, dict):
-        return True
+        return legacy_intention_content_allows_surface(intention)
     if quality.get("accepted") is False:
         return False
-    if intention.kind == "question":
-        importance = int_value(quality.get("importance"), 3)
-        if importance < 3:
-            return False
+    importance = int_value(quality.get("importance"), 3)
+    if intention.kind == "question" and importance < 4:
+        return False
+    if intention.kind in {"comment", "suggestion", "curiosity", "follow_up"} and importance < 4:
+        return False
     return True
+
+
+def legacy_intention_content_allows_surface(intention: Intention) -> bool:
+    """Apply a conservative gate to older queued rows that predate quality metadata."""
+    text = f"{intention.content}\n{intention.reason}".lower()
+    priority = int_value(intention.metadata.get("priority"), 3) if isinstance(intention.metadata, dict) else 3
+    if priority >= 4 and intention.kind == "question" and intention.content.strip().endswith("?"):
+        return True
+    filler_patterns = (
+        "want to talk about", "want to revisit", "should we talk about", "should we revisit", "do you want to talk",
+        "do you want to revisit", "what do you think about", "any thoughts on", "want to peek", "want to take a look",
+        "i left a note", "left a note", "i worked on", "i was thinking about", "thought this was interesting",
+        "just wanted to", "checking in", "worth mentioning later", "might be fun to", "could be interesting",
+    )
+    if any(pattern in text for pattern in filler_patterns):
+        return False
+    if intention.kind == "question":
+        return intention.content.strip().endswith("?")
+    if intention.kind in {"comment", "suggestion", "curiosity", "follow_up"}:
+        signal_markers = (
+            "found", "noticed", "discovered", "learned", "confirmed", "evidence", "source", "risk", "tradeoff",
+            "blocked", "blocking", "decision", "changed", "regression", "bug", "failure", "architecture", "project",
+            "requirement", "preference", "goal", "next action", "open question", "caveat", "recommend",
+        )
+        return any(marker in text for marker in signal_markers)
+    return False
 
 
 def record_intention_surface(chat_id: str, intention_id: int, run_id: str = "", metadata: dict[str, Any] | None = None) -> None:
@@ -401,6 +428,9 @@ def recent_intention_surface_for_chat(chat_id: str, *, now: datetime | None = No
 
 
 def intention_priority(intention: Intention) -> int:
+    quality = intention.metadata.get("quality") if isinstance(intention.metadata, dict) else None
+    if isinstance(quality, dict) and "importance" in quality:
+        return max(1, min(5, int_value(quality.get("importance"), 3)))
     return max(1, min(5, int_value(intention.metadata.get("priority"), 3)))
 
 

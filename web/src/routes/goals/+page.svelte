@@ -6,11 +6,9 @@
 	import MoonStarsIcon from 'phosphor-svelte/lib/MoonStarsIcon';
 	import {
 		createGoal,
-		getAutonomyTimeline,
 		getDreamRuns,
 		getSelfSnapshot,
 		updateGoal,
-		type AutonomyTimeline,
 		type DreamRun,
 		type GoalItem,
 		type SelfSnapshot
@@ -18,7 +16,6 @@
 	import { formatTimestamp } from '$lib/stores/time.svelte';
 
 	let snapshot = $state<SelfSnapshot | null>(null);
-	let timeline = $state<AutonomyTimeline | null>(null);
 	let dreams = $state<DreamRun[]>([]);
 	let loading = $state(true);
 	let error = $state('');
@@ -41,9 +38,8 @@
 	async function refresh() {
 		try {
 			loading = snapshot === null;
-			const [nextSelf, nextTimeline, nextDreams] = await Promise.all([getSelfSnapshot(), getAutonomyTimeline(), getDreamRuns()]);
+			const [nextSelf, nextDreams] = await Promise.all([getSelfSnapshot(), getDreamRuns()]);
 			snapshot = nextSelf;
-			timeline = nextTimeline;
 			dreams = nextDreams.slice(0, 4);
 			error = '';
 		} catch (e: any) {
@@ -123,10 +119,6 @@
 			<p>{selfState.identity ?? 'A local companion-agent learning to grow through bounded autonomy.'}</p>
 		</div>
 		<div class="hero-status-grid">
-			<div class="hero-stat">
-				<span>Lifecycle</span>
-				<strong>{timeline?.lifecycle?.state ?? 'Awake'}</strong>
-			</div>
 			<div class="hero-stat accent-stat">
 				<span>Goals</span>
 				<strong>{activeGoals.length}</strong>
@@ -301,10 +293,10 @@
 	.panel-card,
 	.signal-card,
 	.error-card {
-		border: 1px solid var(--border);
-		background: color-mix(in srgb, var(--panel) 86%, transparent);
+		border: 1px solid var(--card-border, var(--border));
+		background: var(--card-bg, color-mix(in srgb, var(--panel) 86%, transparent));
 		box-shadow: var(--shadow-panel);
-		backdrop-filter: blur(18px);
+		backdrop-filter: blur(14px);
 	}
 
 	.hero-card {
@@ -312,13 +304,13 @@
 		overflow: hidden;
 		padding: clamp(1.05rem, 2vw, 1.35rem);
 		display: grid;
-		grid-template-columns: auto minmax(0, 1fr) minmax(11rem, 0.34fr);
+		grid-template-columns: auto minmax(0, 1fr) minmax(10rem, 0.24fr);
 		align-items: center;
 		gap: 1rem;
-		border-radius: 1.35rem;
+		border-radius: 1.45rem;
 		background:
-			linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 80%, transparent), transparent 58%),
-			var(--panel);
+			linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 62%, transparent), transparent 68%),
+			var(--panel-shell, var(--panel));
 	}
 
 	.hero-orb {
@@ -329,8 +321,8 @@
 		top: -5rem;
 		z-index: 0;
 		border-radius: 999px;
-		background: radial-gradient(circle, color-mix(in srgb, var(--accent) 24%, transparent), transparent 66%);
-		filter: blur(10px);
+		background: radial-gradient(circle, color-mix(in srgb, var(--accent) 16%, transparent), transparent 66%);
+		filter: blur(14px);
 		pointer-events: none;
 	}
 
@@ -355,9 +347,9 @@
 		height: 4.2rem;
 		display: grid;
 		place-items: center;
-		border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+		border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
 		border-radius: 1.2rem;
-		background: linear-gradient(135deg, var(--accent-soft), color-mix(in srgb, var(--success) 10%, transparent));
+		background: var(--chip-bg, var(--accent-soft));
 		color: var(--accent-strong);
 		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 	}
@@ -380,7 +372,7 @@
 
 	.hero-status-grid {
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+		grid-template-columns: repeat(2, minmax(0, 1fr));
 		gap: 0.65rem;
 		min-width: 0;
 	}
@@ -391,9 +383,9 @@
 		padding: 0.85rem;
 		display: grid;
 		align-content: space-between;
-		border: 1px solid var(--border);
+		border: 1px solid var(--card-border, var(--border));
 		border-radius: 1rem;
-		background: color-mix(in srgb, var(--surface-glass) 78%, transparent);
+		background: var(--event-bg, color-mix(in srgb, var(--surface-glass) 78%, transparent));
 	}
 
 	.hero-stat span {
@@ -435,9 +427,9 @@
 		align-items: center;
 		gap: 0.4rem;
 		padding: 0.32rem 0.58rem;
-		border: 1px solid var(--border);
+		border: 1px solid var(--chip-border, var(--border));
 		border-radius: 999px;
-		background: var(--surface-glass);
+		background: var(--chip-bg, var(--surface-glass));
 		font-size: 0.72rem;
 		font-weight: 800;
 	}
@@ -504,7 +496,7 @@
 
 		.hero-status-grid {
 			grid-column: 1 / -1;
-			grid-template-columns: repeat(3, minmax(0, 1fr));
+			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 	}
 
@@ -546,7 +538,7 @@
 		display: grid;
 		place-items: center;
 		border-radius: 0.9rem;
-		background: var(--accent-soft);
+		background: var(--chip-bg, var(--accent-soft));
 		color: var(--accent-strong);
 	}
 
@@ -587,7 +579,12 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 1rem;
-		margin-bottom: 1rem;
+		margin: -1rem -1rem 1rem;
+		padding: 0.95rem 1rem;
+		border-bottom: 1px solid var(--card-border, var(--border));
+		background:
+			linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 52%, transparent), transparent 74%),
+			var(--panel-header, transparent);
 	}
 
 	.panel-actions,
@@ -621,9 +618,9 @@
 		gap: 0.65rem;
 		margin-bottom: 1rem;
 		padding: 0.85rem;
-		border: 1px solid var(--border);
+		border: 1px solid var(--card-border, var(--border));
 		border-radius: 1rem;
-		background: var(--surface-card);
+		background: var(--event-bg, var(--surface-card));
 	}
 
 	input,
@@ -665,15 +662,17 @@
 	}
 
 	.evolution-list article {
-		padding: 0.8rem;
-		border: 1px solid var(--border);
+		padding: 0.86rem;
+		border: 1px solid var(--card-border, var(--border));
 		border-radius: 0.9rem;
-		background: var(--surface-card);
+		background: var(--event-bg, var(--surface-card));
 	}
 
 	.evolution-list article.stable {
-		border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
-		background: linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 62%, transparent), var(--surface-card));
+		border-color: color-mix(in srgb, var(--accent) 32%, var(--card-border));
+		background:
+			linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 34%, transparent), transparent),
+			var(--event-bg, var(--surface-card));
 	}
 
 	.evolution-topline {
@@ -716,9 +715,9 @@
 
 	.goal-card {
 		padding: 1rem;
-		border: 1px solid var(--border);
+		border: 1px solid var(--card-border, var(--border));
 		border-radius: 1rem;
-		background: linear-gradient(180deg, var(--surface-glass), var(--surface-card));
+		background: var(--event-bg, var(--surface-card));
 	}
 
 	.goal-topline,
@@ -780,9 +779,10 @@
 		display: flex;
 		gap: 0.65rem;
 		align-items: flex-start;
-		padding: 0.7rem;
+		padding: 0.78rem;
+		border: 1px solid var(--card-border, var(--border));
 		border-radius: 0.85rem;
-		background: var(--surface-card);
+		background: var(--event-bg, var(--surface-card));
 	}
 
 	.mini-row strong,
@@ -799,10 +799,11 @@
 	}
 
 	.journal-list article {
-		padding: 0.75rem;
-		border-left: 2px solid var(--accent);
-		border-radius: 0.8rem;
-		background: var(--surface-card);
+		padding: 0.86rem;
+		border: 1px solid var(--card-border, var(--border));
+		border-radius: 0.9rem;
+		background: var(--event-bg, var(--surface-card));
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
 	}
 
 	.journal-list span {

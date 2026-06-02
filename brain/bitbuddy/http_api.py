@@ -34,11 +34,12 @@ from .chats.state import (
     active_chat_run,
     register_chat_run,
 )
-from .config import BitBuddyConfig, load_config, load_personality, update_autonomy_config, update_dreaming_config, update_mcp_config, update_model_runtime_config, update_user_context, upsert_mcp_server
+from .config import BitBuddyConfig, load_config, load_personality, update_autonomy_config, update_chat_config, update_dreaming_config, update_mcp_config, update_model_runtime_config, update_user_context, upsert_mcp_server
 from .continuity import record_continuity_event
 from .personality import load_selected_personality, selected_personality_to_legacy_dict
 from .paths import APP_DIR, CONFIG_PATH, PERSONALITIES_DIR, PERSONALITY_PATH
 from .skills import archive_skill, create_skill, list_skills, load_skill, patch_skill, skill_to_json, validate_skill
+from .workspace import archive_workspace_document, list_workspace_documents, read_workspace_document, set_workspace_document_pinned, workspace_document_to_json
 from .memory.project import (
     index_project,
     list_projects,
@@ -127,6 +128,24 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 skill_name = unquote(path.removeprefix("/skills/").strip("/"))
                 if skill_name and "/" not in skill_name:
                     self.send_json(skill_to_json(load_skill(skill_name, mark_viewed=True), include_content=True))
+                    return
+
+            if path == "/workspace":
+                params = parse_qs(urlparse(self.path).query)
+                kind = params.get("kind", [""])[0]
+                status = params.get("status", ["active"])[0] or "active"
+                documents = list_workspace_documents(kind=kind, status=status, limit=200)
+                self.send_json({"documents": [workspace_document_to_json(doc) for doc in documents]})
+                return
+
+            if path.startswith("/workspace/"):
+                doc_id = unquote(path.removeprefix("/workspace/").strip("/"))
+                if doc_id and "/" not in doc_id:
+                    document = read_workspace_document(doc_id)
+                    if document is None:
+                        self.send_json({"error": "Document not found."}, status=HTTPStatus.NOT_FOUND)
+                        return
+                    self.send_json(workspace_document_to_json(document, include_body=True))
                     return
 
             if path == "/activity":
@@ -340,6 +359,19 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                     self.send_json(skill_to_json(archive_skill(skill_name)))
                 except ValueError as error:
                     self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            if path.startswith("/workspace/") and path.endswith("/archive"):
+                doc_id = unquote(path.removeprefix("/workspace/").removesuffix("/archive").strip("/"))
+                ok = archive_workspace_document(doc_id)
+                self.send_json({"ok": ok}, status=HTTPStatus.OK if ok else HTTPStatus.NOT_FOUND)
+                return
+
+            if path.startswith("/workspace/") and path.endswith("/pin"):
+                doc_id = unquote(path.removeprefix("/workspace/").removesuffix("/pin").strip("/"))
+                body = self.read_json_body()
+                set_workspace_document_pinned(doc_id, bool(body.get("pinned", True)))
+                self.send_json({"ok": True})
                 return
 
             if path.startswith("/skills/") and path.endswith("/validate"):
@@ -596,6 +628,12 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
             if path == "/config/dreaming":
                 body = self.read_json()
                 config = update_dreaming_config(body)
+                self.send_json(config_to_json(config))
+                return
+
+            if path == "/config/chat":
+                body = self.read_json()
+                config = update_chat_config(body)
                 self.send_json(config_to_json(config))
                 return
 
@@ -983,6 +1021,7 @@ def config_to_json(config: BitBuddyConfig) -> dict[str, Any]:
             "return_greeting_enabled": config.chat.return_greeting_enabled,
             "return_greeting_idle_minutes": config.chat.return_greeting_idle_minutes,
             "return_greeting_phrases": list(config.chat.return_greeting_phrases),
+            "max_tool_rounds": config.chat.max_tool_rounds,
         },
         "autonomy": {
             "enabled": config.autonomy.enabled,
@@ -995,6 +1034,7 @@ def config_to_json(config: BitBuddyConfig) -> dict[str, Any]:
             "max_pending_questions": config.autonomy.max_pending_questions,
             "max_pending_comments": config.autonomy.max_pending_comments,
             "max_new_questions_per_cycle": config.autonomy.max_new_questions_per_cycle,
+            "max_autonomous_deliveries_per_day": config.autonomy.max_autonomous_deliveries_per_day,
             "web_search": {
                 "enabled": config.autonomy.web_search.enabled,
                 "provider": config.autonomy.web_search.provider,

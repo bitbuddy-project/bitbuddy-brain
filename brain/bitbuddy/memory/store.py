@@ -11,6 +11,14 @@ from typing import Any
 
 from ..database import db_connection
 from ..paths import GLOBAL_DB_PATH, ensure_app_dirs
+from .embeddings import (
+    embed_text,
+    ensure_embedding_table,
+    memory_embedding_text,
+    semantic_ranked_ids,
+    store_memory_embedding,
+    table_exists,
+)
 from .layers import MemoryLayer, MEMORY_LAYER_DESCRIPTIONS, memory_layer
 
 
@@ -112,6 +120,7 @@ def ensure_memory_database() -> None:
         )
         connection.execute("create index if not exists idx_memory_merges_target on memory_merges(target_memory_id, created_at desc)")
         ensure_memory_fts(connection)
+        ensure_embedding_table(connection)
         migrate_legacy_episodes(connection)
 
 
@@ -181,6 +190,11 @@ def create_memory(
             ),
         )
         sync_memory_fts(connection, clean_id)
+    # Embed outside the write transaction so a slow/dead model never blocks the write.
+    try:
+        store_memory_embedding(_connection, clean_id, memory_embedding_text(clean_title, clean_summary, tags or []))
+    except Exception:
+        pass
     return get_memory(clean_id, include_archived=True)
 
 
@@ -205,12 +219,78 @@ def search_memories(
     clean_layer = memory_layer(layer).value if layer else None
     clean_limit = max(1, min(100, int(limit)))
     clean_query = query.strip()
+    # Embed the query before opening the connection so network I/O never holds the db.
+    query_vector = embed_text(clean_query) if clean_query else None
     with _connection() as connection:
         if clean_query and fts_available(connection):
-            rows = search_memories_fts(connection, clean_query, clean_layer, project_id, clean_limit, include_archived)
+            keyword_rows = search_memories_fts(connection, clean_query, clean_layer, project_id, clean_limit, include_archived)
         else:
-            rows = search_memories_fallback(connection, clean_query, clean_layer, project_id, clean_limit, include_archived)
+            keyword_rows = search_memories_fallback(connection, clean_query, clean_layer, project_id, clean_limit, include_archived)
+        if query_vector is None:
+            return [row_to_memory(row) for row in keyword_rows]
+        semantic_ids = semantic_ranked_ids(
+            connection, query_vector, clean_layer, project_id, include_archived, clean_limit
+        )
+        rows = fuse_search_results(connection, keyword_rows, semantic_ids, clean_limit)
     return [row_to_memory(row) for row in rows]
+
+
+def fuse_search_results(
+    connection: sqlite3.Connection,
+    keyword_rows: list[sqlite3.Row],
+    semantic_ids: list[str],
+    limit: int,
+) -> list[sqlite3.Row]:
+    """Blend keyword and semantic rankings with reciprocal rank fusion (k=60)."""
+    if not semantic_ids:
+        return keyword_rows[:limit]
+    k = 60.0
+    scores: dict[str, float] = {}
+    rows_by_id: dict[str, sqlite3.Row] = {}
+    for rank, row in enumerate(keyword_rows):
+        scores[row["id"]] = scores.get(row["id"], 0.0) + 1.0 / (k + rank)
+        rows_by_id[row["id"]] = row
+    for rank, memory_id in enumerate(semantic_ids):
+        scores[memory_id] = scores.get(memory_id, 0.0) + 1.0 / (k + rank)
+    missing = [memory_id for memory_id in scores if memory_id not in rows_by_id]
+    if missing:
+        placeholders = ",".join("?" for _ in missing)
+        for row in connection.execute(f"select * from memories where id in ({placeholders})", tuple(missing)).fetchall():
+            rows_by_id[row["id"]] = row
+    ordered_ids = sorted(scores, key=lambda memory_id: scores[memory_id], reverse=True)
+    fused = [rows_by_id[memory_id] for memory_id in ordered_ids if memory_id in rows_by_id]
+    return fused[:limit]
+
+
+def backfill_memory_embeddings(limit: int = 50) -> dict[str, Any]:
+    """Embed active memories that have no current-model vector yet. Best-effort, non-fatal."""
+    from .embeddings import _client_and_model
+
+    ensure_memory_database()
+    client, model = _client_and_model()
+    if client is None or not model:
+        return {"embedded": 0, "status": "embeddings_unavailable"}
+    with _connection() as connection:
+        rows = connection.execute(
+            """
+            select m.id as id, m.title as title, m.summary as summary, m.tags as tags
+            from memories m
+            left join memory_embeddings me on me.memory_id = m.id and me.model = ?
+            where me.memory_id is null and m.archived_at is null
+            order by m.importance desc, m.updated_at desc
+            limit ?
+            """,
+            (model, max(1, min(500, int(limit)))),
+        ).fetchall()
+    embedded = 0
+    for row in rows:
+        text = memory_embedding_text(row["title"], row["summary"], safe_json(row["tags"], []))
+        if store_memory_embedding(_connection, row["id"], text):
+            embedded += 1
+        else:
+            # Provider became unavailable mid-run; stop and let the next cycle retry.
+            break
+    return {"embedded": embedded, "candidates": len(rows), "model": model}
 
 
 def update_memory(
@@ -257,6 +337,12 @@ def update_memory(
     with _connection() as connection:
         connection.execute(f"update memories set {assignments} where id = ?", (*fields.values(), memory_id))
         sync_memory_fts(connection, memory_id)
+    if any(key in fields for key in ("title", "summary", "tags")):
+        try:
+            refreshed = get_memory(memory_id, include_archived=True)
+            store_memory_embedding(_connection, memory_id, memory_embedding_text(refreshed.title, refreshed.summary, refreshed.tags))
+        except Exception:
+            pass
     return get_memory(memory_id, include_archived=True)
 
 
@@ -283,6 +369,8 @@ def hard_delete_memory(memory_id: str) -> MemoryRecord:
         connection.execute("delete from memories where id = ?", (memory_id,))
         if fts_available(connection):
             connection.execute("delete from memories_fts where memory_id = ?", (memory_id,))
+        if table_exists(connection, "memory_embeddings"):
+            connection.execute("delete from memory_embeddings where memory_id = ?", (memory_id,))
     return existing
 
 

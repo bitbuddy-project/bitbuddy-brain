@@ -50,6 +50,8 @@ from ..tools import (
     _strip_system_reminders,
     invalid_tool_result,
     needs_permission,
+    normalize_tool_arguments,
+    openai_tools_schema,
     parse_tool_call,
     parse_tool_call_lines,
     parse_tool_calls,
@@ -57,14 +59,14 @@ from ..tools import (
     tool_instruction_message,
 )
 from ..utils import log_activity
+from ..workspace import write_workspace_document
 
 
-MAX_TOOL_ROUNDS = 8
 MAX_AUTOMATIC_MEMORY_WRITES = 3
 FALLBACK_TOOL_RESULT_CONTENT_CHARS = 12000
 ARTIFACT_WRITE_TOOLS = {"write_file", "patch_file", "make_directory"}
 ARTIFACT_BACKING_TOOLS = {*ARTIFACT_WRITE_TOOLS, "run_shell_command"}
-ARTIFACT_EXTENSIONS_RE = re.compile(r"\.(?:svg|png|jpg|jpeg|gif|webp|pdf|txt|md|json|csv|yaml|yml|html|css|js|ts|py|sh|kicad_pro|kicad_sch|kicad_pcb|sch|pcb)\b", re.IGNORECASE)
+ARTIFACT_EXTENSIONS_RE = re.compile(r"\.(?:svg|png|jpg|jpeg|gif|webp|pdf|txt|md|mdx|rst|json|jsonc|csv|tsv|yaml|yml|toml|ini|cfg|conf|env|xml|html|css|scss|sass|less|js|jsx|mjs|cjs|ts|tsx|svelte|vue|astro|py|sh|bash|zsh|fish|rune|go|rs|rb|java|kt|c|h|cpp|hpp|cc|cs|php|lua|sql|tex|kicad_pro|kicad_sch|kicad_pcb|sch|pcb)\b", re.IGNORECASE)
 ARTIFACT_CREATION_RE = re.compile(r"\b(?:create|created|generate|generated|make|made|save|saved|write|wrote|export|exported|update|updated|edit|edited|modify|modified|tweak|tweaked)\b", re.IGNORECASE)
 
 
@@ -88,7 +90,7 @@ def prompt_has_complete_tool_list(prompt_messages: list[dict[str, str]], registr
     return False
 
 
-def ensure_runtime_tool_prompt(prompt_messages: list[dict[str, str]], registry: Any) -> list[dict[str, str]]:
+def ensure_runtime_tool_prompt(prompt_messages: list[dict[str, str]], registry: Any, native_tools: bool = False) -> list[dict[str, str]]:
     """Ensure the exact model call contains the complete tool list.
 
     This is a runtime safety net, not the main prompt builder. It covers older
@@ -99,9 +101,34 @@ def ensure_runtime_tool_prompt(prompt_messages: list[dict[str, str]], registry: 
         return prompt_messages
 
     return [
-        {"role": "system", "content": tool_instruction_message(registry)["content"]},
+        {"role": "system", "content": tool_instruction_message(registry, native_tools=native_tools)["content"]},
         *prompt_messages,
     ]
+
+
+def stream_tool_calls_to_tool_calls(chunks: list[Any]) -> list[ToolCall]:
+    """Convert native StreamToolCall chunks into validated ToolCall objects.
+
+    Argument JSON that fails to parse is skipped so a single malformed native
+    call cannot abort the turn; the text-protocol path and salvage net remain
+    available as fallbacks.
+    """
+    calls: list[ToolCall] = []
+    for chunk in chunks:
+        if getattr(chunk, "kind", "") != "tool_call":
+            continue
+        stream_call = getattr(chunk, "tool_call", None)
+        if stream_call is None or not stream_call.name:
+            continue
+        raw_arguments = (stream_call.arguments or "").strip()
+        try:
+            arguments = json.loads(raw_arguments) if raw_arguments else {}
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(arguments, dict):
+            continue
+        calls.append(ToolCall(tool=stream_call.name, arguments=normalize_tool_arguments(stream_call.name, arguments)))
+    return calls
 
 
 def return_greeting_context_message(greeting_text: str) -> dict[str, str] | None:
@@ -304,7 +331,9 @@ def has_backing_artifact_tool_result(results: list[ToolResult]) -> bool:
 def should_repair_unbacked_artifact_response(user_text: str, response_text: str, results: list[ToolResult]) -> bool:
     if has_backing_artifact_tool_result(results):
         return False
-    return artifact_request_or_claim(user_text, response_text) or response_claims_file_created(response_text)
+    if response_claims_file_created(response_text):
+        return True
+    return artifact_request_or_claim(user_text, "")
 
 
 def artifact_creation_repair_message(user_text: str, response_text: str) -> dict[str, str]:
@@ -325,14 +354,100 @@ def artifact_creation_repair_message(user_text: str, response_text: str) -> dict
     }
 
 
+WORKING_PLAN_MARKER = "__working_plan_note__"
+WORKING_PLAN_MAX_CHARS = 700
+
+
+def compact_plan_from_thinking(thinking_text: str) -> str:
+    """Extract a compact plan from a round's reasoning to carry into later rounds.
+
+    Keeps the tail of the reasoning (where the concrete plan/decision usually
+    lands) capped to a small budget, so the model continues the task it already
+    reasoned through instead of re-deriving it from scratch each tool round.
+    """
+    lines = [line.strip() for line in (thinking_text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    kept: list[str] = []
+    total = 0
+    for line in reversed(lines):
+        if total + len(line) + 1 > WORKING_PLAN_MAX_CHARS and kept:
+            break
+        kept.append(line)
+        total += len(line) + 1
+    kept.reverse()
+    return "\n".join(kept).strip()
+
+
+def working_plan_note(thinking_text: str) -> dict[str, str] | None:
+    """Build a private continuity note carrying the model's own working plan.
+
+    Returns None when there is no substantive plan to carry. Uses role='user'
+    working-context (like tool results) because local chat templates include it
+    far more reliably than a late system message.
+    """
+    plan = compact_plan_from_thinking(thinking_text)
+    if not plan:
+        return None
+    return {
+        "role": "user",
+        "content": "\n".join(
+            [
+                "[Your Working Plan — private continuity context, not a new user request]",
+                "This is the plan you already worked out earlier in THIS task. Do not re-derive it "
+                "from scratch. Continue executing it: call the next tool the plan needs rather than "
+                "describing the change in prose.",
+                "",
+                plan,
+            ]
+        ),
+        WORKING_PLAN_MARKER: True,
+    }
+
+
+FENCED_BLOCK_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+MIN_SALVAGE_CHARS = 80
+
+
+def salvage_authored_content(response_text: str) -> tuple[str, str] | None:
+    """Recover substantive authored content from a reply that claimed a file but
+    never ran a write tool, so the work is saved instead of discarded.
+
+    Prefers the largest fenced code block; otherwise falls back to the whole
+    reply. Returns (title, body) or None when there is nothing worth keeping.
+    """
+    text = (response_text or "").strip()
+    if not text:
+        return None
+    blocks = [match.group(1).strip() for match in FENCED_BLOCK_RE.finditer(text)]
+    blocks = [block for block in blocks if block]
+    body = max(blocks, key=len) if blocks else text
+    if len(body) < MIN_SALVAGE_CHARS:
+        return None
+    title = "Salvaged draft"
+    for line in body.splitlines():
+        candidate = line.strip().lstrip("#").strip()
+        if candidate:
+            title = candidate[:80]
+            break
+    return title, body
+
+
 def start_chat_run(run: ActiveChatRun) -> None:
     cancel_memory_consolidation(run.chat_id, reason="new chat run started")
 
     def generate() -> None:
-        client = ProviderClient(load_config().provider)
+        config = load_config()
+        client = ProviderClient(config.provider)
+        max_tool_rounds = config.chat.max_tool_rounds
         registry = default_tool_registry()
         mode_context = latest_user_message(run.prompt_messages)
         executor = ToolExecutor(registry, mode=run.mode, mode_context=mode_context)
+
+        # Native function calling is the primary tool transport when the provider
+        # supports it (cached probe). Falls back to the text tool protocol otherwise.
+        native_tools = client.supports_native_tools(run.model)
+        tools_schema = openai_tools_schema(registry, run.mode) if native_tools else None
 
         last_persist_at = 0.0
         assistant_create_retry_at = 0.0
@@ -537,7 +652,7 @@ def start_chat_run(run: ActiveChatRun) -> None:
         ) -> CollectedResponse:
             throw_if_cancelled()
             if allow_tools:
-                prompt_messages = ensure_runtime_tool_prompt(prompt_messages, registry)
+                prompt_messages = ensure_runtime_tool_prompt(prompt_messages, registry, native_tools=native_tools)
             else:
                 prompt_messages = [
                     message
@@ -554,7 +669,8 @@ def start_chat_run(run: ActiveChatRun) -> None:
             response_blocked = False
             thinking_emitted = False
             thinking_buffer = ""
-            for chunk in client.stream_chat(prompt_messages, model=run.model, should_cancel=run.cancel_requested.is_set, thinking_enabled=run.thinking_enabled):
+            stream_tools = tools_schema if (allow_tools and native_tools) else None
+            for chunk in client.stream_chat(prompt_messages, model=run.model, should_cancel=run.cancel_requested.is_set, thinking_enabled=run.thinking_enabled, tools=stream_tools):
                 throw_if_cancelled()
                 chunks.append(chunk)
 
@@ -630,7 +746,8 @@ def start_chat_run(run: ActiveChatRun) -> None:
                 emit_text(guarded_response)
                 response_emitted = True
 
-            return CollectedResponse(chunks, response_text, response_emitted, thinking_emitted)
+            native_tool_calls = stream_tool_calls_to_tool_calls(chunks) if native_tools else []
+            return CollectedResponse(chunks, response_text, response_emitted, thinking_emitted, tool_calls=native_tool_calls)
 
         def broadcast_tool_event(sse_kind: str, event: dict[str, object]) -> None:
             metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
@@ -1044,18 +1161,19 @@ def start_chat_run(run: ActiveChatRun) -> None:
                         event_id,
                         status,
                         result.summary,
-                        {
-                            "tool": result.tool,
-                            "arguments_summary": result.arguments_summary,
-                            "result_summary": result.summary if result.ok else "",
-                            "result_content": result.content if result.ok else "",
-                            "error": result.error if not result.ok else "",
-                            "truncated": result.truncated,
-                            "raw_result_visible": False,
-                            "memory_broker": True,
-                            "auto_memory_update": True,
-                        },
-                    )
+						{
+							"tool": result.tool,
+							"arguments_summary": result.arguments_summary,
+							"result_summary": result.summary if result.ok else "",
+							"result_content": result.content if result.ok else "",
+							"error": result.error if not result.ok else "",
+							"truncated": result.truncated,
+							"raw_result_visible": False,
+							"memory_broker": True,
+							"auto_memory_update": True,
+							**(result.metadata or {}),
+						},
+					)
                     broadcast_tool_event("tool_result" if result.ok else "tool_error", updated_event)
 
                     log_activity(
@@ -1090,6 +1208,17 @@ def start_chat_run(run: ActiveChatRun) -> None:
                     )
                     # Strip any system-reminder blocks that leaked into the response
                     response_text = _strip_system_reminders(response.response_text)
+
+                    # Native function calls take priority: when the provider emits
+                    # structured tool calls we execute them directly and skip the
+                    # entire text-protocol recovery machinery below (which exists
+                    # only to salvage prose-wrapped/malformed text tool calls).
+                    if response.tool_calls:
+                        action = handle_parsed_tool_calls(response.tool_calls)
+                        if action == "continue":
+                            continue
+                        if action == "stop":
+                            break
 
                     # Try tool call parsing. If it *looks* like a tool call but
                     # is malformed or mixed with prose, do not leak it into the
@@ -1209,6 +1338,33 @@ def start_chat_run(run: ActiveChatRun) -> None:
                             {"attempt": artifact_creation_repair_rounds, "response": response_text[:500]},
                         )
                         if artifact_creation_repair_rounds >= 2:
+                            salvaged = salvage_authored_content(response_text)
+                            if salvaged is not None:
+                                title, body = salvaged
+                                try:
+                                    document = write_workspace_document(
+                                        "drafts",
+                                        title,
+                                        body,
+                                        summary="Salvaged from a chat reply that authored content without running a file-writing tool.",
+                                        source="chat_salvage",
+                                    )
+                                    log_activity(
+                                        "artifact.salvaged",
+                                        "Saved authored content to workspace after unbacked file claim",
+                                        {"rel_path": document.rel_path, "title": document.title},
+                                    )
+                                    emit_text(
+                                        f"I drafted that but didn't run the file tool, so I saved it to my workspace as **{document.title}** (`{document.rel_path}`) so it isn't lost. "
+                                        "Want me to write it to a specific file or project instead?"
+                                    )
+                                    break
+                                except Exception as salvage_error:
+                                    log_activity(
+                                        "artifact.salvage_failed",
+                                        "Workspace salvage write failed",
+                                        {"error": str(salvage_error)},
+                                    )
                             emit_text(
                                 "I should create that as an actual file, but the model did not issue a file-writing tool call. Please try again and I’ll use the artifact tools."
                             )
@@ -1219,7 +1375,7 @@ def start_chat_run(run: ActiveChatRun) -> None:
                     emit_collected_response(response)
                     break
 
-                if tool_rounds >= MAX_TOOL_ROUNDS:
+                if tool_rounds >= max_tool_rounds:
                     messages.append(
                         {
                             "role": "system",
@@ -1236,6 +1392,7 @@ def start_chat_run(run: ActiveChatRun) -> None:
                         live=True,
                         live_thinking=False,
                         prompt_label="tool_limit_final",
+                        allow_tools=False,
                     )
                     final_text = final_response.response_text
 
@@ -1361,7 +1518,7 @@ def start_chat_run(run: ActiveChatRun) -> None:
                         )
 
                         with run.lock:
-                            run.permission_request = {"tool": tool_call.tool, "reason": reason}
+                            run.permission_request = {"tool": tool_call.tool, "reason": reason, "arguments": tool_call.arguments}
                             run.permission_response.clear()
                             run.permission_granted = False
 
@@ -1422,16 +1579,17 @@ def start_chat_run(run: ActiveChatRun) -> None:
                     event_id,
                     status,
                     result.summary,
-                    {
-                        "tool": result.tool,
-                        "arguments_summary": result.arguments_summary,
-                        "result_summary": result.summary if result.ok else "",
-                        "result_content": result.content if result.ok else "",
-                        "error": result.error if not result.ok else "",
-                        "truncated": result.truncated,
-                        "raw_result_visible": False,
-                    },
-                )
+					{
+						"tool": result.tool,
+						"arguments_summary": result.arguments_summary,
+						"result_summary": result.summary if result.ok else "",
+						"result_content": result.content if result.ok else "",
+						"error": result.error if not result.ok else "",
+						"truncated": result.truncated,
+						"raw_result_visible": False,
+						**(result.metadata or {}),
+					},
+				)
                 broadcast_tool_event("tool_result" if result.ok else "tool_error", updated_event)
 
                 log_activity(
@@ -1478,6 +1636,15 @@ def start_chat_run(run: ActiveChatRun) -> None:
 
                 # Append the tool result as a system message
                 messages.append(result.to_model_message())
+
+                # Carry the model's own plan forward so the next round continues
+                # the task instead of re-deriving it. Replace any prior note so it
+                # does not accumulate, and keep it at the end where local chat
+                # templates include it most reliably.
+                plan_note = working_plan_note(run.thinking_text)
+                if plan_note is not None:
+                    messages[:] = [message for message in messages if not message.get(WORKING_PLAN_MARKER)]
+                    messages.append(plan_note)
 
                 # Finish the current assistant turn before next model call
                 finish_current_assistant_turn()

@@ -29,9 +29,12 @@ class FakeClient:
     def __init__(self) -> None:
         self.messages = []
 
-    def stream_chat(self, messages, model=None, should_cancel=None, thinking_enabled=True):
+    def stream_chat(self, messages, model=None, should_cancel=None, thinking_enabled=True, tools=None, tool_choice="auto"):
         self.messages = messages
         yield StreamChunk("response", "Here is the answer.")
+
+    def supports_native_tools(self, model=None):
+        return False
 
     def count_tokens(self, messages, model=None):
         return {"used_tokens": 10, "source": "fake"}
@@ -48,6 +51,8 @@ def fake_config() -> SimpleNamespace:
             return_greeting_enabled=True,
             return_greeting_idle_minutes=60,
             return_greeting_phrases=("Hey, welcome back.", "Hi, welcome back."),
+            max_tool_rounds=99,
+            reasoning_budget_tokens=-1,
         ),
         autonomy=SimpleNamespace(max_pending_questions=12, max_pending_comments=12, max_new_questions_per_cycle=1, max_autonomous_deliveries_per_day=10),
         dreaming=SimpleNamespace(self_note_injection_enabled=False),

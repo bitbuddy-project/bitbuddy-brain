@@ -58,7 +58,7 @@
 								<span>{chat.mode} · {formatTimestamp(chat.updated_at)}</span>
 							</div>
 							{#if (Number(notifications[chat.id] ?? 0)) > 0}
-								<span class="chat-notification-dot" title={`${notifications[chat.id]} unread`} />
+								<span class="chat-notification-dot" title={`${notifications[chat.id]} unread`}></span>
 							{/if}
 						</button>
 						<button class="delete-chat" type="button" aria-label={`Delete chat ${chat.title}`} onclick={() => onDelete(chat.id)}>

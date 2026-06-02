@@ -66,6 +66,16 @@ class ActiveChatRun:
             for event in self.tool_events:
                 subscriber.put(event)
 
+            if self.permission_request is not None:
+                subscriber.put(
+                    {
+                        "kind": "permission_request",
+                        "tool": self.permission_request.get("tool", ""),
+                        "reason": self.permission_request.get("reason", "BitBuddy needs your permission to proceed."),
+                        "arguments": self.permission_request.get("arguments", {}),
+                    }
+                )
+
             if self.status == "complete":
                 subscriber.put({"done": True})
             elif self.status == "failed":

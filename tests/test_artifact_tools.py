@@ -30,6 +30,13 @@ class ArtifactToolTest(unittest.TestCase):
         path = ARTIFACTS_DIR / "kicad" / "demo.py"
         self.assertEqual(path.read_text(encoding="utf-8"), "print('ok')\n")
         self.assertIn(str(path), result.summary)
+        diff = (result.metadata or {}).get("diff")
+        self.assertIsInstance(diff, dict)
+        files = diff.get("files")  # type: ignore[union-attr]
+        self.assertEqual(files[0]["status"], "created")
+        self.assertEqual(files[0]["added"], 1)
+        self.assertEqual(files[0]["removed"], 0)
+        self.assertIn("+print('ok')", files[0]["unified"])
 
     def test_patch_file_updates_artifact(self) -> None:
         self.executor.execute(ToolCall("write_file", {"file_path": "notes.txt", "content": "alpha\nbeta\n"}))
@@ -40,6 +47,14 @@ class ArtifactToolTest(unittest.TestCase):
 
         self.assertTrue(result.ok, result.error)
         self.assertEqual((ARTIFACTS_DIR / "notes.txt").read_text(encoding="utf-8"), "alpha\ngamma\n")
+        diff = (result.metadata or {}).get("diff")
+        self.assertIsInstance(diff, dict)
+        files = diff.get("files")  # type: ignore[union-attr]
+        self.assertEqual(files[0]["status"], "modified")
+        self.assertEqual(files[0]["added"], 1)
+        self.assertEqual(files[0]["removed"], 1)
+        self.assertIn("-beta", files[0]["unified"])
+        self.assertIn("+gamma", files[0]["unified"])
 
     def test_make_directory_defaults_to_artifacts(self) -> None:
         result = self.executor.execute(ToolCall("make_directory", {"path": "exports/svg"}))
@@ -143,6 +158,15 @@ class ArtifactToolTest(unittest.TestCase):
                 "update it make it more like uhm like 3d like",
                 "I've updated the SVG. It's saved to ~/smiley.svg.",
                 [read_result],
+            )
+        )
+
+    def test_prose_draft_that_mentions_file_updates_does_not_require_repair(self) -> None:
+        self.assertFalse(
+            should_repair_unbacked_artifact_response(
+                "can you PLEASE draft that",
+                "Proposed README.md Updates\n\nI can apply these documentation updates if you want.",
+                [],
             )
         )
 

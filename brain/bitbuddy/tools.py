@@ -34,6 +34,7 @@ from .toolbox.base import (
     needs_permission,
     normalize_mode,
     normalize_tool_arguments,
+    openai_tools_schema,
     parse_tool_call,
     parse_tool_call_lines,
     parse_tool_calls,

@@ -13,6 +13,7 @@ from ..config import load_config
 from ..continuity import record_continuity_event
 from ..lifecycle import lifecycle_allows_autonomy, lifecycle_quiet_mode
 from ..providers import ProviderClient
+from ..self_model import goal_task_state, list_goals
 from .activities import run_autonomy_activity
 from .context import build_autonomy_context
 from .decision import AutonomyActivityType, AutonomyDecision, choose_autonomy_activity
@@ -353,6 +354,17 @@ def global_chat_activity_advanced(scheduled_token: dict[str, object], current_to
     return str(current_token.get("latest_chat_updated_at") or "") > str(scheduled_token.get("latest_chat_updated_at") or "")
 
 
+def has_in_progress_task() -> bool:
+    """True when an autonomy-allowed goal has an in-progress multi-step task."""
+    try:
+        for goal in list_goals(include_done=False, limit=12):
+            if goal.status == "active" and goal.autonomy_allowed and goal_task_state(goal).get("status") == "in_progress":
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def schedule_next_idle_autonomy(job: AutonomyJob) -> str | None:
     config = load_config()
     if not config.autonomy.enabled or not config.autonomy.repeat_idle_cycles:
@@ -362,7 +374,10 @@ def schedule_next_idle_autonomy(job: AutonomyJob) -> str | None:
         log_autonomy("repeat_stopped", "Idle autonomy repeat stopped because user activity resumed or job was cancelled", {"chat_id": job.chat_id, "job_id": job.job_id})
         return None
     next_repeat_index = job.repeat_index + 1
-    delay = idle_autonomy_delay(config.autonomy, next_repeat_index)
+    # When a multi-step task is mid-flight, keep cycling at the base cadence so it
+    # gets finished instead of stretching out under exponential backoff.
+    repeat_index_for_delay = 0 if has_in_progress_task() else next_repeat_index
+    delay = idle_autonomy_delay(config.autonomy, repeat_index_for_delay)
     next_job_id = schedule_idle_autonomy(
         job.chat_id,
         scheduled_token=job.scheduled_token,
