@@ -3,34 +3,61 @@
 	import { setTimePreferences } from '$lib/stores/time.svelte';
 	import { theme, type ThemeVariant } from '$lib/stores/theme.svelte';
 	import { chatBehavior, type ReplyAnimation } from '$lib/stores/chat-behavior.svelte';
+	import { refreshContextUsage } from '$lib/stores/chat.svelte';
 	import {
+		completeCodexLogin,
+		completeGmailLogin,
 		configureComputerUseLinux,
+		getCodexStatus,
+		getCalendarPermissions,
 		getConfig,
+		getEmailPermissions,
+		getGmailStatus,
 		getMcpStatus,
 		getProviderContext,
 		getProviderHealth,
 		getProviderModels,
 		installComputerUseLinux,
+		logoutCodex,
+		logoutGmail,
+		openGmailCleanFirefox,
 		doctorComputerUseLinux,
+		startCodexLogin,
+		setCalendarPermission,
+		setEmailPermission,
+		startGmailLogin,
 		updateAutonomyConfig,
+		updateCalendarConfig,
 		updateChatConfig,
 		updateDreamingConfig,
+		updateEmailConfig,
 		updateMcpConfig,
 		updateModelRuntimeConfig,
+		updatePersonalityConfig,
 		updateUserContext,
 		type AutonomyConfig,
+		type CalendarConfig,
+		type CalendarPermissionState,
+		type CalendarScope,
 		type ChatConfig,
 		type DreamingConfig,
+		type EmailConfig,
+		type GmailOAuthStatus,
 		type McpConfig,
 		type McpStatus,
 		type ModelRuntimeConfig,
+		type ProviderEntry,
 		type ProviderContext,
 		type UserContextConfig
 	} from '$lib/api/bitbuddy';
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
+	import Overlay from '$lib/components/ui/Overlay.svelte';
+	import SelectMenu, { type SelectOption } from '$lib/components/ui/SelectMenu.svelte';
 	import SunIcon from 'phosphor-svelte/lib/SunIcon';
 	import MoonIcon from 'phosphor-svelte/lib/MoonIcon';
 	import DesktopIcon from 'phosphor-svelte/lib/DesktopIcon';
 	import CaretRightIcon from 'phosphor-svelte/lib/CaretRightIcon';
+	import GearSixIcon from 'phosphor-svelte/lib/GearSixIcon';
 
 	const themes: { label: ThemeVariant; icon: any; description: string }[] = [
 		{ label: 'Auto', icon: DesktopIcon, description: 'Follow system preference' },
@@ -45,9 +72,16 @@
 	];
 
 	const providerTypes = [
-		{ value: 'none', label: 'None' },
-		{ value: 'ollama', label: 'Ollama' },
-		{ value: 'llama.cpp', label: 'llama.cpp' }
+		{ value: 'ollama', label: 'Ollama', description: 'Local Ollama runtime' },
+		{ value: 'llama.cpp', label: 'llama.cpp', description: 'Local llama.cpp server' },
+		{ value: 'openai', label: 'OpenAI API', description: 'OpenAI API key provider' },
+		{ value: 'codex', label: 'Codex', description: 'ChatGPT/Codex authorization' },
+		{ value: 'anthropic', label: 'Anthropic', description: 'Claude API key provider' }
+	];
+	const providerOptions: SelectOption[] = providerTypes;
+	const emailProviderOptions: SelectOption[] = [
+		{ value: 'imap', label: 'IMAP', description: 'Generic inbox server' },
+		{ value: 'gmail', label: 'Gmail', description: 'Google Gmail API' }
 	];
 
 	let userContext = $state<UserContextConfig>({
@@ -61,6 +95,15 @@
 	let contextStatus = $state('');
 	let localContextOpen = $state(false);
 	let chatBehaviorOpen = $state(false);
+	let personalityQuirksOpen = $state(false);
+	let personalitySaving = $state(false);
+	let personalityError = $state('');
+	let personalityStatus = $state('');
+	let personalityDisplayName = $state('');
+	let personalityId = $state('');
+	let bitbuddyLikes = $state<string[]>([]);
+	let bitbuddyDislikes = $state<string[]>([]);
+	let quirkAddOpen = $state(false);
 	let chatConfigSaving = $state(false);
 	let chatConfigError = $state('');
 	let chatConfigStatus = $state('');
@@ -80,8 +123,16 @@
 			url: '',
 			model: ''
 		},
+		providers: [],
+		active_provider: 'none',
 		project_scan_interval_seconds: 60
 	});
+	let draftProvider = $state<ProviderEntry>({ type: 'ollama', url: 'http://127.0.0.1:11434', model: '' });
+	let draftProviderKey = $state('');
+	let editingProviderKey = $state('');
+	let addProviderOpen = $state(false);
+	let pendingAddedProviderKey = $state('');
+	let providerPendingRemoval = $state<ProviderEntry | null>(null);
 	let modelSaving = $state(false);
 	let modelChecking = $state(false);
 	let modelLoadingModels = $state(false);
@@ -89,6 +140,16 @@
 	let modelStatus = $state('');
 	let providerModels = $state<string[]>([]);
 	let providerContext = $state<ProviderContext | null>(null);
+	let codexStatus = $state('');
+	let codexLoggedIn = $state(false);
+	let codexWorking = $state(false);
+	let codexAuthUrl = $state('');
+	let codexDeviceCode = $state('');
+	let codexLoginDetail = $state('');
+	let codexLoginLogPath = $state('');
+	let codexManualInput = $state('');
+	let codexCallbackMode = $state('');
+	let providerModelLoadKey = $state('');
 	let mcp = $state<McpConfig>({ enabled: false });
 	let mcpStatus = $state<McpStatus | null>(null);
 	let mcpSaving = $state(false);
@@ -140,21 +201,226 @@
 		low_priority_stale_intention_days: 7,
 		self_note_injection_enabled: false
 	});
+	let calendarOpen = $state(false);
+	let calendarSaving = $state(false);
+	let calendarError = $state('');
+	let calendarStatus = $state('');
+	let calendar = $state<CalendarConfig>({
+		enabled: false,
+		default_provider: 'local',
+		reminder_upcoming_minutes: 60,
+		reminder_starting_soon_minutes: 15,
+		urgent_interrupts_enabled: true,
+		urgent_interrupt_persistent: true,
+		conflict_warnings_enabled: true,
+		free_day_summary_enabled: true,
+		chat_nudges_enabled: true,
+		scheduler_tick_seconds: 60,
+		holidays_enabled: true,
+		holidays_country: ''
+	});
+	let emailOpen = $state(false);
+	let emailAdvancedOpen = $state(false);
+	let emailTroubleshootingOpen = $state(false);
+	let emailSaving = $state(false);
+	let emailError = $state('');
+	let emailStatus = $state('');
+	let emailPassword = $state('');
+	let gmailClientSecret = $state('');
+	let gmailManualInput = $state('');
+	let gmailStatus = $state<GmailOAuthStatus | null>(null);
+	let gmailWorking = $state(false);
+	let email = $state<EmailConfig>({
+		enabled: false,
+		provider: 'imap',
+		account_label: '',
+		email_address: '',
+		imap_host: '',
+		imap_port: 993,
+		imap_security: 'ssl',
+		username: '',
+		credentials_ref: '',
+		gmail_client_id: '',
+		gmail_credentials_ref: '',
+		gmail_token_ref: '',
+		gmail_redirect_uri: 'http://localhost:8787/email/gmail/callback',
+		default_mailbox: 'INBOX',
+		max_preview_messages: 50,
+		has_password: false,
+		has_gmail_client_secret: false,
+		gmail_connected: false
+	});
+
+	const SCOPE_LABELS: Record<CalendarScope, string> = {
+		read: 'View events',
+		create: 'Create events',
+		modify: 'Modify events',
+		delete: 'Delete events'
+	};
+	const SCOPE_STATES: CalendarPermissionState[] = ['granted', 'ask', 'denied'];
+	const EMAIL_SCOPE_LABELS: Record<string, string> = {
+		read: 'Read messages',
+		search: 'Search messages',
+		watch: 'Watch rules',
+		trash: 'Move to Trash'
+	};
+
+	let calendarScopes = $state<CalendarScope[]>([]);
+	let calendarPermissions = $state<Record<CalendarScope, CalendarPermissionState> | null>(null);
+	let calendarPermError = $state('');
+	let emailScopes = $state<string[]>([]);
+	let emailPermissions = $state<Record<string, string> | null>(null);
+	let emailPermError = $state('');
 
 	onMount(() => {
 		void loadUserContext();
+		void refreshCalendarPermissions();
+		void refreshEmailPermissions();
 	});
+
+	$effect(() => {
+		const shouldLoad = addProviderOpen || Boolean(editingProviderKey);
+		if (!shouldLoad) {
+			providerModels = [];
+			providerModelLoadKey = '';
+			return;
+		}
+		const key = `${draftProvider.type}|${draftProvider.url}|${draftProvider.has_api_key ? 'saved-key' : 'no-key'}`;
+		if (key === providerModelLoadKey) return;
+		providerModelLoadKey = key;
+		void loadDraftProviderModels(true);
+	});
+
+	async function refreshCalendarPermissions() {
+		try {
+			const data = await getCalendarPermissions();
+			calendarScopes = data.scopes;
+			calendarPermissions = data.permissions;
+			calendarPermError = '';
+		} catch (caught) {
+			calendarPermError = caught instanceof Error ? caught.message : 'Could not load calendar permissions.';
+		}
+	}
+
+	async function setScope(scope: CalendarScope, state: CalendarPermissionState) {
+		try {
+			calendarPermissions = await setCalendarPermission(scope, state);
+			calendarPermError = '';
+		} catch (caught) {
+			calendarPermError = caught instanceof Error ? caught.message : 'Could not update permission.';
+		}
+	}
+
+	async function refreshEmailPermissions() {
+		try {
+			const data = await getEmailPermissions();
+			emailScopes = data.scopes;
+			emailPermissions = data.permissions;
+			emailPermError = '';
+		} catch (caught) {
+			emailPermError = caught instanceof Error ? caught.message : 'Could not load email permissions.';
+		}
+	}
+
+	async function setEmailScope(scope: string, state: string) {
+		try {
+			emailPermissions = await setEmailPermission(scope, state);
+			emailPermError = '';
+		} catch (caught) {
+			emailPermError = caught instanceof Error ? caught.message : 'Could not update email permission.';
+		}
+	}
+
+	async function refreshGmailStatus() {
+		try {
+			gmailStatus = await getGmailStatus();
+			emailError = '';
+		} catch (caught) {
+			emailError = caught instanceof Error ? caught.message : 'Could not load Gmail status.';
+		}
+	}
+
+	async function connectGmail(force = false) {
+		gmailWorking = true;
+		try {
+			gmailStatus = await startGmailLogin(force);
+			emailStatus = gmailStatus.message;
+			gmailManualInput = '';
+			emailError = '';
+			if (gmailStatus.auth_url) window.open(gmailStatus.auth_url, '_blank', 'noopener,noreferrer');
+		} catch (caught) {
+			emailError = caught instanceof Error ? caught.message : 'Could not start Gmail authorization.';
+			emailStatus = '';
+		} finally {
+			gmailWorking = false;
+		}
+	}
+
+	async function finishGmailLogin() {
+		gmailWorking = true;
+		try {
+			gmailStatus = await completeGmailLogin(gmailManualInput);
+			email.gmail_connected = gmailStatus.connected;
+			emailStatus = gmailStatus.message;
+			gmailManualInput = '';
+			emailError = '';
+		} catch (caught) {
+			emailError = caught instanceof Error ? caught.message : 'Could not complete Gmail authorization.';
+			emailStatus = '';
+		} finally {
+			gmailWorking = false;
+		}
+	}
+
+	async function connectGmailCleanFirefox() {
+		gmailWorking = true;
+		try {
+			gmailStatus = await openGmailCleanFirefox(Boolean(email.gmail_connected || gmailStatus?.connected));
+			emailStatus = gmailStatus.message;
+			gmailManualInput = '';
+			emailError = '';
+		} catch (caught) {
+			emailError = caught instanceof Error ? caught.message : 'Could not open clean Firefox OAuth profile.';
+			emailStatus = '';
+		} finally {
+			gmailWorking = false;
+		}
+	}
+
+	async function disconnectGmail() {
+		gmailWorking = true;
+		try {
+			gmailStatus = await logoutGmail();
+			emailStatus = gmailStatus.message;
+			emailError = '';
+		} catch (caught) {
+			emailError = caught instanceof Error ? caught.message : 'Could not disconnect Gmail.';
+			emailStatus = '';
+		} finally {
+			gmailWorking = false;
+		}
+	}
 
 	async function loadUserContext() {
 		contextLoading = true;
 		try {
 			const config = await getConfig();
+			const providers = configuredProviders(config.providers, config.provider);
 			userContext = config.user_context ?? userContext;
+			personalityDisplayName = config.personality?.display_name ?? '';
+			personalityId = config.personality?.id ?? '';
+			bitbuddyLikes = [...(config.personality?.bitbuddy_likes ?? [])];
+			bitbuddyDislikes = [...(config.personality?.bitbuddy_dislikes ?? [])];
 			chatConfig = config.chat ?? chatConfig;
 			modelRuntime = {
 				provider: config.provider,
+				providers,
+				active_provider: config.active_provider ?? config.provider.key ?? config.provider.type,
 				project_scan_interval_seconds: config.runtime?.project_scan_interval_seconds ?? modelRuntime.project_scan_interval_seconds
 			};
+			beginAddProvider(firstAddableProviderType(providers), { open: false });
+			pendingAddedProviderKey = '';
+			if (providers.some((provider) => provider.type === 'codex')) void refreshCodexStatus();
 			if (config.autonomy) {
 				autonomy = config.autonomy;
 			}
@@ -163,6 +429,13 @@
 				goodnightTriggers = config.dreaming.goodnight_triggers.join(', ');
 				goodmorningTriggers = config.dreaming.goodmorning_triggers.join(', ');
 			}
+			if (config.calendar) {
+				calendar = config.calendar;
+			}
+			if (config.email) {
+				email = config.email;
+				if (config.email.provider === 'gmail') void refreshGmailStatus();
+			}
 			if (config.mcp) {
 				mcp = config.mcp;
 			}
@@ -170,15 +443,19 @@
 			contextError = '';
 			modelError = '';
 			chatConfigError = '';
+			personalityError = '';
 			mcpError = '';
 			autonomyError = '';
 			dreamingError = '';
+			emailError = '';
 		} catch (caught) {
 			contextError = caught instanceof Error ? caught.message : 'Could not load local context.';
 			chatConfigError = caught instanceof Error ? caught.message : 'Could not load chat settings.';
+			personalityError = caught instanceof Error ? caught.message : 'Could not load personality settings.';
 			modelError = caught instanceof Error ? caught.message : 'Could not load model and runtime settings.';
 			autonomyError = caught instanceof Error ? caught.message : 'Could not load autonomy settings.';
 			dreamingError = caught instanceof Error ? caught.message : 'Could not load dreaming settings.';
+			emailError = caught instanceof Error ? caught.message : 'Could not load email settings.';
 			mcpError = caught instanceof Error ? caught.message : 'Could not load MCP settings.';
 		} finally {
 			contextLoading = false;
@@ -242,6 +519,324 @@
 		return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 	}
 
+	function providerKey(provider: ProviderEntry | undefined): string {
+		return provider?.key || provider?.type || 'none';
+	}
+
+	function providerLabel(type: string): string {
+		return providerTypes.find((provider) => provider.value === type)?.label ?? type;
+	}
+
+	function isCloudProvider(type: string): boolean {
+		return type === 'openai' || type === 'anthropic';
+	}
+
+	function isCodexProvider(type: string): boolean {
+		return type === 'codex';
+	}
+
+	function providerUrlDefault(type: string): string {
+		if (type === 'ollama') return 'http://127.0.0.1:11434';
+		if (type === 'llama.cpp') return 'http://127.0.0.1:8080';
+		if (type === 'openai') return 'https://api.openai.com';
+		if (type === 'codex') return 'codex://chatgpt';
+		if (type === 'anthropic') return 'https://api.anthropic.com';
+		return '';
+	}
+
+	function providerModelDefault(type: string): string {
+		if (type === 'openai') return 'gpt-4.1';
+		if (type === 'codex') return 'gpt-5.5';
+		if (type === 'anthropic') return 'claude-sonnet-4-6';
+		return '';
+	}
+
+	function providerKeyUrl(type: string): string {
+		if (type === 'openai') return 'https://platform.openai.com/api-keys';
+		if (type === 'anthropic') return 'https://console.anthropic.com/settings/keys';
+		return '';
+	}
+
+	function providerModelOptions(): SelectOption[] {
+		const values: string[] = [];
+		const current = draftProvider.model.trim();
+		if (current) values.push(current);
+		for (const model of providerModels) {
+			if (model && !values.includes(model)) values.push(model);
+		}
+		return values.map((value) => ({ value, label: value }));
+	}
+
+	function setDraftProviderModel(model: string) {
+		draftProvider.model = model;
+	}
+
+	function cleanQuirks(values: string[]): string[] {
+		const result: string[] = [];
+		const seen = new Set<string>();
+		for (const value of values) {
+			const clean = value.trim().replace(/\s+/g, ' ').slice(0, 80);
+			const key = clean.toLowerCase();
+			if (clean && !seen.has(key)) {
+				result.push(clean);
+				seen.add(key);
+			}
+		}
+		return result;
+	}
+
+	function addQuirk(kind: 'like' | 'dislike') {
+		if (kind === 'like') {
+			bitbuddyLikes = [...bitbuddyLikes, ''];
+		} else {
+			bitbuddyDislikes = [...bitbuddyDislikes, ''];
+		}
+		quirkAddOpen = false;
+	}
+
+	function removeQuirk(kind: 'like' | 'dislike', index: number) {
+		if (kind === 'like') {
+			bitbuddyLikes = bitbuddyLikes.filter((_, itemIndex) => itemIndex !== index);
+		} else {
+			bitbuddyDislikes = bitbuddyDislikes.filter((_, itemIndex) => itemIndex !== index);
+		}
+	}
+
+	function configuredProviders(providers: ProviderEntry[] | undefined, legacy: ProviderEntry): ProviderEntry[] {
+		const list = providers?.length ? providers : legacy.type !== 'none' ? [legacy] : [];
+		return list.filter((provider) => provider.type !== 'none').map((provider) => ({ ...provider, api_key: '' }));
+	}
+
+	function firstAddableProviderType(providers: ProviderEntry[]): string {
+		return providerTypes.find((entry) => !providers.some((provider) => provider.type === entry.value))?.value ?? 'ollama';
+	}
+
+	function cleanProvider(provider: ProviderEntry): ProviderEntry {
+		const clean: ProviderEntry = {
+			key: provider.key || provider.type,
+			type: provider.type,
+			url: provider.url.trim(),
+			model: provider.model.trim(),
+			has_api_key: Boolean(provider.has_api_key)
+		};
+		if (provider.api_key?.trim()) clean.api_key = provider.api_key.trim();
+		return clean;
+	}
+
+	function beginAddProvider(type = 'ollama', options: { open?: boolean } = {}) {
+		draftProvider = { type, url: providerUrlDefault(type), model: providerModelDefault(type), has_api_key: false };
+		draftProviderKey = '';
+		editingProviderKey = '';
+		addProviderOpen = Boolean(options.open);
+	}
+
+	function setDraftProviderType(type: string) {
+		if (editingProviderKey) return;
+		beginAddProvider(type, { open: true });
+	}
+
+	function openAddProvider() {
+		if (pendingAddedProviderKey) {
+			modelError = 'Save model settings or remove the unsaved provider before adding another provider.';
+			return;
+		}
+		beginAddProvider(draftProvider.type || firstAddableProviderType(modelRuntime.providers ?? []), { open: true });
+		modelError = '';
+	}
+
+	function cancelAddProvider() {
+		beginAddProvider(firstAddableProviderType(modelRuntime.providers ?? []), { open: false });
+		modelError = '';
+		modelStatus = 'Provider add cancelled.';
+	}
+
+	function validateProviderDraft(provider: ProviderEntry): boolean {
+		if (!isCodexProvider(provider.type) && !provider.url) {
+			modelError = `${providerLabel(provider.type)} provider URL is required.`;
+			return false;
+		}
+		if (isCloudProvider(provider.type) && !provider.has_api_key && !provider.api_key) {
+			modelError = `${providerLabel(provider.type)} API key is required.`;
+			return false;
+		}
+		return true;
+	}
+
+	function addProvider() {
+		if (!addProviderOpen) {
+			openAddProvider();
+			return;
+		}
+		if (pendingAddedProviderKey) {
+			modelError = 'Save model settings or remove the unsaved provider before adding another provider.';
+			return;
+		}
+		const provider = cleanProvider({ ...draftProvider, api_key: draftProviderKey });
+		if (!validateProviderDraft(provider)) return;
+		const existing = modelRuntime.providers ?? [];
+		if (existing.some((entry) => providerKey(entry) === providerKey(provider))) {
+			modelError = `${providerLabel(provider.type)} is already configured. Use Edit provider on its card.`;
+			return;
+		}
+		modelRuntime.providers = [...existing, provider];
+		pendingAddedProviderKey = providerKey(provider);
+		modelRuntime.active_provider = modelRuntime.active_provider && modelRuntime.active_provider !== 'none' ? modelRuntime.active_provider : providerKey(provider);
+		modelError = '';
+		modelStatus = `${providerLabel(provider.type)} provider added. Save model settings to apply.`;
+		beginAddProvider(firstAddableProviderType([...existing, provider]), { open: false });
+	}
+
+	function editProvider(provider: ProviderEntry) {
+		const key = providerKey(provider);
+		if (pendingAddedProviderKey && pendingAddedProviderKey !== key) {
+			modelError = 'Save model settings or remove the unsaved provider before editing another provider.';
+			return;
+		}
+		editingProviderKey = key;
+		addProviderOpen = false;
+		draftProvider = { ...provider, api_key: '' };
+		draftProviderKey = '';
+		modelError = '';
+		modelStatus = `Editing ${providerLabel(provider.type)}. Save or cancel from its card.`;
+		if (provider.type === 'codex') void refreshCodexStatus();
+	}
+
+	function saveProviderEdit() {
+		if (!editingProviderKey) return;
+		const provider = cleanProvider({ ...draftProvider, api_key: draftProviderKey, key: editingProviderKey });
+		if (!validateProviderDraft(provider)) return;
+		const providers = modelRuntime.providers ?? [];
+		modelRuntime.providers = providers.map((entry) => (providerKey(entry) === editingProviderKey ? provider : entry));
+		if (modelRuntime.active_provider === editingProviderKey) modelRuntime.provider = provider;
+		modelError = '';
+		modelStatus = `${providerLabel(provider.type)} provider updated. Save model settings to apply.`;
+		beginAddProvider(firstAddableProviderType(modelRuntime.providers ?? []), { open: false });
+	}
+
+	function cancelProviderEdit() {
+		const previousType = draftProvider.type || 'ollama';
+		beginAddProvider(previousType, { open: false });
+		modelError = '';
+		modelStatus = 'Provider edit cancelled.';
+	}
+
+	function selectActiveProvider(provider: ProviderEntry) {
+		if (pendingAddedProviderKey && pendingAddedProviderKey !== providerKey(provider)) {
+			modelError = 'Save model settings or remove the unsaved provider before switching active providers.';
+			return;
+		}
+		modelRuntime.active_provider = providerKey(provider);
+		modelRuntime.provider = provider;
+		providerModels = [];
+		providerContext = null;
+	}
+
+	function removeProvider(provider: ProviderEntry) {
+		providerPendingRemoval = provider;
+	}
+
+	function confirmRemoveProvider() {
+		if (!providerPendingRemoval) return;
+		const provider = providerPendingRemoval;
+		const key = providerKey(provider);
+		const providers = (modelRuntime.providers ?? []).filter((entry) => providerKey(entry) !== key);
+		modelRuntime.providers = providers;
+		if (editingProviderKey === key || pendingAddedProviderKey === key) beginAddProvider(firstAddableProviderType(providers), { open: false });
+		if (pendingAddedProviderKey === key) pendingAddedProviderKey = '';
+		if (modelRuntime.active_provider === key) {
+			modelRuntime.active_provider = providerKey(providers[0]);
+			modelRuntime.provider = providers[0] ?? { type: 'none', url: '', model: '' };
+		}
+		providerModels = [];
+		providerContext = null;
+		providerPendingRemoval = null;
+		modelStatus = `${providerLabel(provider.type)} provider removed. Save model settings to apply.`;
+	}
+
+	function cancelRemoveProvider() {
+		providerPendingRemoval = null;
+	}
+
+	async function refreshCodexStatus() {
+		codexWorking = true;
+		try {
+			const status = await getCodexStatus();
+			codexLoggedIn = status.ok;
+			codexStatus = status.message;
+			if (status.ok) {
+				codexAuthUrl = '';
+				codexCallbackMode = '';
+				codexManualInput = '';
+				codexDeviceCode = '';
+				codexLoginDetail = '';
+			}
+			modelError = '';
+		} catch (caught) {
+			codexLoggedIn = false;
+			codexStatus = '';
+			modelError = caught instanceof Error ? caught.message : 'Could not check Codex login status.';
+		} finally {
+			codexWorking = false;
+		}
+	}
+
+	async function connectCodex() {
+		codexWorking = true;
+		try {
+			const result = await startCodexLogin({ force: codexLoggedIn });
+			codexLoggedIn = Boolean(result.connected);
+			codexStatus = result.message;
+			codexAuthUrl = result.auth_url ?? '';
+			codexCallbackMode = result.callback_mode ?? '';
+			codexDeviceCode = result.device_code ?? '';
+			codexLoginDetail = result.log_excerpt ?? '';
+			codexLoginLogPath = result.log_path ?? '';
+			if (codexAuthUrl) window.open(codexAuthUrl, '_blank', 'noreferrer');
+			modelError = '';
+		} catch (caught) {
+			modelError = caught instanceof Error ? caught.message : 'Could not start Codex login.';
+		} finally {
+			codexWorking = false;
+		}
+	}
+
+	async function finishCodexLogin() {
+		codexWorking = true;
+		try {
+			const result = await completeCodexLogin(codexManualInput);
+			codexLoggedIn = result.ok;
+			codexStatus = result.message;
+			codexAuthUrl = '';
+			codexManualInput = '';
+			codexCallbackMode = '';
+			modelError = '';
+		} catch (caught) {
+			modelError = caught instanceof Error ? caught.message : 'Could not complete Codex authorization.';
+		} finally {
+			codexWorking = false;
+		}
+	}
+
+	async function disconnectCodex() {
+		codexWorking = true;
+		try {
+			const result = await logoutCodex();
+			codexLoggedIn = false;
+			codexStatus = result.message;
+			codexAuthUrl = '';
+			codexCallbackMode = '';
+			codexManualInput = '';
+			codexDeviceCode = '';
+			codexLoginDetail = '';
+			codexLoginLogPath = '';
+			modelError = '';
+		} catch (caught) {
+			modelError = caught instanceof Error ? caught.message : 'Could not logout Codex.';
+		} finally {
+			codexWorking = false;
+		}
+	}
+
 	async function saveDreamingConfig() {
 		if (!validTime(dreaming.bedtime) || !validTime(dreaming.wake_time)) {
 			dreamingError = 'Use 24-hour HH:MM times, like 23:00 and 08:00.';
@@ -274,6 +869,63 @@
 			dreamingStatus = '';
 		} finally {
 			dreamingSaving = false;
+		}
+	}
+
+	async function saveCalendarConfig() {
+		const next: CalendarConfig = {
+			...calendar,
+			reminder_upcoming_minutes: Math.max(1, Number(calendar.reminder_upcoming_minutes) || 1),
+			reminder_starting_soon_minutes: Math.max(1, Number(calendar.reminder_starting_soon_minutes) || 1),
+			urgent_interrupts_enabled: Boolean(calendar.urgent_interrupts_enabled),
+			urgent_interrupt_persistent: Boolean(calendar.urgent_interrupt_persistent),
+			scheduler_tick_seconds: Math.max(15, Number(calendar.scheduler_tick_seconds) || 60)
+		};
+		calendarSaving = true;
+		try {
+			const config = await updateCalendarConfig(next);
+			calendar = config.calendar ?? next;
+			calendarStatus = calendar.enabled
+				? 'Calendar settings saved. Reminders use these values on the next scheduler tick.'
+				: 'Calendar settings saved. Calendar is currently off.';
+			calendarError = '';
+		} catch (caught) {
+			calendarError = caught instanceof Error ? caught.message : 'Could not save calendar settings.';
+			calendarStatus = '';
+		} finally {
+			calendarSaving = false;
+		}
+	}
+
+	async function saveEmailSettings() {
+		const next: EmailConfig = {
+			...email,
+			provider: email.provider === 'gmail' ? 'gmail' : 'imap',
+			email_address: email.email_address.trim(),
+			account_label: email.account_label.trim(),
+			imap_host: email.imap_host.trim(),
+			imap_port: Math.max(1, Number(email.imap_port) || 993),
+			username: email.username.trim(),
+			gmail_client_id: email.gmail_client_id.trim(),
+			gmail_redirect_uri: email.gmail_redirect_uri.trim() || 'http://localhost:8787/email/gmail/callback',
+			default_mailbox: email.default_mailbox.trim() || 'INBOX',
+			max_preview_messages: Math.max(1, Math.min(200, Number(email.max_preview_messages) || 50))
+		};
+		emailSaving = true;
+		try {
+			const config = await updateEmailConfig({ ...next, password: emailPassword || undefined, gmail_client_secret: gmailClientSecret || undefined });
+			email = config.email ?? next;
+			emailPassword = '';
+			gmailClientSecret = '';
+			emailStatus = email.enabled ? 'Email settings saved. Inbox display will use this account later.' : 'Email settings saved. Email is currently off.';
+			emailError = '';
+			await refreshEmailPermissions();
+			if (email.provider === 'gmail') await refreshGmailStatus();
+		} catch (caught) {
+			emailError = caught instanceof Error ? caught.message : 'Could not save email settings.';
+			emailStatus = '';
+		} finally {
+			emailSaving = false;
 		}
 	}
 
@@ -315,6 +967,28 @@
 		}
 	}
 
+	async function savePersonalityQuirks() {
+		const likes = cleanQuirks(bitbuddyLikes);
+		const dislikes = cleanQuirks(bitbuddyDislikes);
+		personalitySaving = true;
+		try {
+			const config = await updatePersonalityConfig({ bitbuddy_likes: likes, bitbuddy_dislikes: dislikes });
+			personalityDisplayName = config.personality?.display_name ?? personalityDisplayName;
+			personalityId = config.personality?.id ?? personalityId;
+			bitbuddyLikes = [...(config.personality?.bitbuddy_likes ?? likes)];
+			bitbuddyDislikes = [...(config.personality?.bitbuddy_dislikes ?? dislikes)];
+			personalityStatus = likes.length || dislikes.length
+				? 'Personality quirks saved. BitBuddy will use them lightly in chat and autonomy.'
+				: 'Personality quirks cleared.';
+			personalityError = '';
+		} catch (caught) {
+			personalityError = caught instanceof Error ? caught.message : 'Could not save personality quirks.';
+			personalityStatus = '';
+		} finally {
+			personalitySaving = false;
+		}
+	}
+
 	async function saveChatConfig() {
 		const next: ChatConfig = {
 			...chatConfig,
@@ -336,30 +1010,53 @@
 	}
 
 	async function saveModelRuntime() {
+		if (addProviderOpen) {
+			modelError = 'Save the provider card, or cancel the add form before saving model settings.';
+			modelStatus = '';
+			return;
+		}
+		const providers = (modelRuntime.providers ?? []).filter((provider) => provider.type !== 'none');
+		const active = modelRuntime.active_provider && providers.some((provider) => providerKey(provider) === modelRuntime.active_provider)
+			? modelRuntime.active_provider
+			: providerKey(providers[0]);
+		const activeProvider = providers.find((provider) => providerKey(provider) === active) ?? { type: 'none', url: '', model: '' };
 		const next: ModelRuntimeConfig = {
-			provider: {
-				type: modelRuntime.provider.type,
-				url: modelRuntime.provider.url.trim(),
-				model: modelRuntime.provider.model.trim()
-			},
+			provider: cleanProvider(activeProvider),
+			providers: providers.map(cleanProvider),
+			active_provider: active,
 			project_scan_interval_seconds: Math.max(0, Number(modelRuntime.project_scan_interval_seconds) || 0)
 		};
 
-		if (next.provider.type !== 'none' && !next.provider.url) {
-			modelError = 'Provider URL is required unless provider type is None.';
-			modelStatus = '';
-			return;
+		for (const provider of next.providers ?? []) {
+			if (provider.type !== 'none' && !provider.url) {
+				modelError = `${providerLabel(provider.type)} provider URL is required.`;
+				modelStatus = '';
+				return;
+			}
+			if (isCloudProvider(provider.type) && !provider.has_api_key && !provider.api_key) {
+				modelError = `${providerLabel(provider.type)} API key is required.`;
+				modelStatus = '';
+				return;
+			}
 		}
 
 		modelSaving = true;
 		try {
 			const config = await updateModelRuntimeConfig(next);
+			const savedProviders = configuredProviders(config.providers, config.provider);
 			modelRuntime = {
 				provider: config.provider,
+				providers: savedProviders,
+				active_provider: config.active_provider ?? config.provider.key ?? config.provider.type,
 				project_scan_interval_seconds: config.runtime?.project_scan_interval_seconds ?? next.project_scan_interval_seconds
 			};
 			providerModels = [];
 			providerContext = null;
+			pendingAddedProviderKey = '';
+			addProviderOpen = false;
+			editingProviderKey = '';
+			beginAddProvider(firstAddableProviderType(savedProviders), { open: false });
+			void refreshContextUsage('', { providerOnly: true });
 			modelStatus = 'Model and runtime settings saved. New chat turns will use this provider.';
 			modelError = '';
 		} catch (caught) {
@@ -385,15 +1082,21 @@
 		}
 	}
 
-	async function loadProviderModels() {
+	async function loadDraftProviderModels(silent = false) {
 		modelLoadingModels = true;
 		try {
-			providerModels = await getProviderModels();
-			modelStatus = providerModels.length ? `Loaded ${providerModels.length} model(s) from provider.` : 'Provider did not report any models.';
+			providerModels = await getProviderModels({ ...draftProvider, api_key: draftProviderKey });
+			if (providerModels.length && (!draftProvider.model || (draftProvider.type === 'codex' && !providerModels.includes(draftProvider.model)))) {
+				draftProvider.model = providerModels[0];
+			}
+			if (!silent) modelStatus = providerModels.length ? `Loaded ${providerModels.length} model(s) from provider.` : 'Provider did not report any models.';
 			modelError = '';
 		} catch (caught) {
-			modelError = caught instanceof Error ? caught.message : 'Could not list provider models.';
-			modelStatus = '';
+			providerModels = [];
+			if (!silent) {
+				modelError = caught instanceof Error ? caught.message : 'Could not list provider models.';
+				modelStatus = '';
+			}
 		} finally {
 			modelLoadingModels = false;
 		}
@@ -436,11 +1139,17 @@
 </script>
 
 <div class="settings-page">
-	<header class="settings-header">
-		<h1>Settings</h1>
-	</header>
+	<section class="settings-panel" aria-label="Settings">
+		<header class="settings-header">
+			<div class="title-mark" aria-hidden="true"><GearSixIcon size={30} weight="duotone" /></div>
+			<div class="title-copy">
+				<p class="eyebrow">Configuration</p>
+				<h1>Settings</h1>
+				<p>Appearance, model runtime, autonomy, and desktop control.</p>
+			</div>
+		</header>
 
-	<div class="settings-content">
+		<div class="settings-content">
 		<section class="settings-section">
 			<h2>Appearance</h2>
 			<p class="section-intro">Customize how BitBuddy looks on your device.</p>
@@ -472,7 +1181,7 @@
 				<h2>General</h2>
 			</div>
 
-			<div class="settings-list">
+			<div class="settings-list runtime-settings-list">
 				<button
 					class="mock-item settings-row"
 					class:open={localContextOpen}
@@ -532,6 +1241,80 @@
 
 						{#if contextStatus}
 							<p class="save-status">{contextStatus}</p>
+						{/if}
+					</div>
+				{/if}
+
+				<button
+					class="mock-item settings-row"
+					class:open={personalityQuirksOpen}
+					onclick={() => (personalityQuirksOpen = !personalityQuirksOpen)}
+					aria-expanded={personalityQuirksOpen}
+				>
+					<span>
+						Personality quirks
+						<small>Optional likes and dislikes that make BitBuddy feel less generic</small>
+					</span>
+					<div class="row-meta">
+						{#if personalityDisplayName}<span class="badge">{personalityDisplayName}</span>{/if}
+						<span class="badge">{cleanQuirks(bitbuddyLikes).length + cleanQuirks(bitbuddyDislikes).length} quirks</span>
+						<span class="row-caret"><CaretRightIcon size={18} /></span>
+					</div>
+				</button>
+
+				{#if personalityQuirksOpen}
+					<div class="collapsible-panel">
+						<p class="section-intro">Give BitBuddy things they are drawn to and things they tend to avoid. These are light flavor seeds, not hard rules, and you can add as many as you want.</p>
+
+						{#if personalityError}
+							<div class="inline-error">{personalityError}</div>
+						{/if}
+
+						<div class="context-panel quirk-panel">
+							<div class="mock-item quirk-heading">
+								<span>
+									Current personality
+									<small>{personalityDisplayName || personalityId || 'Selected personality'} · used lightly in chat and autonomy</small>
+								</span>
+							</div>
+							{#if bitbuddyLikes.length === 0 && bitbuddyDislikes.length === 0}
+								<div class="mock-item empty-quirks">
+									<span>No custom quirks yet<small>Add a like or dislike to make BitBuddy feel more specific.</small></span>
+								</div>
+							{/if}
+							{#each bitbuddyLikes as _like, index}
+								<div class="mock-item field-row quirk-row">
+									<span>BitBuddy likes<small>Curiosity or flavor seed</small></span>
+									<input bind:value={bitbuddyLikes[index]} placeholder={index === 0 ? 'retro computers' : 'weird UI details'} disabled={contextLoading || personalitySaving} />
+									<button class="ghost danger" onclick={() => removeQuirk('like', index)} disabled={contextLoading || personalitySaving}>Remove</button>
+								</div>
+							{/each}
+							{#each bitbuddyDislikes as _dislike, index}
+								<div class="mock-item field-row quirk-row">
+									<span>BitBuddy dislikes<small>Light aversion or quality preference</small></span>
+									<input bind:value={bitbuddyDislikes[index]} placeholder={index === 0 ? 'corporate AI tone' : 'soulless dashboards'} disabled={contextLoading || personalitySaving} />
+									<button class="ghost danger" onclick={() => removeQuirk('dislike', index)} disabled={contextLoading || personalitySaving}>Remove</button>
+								</div>
+							{/each}
+						</div>
+
+						<div class="context-actions">
+							<div class="quirk-add">
+								<button class="secondary-action add-provider-button" onclick={() => (quirkAddOpen = !quirkAddOpen)} disabled={contextLoading || personalitySaving}>+ Add quirk</button>
+								{#if quirkAddOpen}
+									<div class="quirk-add-menu">
+										<button onclick={() => addQuirk('like')}>Like</button>
+										<button onclick={() => addQuirk('dislike')}>Dislike</button>
+									</div>
+								{/if}
+							</div>
+							<button class="primary-action" onclick={savePersonalityQuirks} disabled={contextLoading || personalitySaving}>
+								{personalitySaving ? 'Saving...' : 'Save personality quirks'}
+							</button>
+						</div>
+
+						{#if personalityStatus}
+							<p class="save-status">{personalityStatus}</p>
 						{/if}
 					</div>
 				{/if}
@@ -630,43 +1413,139 @@
 
 				{#if modelRuntimeOpen}
 					<div class="collapsible-panel">
-						<p class="section-intro">Change the same local model connection values created during setup. These are stored in your BitBuddy config.</p>
+						<p class="section-intro">Configure local providers, cloud API providers, and ChatGPT-authorized Codex. Only configured providers appear in the active list.</p>
 
 						{#if modelError}
 							<div class="inline-error">{modelError}</div>
 						{/if}
 
-						<div class="context-panel">
-							<label class="mock-item field-row">
-								<span>
-									Provider
-									<small>Runtime API BitBuddy uses for chat completions</small>
-								</span>
-								<select bind:value={modelRuntime.provider.type} disabled={contextLoading}>
-									{#each providerTypes as provider}
-										<option value={provider.value}>{provider.label}</option>
-									{/each}
-								</select>
-							</label>
-							<label class="mock-item field-row">
-								<span>
-									Provider URL
-									<small>Example: http://127.0.0.1:11434 or http://127.0.0.1:8080</small>
-								</span>
-								<input bind:value={modelRuntime.provider.url} placeholder="http://127.0.0.1:11434" disabled={contextLoading || modelRuntime.provider.type === 'none'} />
-							</label>
-							<label class="mock-item field-row">
-								<span>
-									Model
-									<small>Optional for llama.cpp, required by most Ollama setups</small>
-								</span>
-								<input list="provider-models" bind:value={modelRuntime.provider.model} placeholder="qwen2.5-coder:14b" disabled={contextLoading || modelRuntime.provider.type === 'none'} />
-								<datalist id="provider-models">
-									{#each providerModels as model}
-										<option value={model}></option>
-									{/each}
-								</datalist>
-							</label>
+						<div class="context-panel provider-runtime-panel">
+							<div class="provider-list">
+								{#each modelRuntime.providers ?? [] as provider (providerKey(provider))}
+									<div class="provider-card" class:active={modelRuntime.active_provider === providerKey(provider)} class:editing={editingProviderKey === providerKey(provider)} class:unsaved={pendingAddedProviderKey === providerKey(provider)}>
+										<div class="mock-item provider-row">
+											<span>
+												<strong>{providerLabel(provider.type)}</strong>
+												<small>{provider.model || 'No model set'}{provider.type !== 'codex' ? ` · ${provider.url}` : ' · ChatGPT authorization'}</small>
+												{#if isCloudProvider(provider.type)}<small>{provider.has_api_key ? 'API key saved' : 'API key missing'}</small>{/if}
+												{#if provider.type === 'codex'}<small>{codexLoggedIn ? 'Codex authorized for BitBuddy' : 'Codex authorization needed'}</small>{/if}
+											</span>
+											<div class="provider-actions">
+												{#if modelRuntime.active_provider === providerKey(provider)}<span class="badge">Active</span>{/if}
+												{#if pendingAddedProviderKey === providerKey(provider)}<span class="badge warning-badge">Unsaved</span>{/if}
+												{#if editingProviderKey === providerKey(provider)}
+													<button class="primary-action" onclick={saveProviderEdit} disabled={contextLoading}>Save provider</button>
+													<button class="secondary-action" onclick={cancelProviderEdit} disabled={contextLoading}>Cancel</button>
+												{:else}
+													<button class="secondary-action" onclick={() => selectActiveProvider(provider)} disabled={contextLoading || Boolean(pendingAddedProviderKey && pendingAddedProviderKey !== providerKey(provider)) || modelRuntime.active_provider === providerKey(provider)}>Make active</button>
+													<button class="secondary-action" onclick={() => editProvider(provider)} disabled={contextLoading || Boolean(pendingAddedProviderKey && pendingAddedProviderKey !== providerKey(provider))}>Edit</button>
+												{/if}
+												<button class="ghost danger" onclick={() => removeProvider(provider)} disabled={contextLoading}>Remove</button>
+											</div>
+										</div>
+										{#if editingProviderKey === providerKey(provider)}
+											<div class="provider-edit-panel">
+												{#if !isCodexProvider(draftProvider.type)}
+													<label class="mock-item field-row">
+														<span>Provider URL<small>Endpoint for this provider</small></span>
+														<input bind:value={draftProvider.url} placeholder="http://127.0.0.1:11434" disabled={contextLoading} />
+													</label>
+												{/if}
+												<label class="mock-item field-row">
+													<span>Model<small>{modelLoadingModels ? 'Loading models from provider...' : providerModels.length ? 'Models discovered from provider' : 'Provider did not report models yet'}</small></span>
+													<div class="select-field"><SelectMenu value={draftProvider.model} options={providerModelOptions()} placeholder="Select model" ariaLabel="Provider model" onChange={setDraftProviderModel} disabled={contextLoading || modelLoadingModels || providerModelOptions().length === 0} /></div>
+												</label>
+												{#if isCloudProvider(draftProvider.type)}
+													<label class="mock-item field-row">
+														<span>API key<small>{draftProvider.has_api_key ? 'Leave blank to keep the saved key' : 'Stored outside config.yaml'} · <a href={providerKeyUrl(draftProvider.type)} target="_blank" rel="noreferrer">Get API key</a></small></span>
+														<input type="password" bind:value={draftProviderKey} placeholder="sk-..." disabled={contextLoading} />
+													</label>
+												{/if}
+												{#if isCodexProvider(draftProvider.type)}
+													<div class="mock-item field-row codex-login-row">
+														<span>
+															Codex authorization
+															<small>{codexStatus || 'Authorize BitBuddy with your ChatGPT/Codex account.'}</small>
+															{#if codexAuthUrl}<small><a href={codexAuthUrl} target="_blank" rel="noreferrer">Open ChatGPT authorization</a></small>{/if}
+															{#if codexCallbackMode === 'manual'}<small>After approving, paste the final callback URL or code below.</small>{/if}
+														</span>
+														<div class="provider-actions">
+															<button class="secondary-action" onclick={connectCodex} disabled={contextLoading || codexWorking}>{codexWorking ? 'Working...' : codexLoggedIn ? 'Reconnect Codex' : 'Connect Codex'}</button>
+															<button class="secondary-action" onclick={refreshCodexStatus} disabled={contextLoading || codexWorking}>Check status</button>
+															<button class="ghost danger" onclick={disconnectCodex} disabled={contextLoading || codexWorking || !codexLoggedIn}>Disconnect</button>
+														</div>
+													</div>
+													{#if codexCallbackMode === 'manual'}
+														<label class="mock-item field-row">
+															<span>Finish authorization<small>Paste the final browser URL, query string, or authorization code</small></span>
+															<input bind:value={codexManualInput} placeholder="http://localhost:1455/auth/callback?code=...&state=..." disabled={contextLoading || codexWorking} />
+														</label>
+														<div class="mock-item provider-manual-actions"><button class="secondary-action" onclick={finishCodexLogin} disabled={contextLoading || codexWorking || !codexManualInput.trim()}>Finish Codex authorization</button></div>
+													{/if}
+												{/if}
+											</div>
+										{/if}
+									</div>
+								{:else}
+									<div class="empty-state">No model providers configured. Add one below.</div>
+								{/each}
+							</div>
+							{#if addProviderOpen && !editingProviderKey}
+								<label class="mock-item field-row">
+									<span>
+										New provider
+										<small>Choose a type, fill details, then press + below to create a card</small>
+									</span>
+									<div class="select-field"><SelectMenu value={draftProvider.type} options={providerOptions} ariaLabel="Provider type" onChange={setDraftProviderType} disabled={contextLoading} /></div>
+								</label>
+								{#if !isCodexProvider(draftProvider.type)}
+									<label class="mock-item field-row">
+										<span>
+											Provider URL
+											<small>Default endpoint is filled for each provider type</small>
+										</span>
+										<input bind:value={draftProvider.url} placeholder="http://127.0.0.1:11434" disabled={contextLoading} />
+									</label>
+								{/if}
+								<label class="mock-item field-row">
+									<span>
+										Model
+										<small>{modelLoadingModels ? 'Loading models from provider...' : providerModels.length ? 'Models discovered from provider' : 'Provider did not report models yet'}</small>
+									</span>
+									<div class="select-field"><SelectMenu value={draftProvider.model} options={providerModelOptions()} placeholder="Select model" ariaLabel="Provider model" onChange={setDraftProviderModel} disabled={contextLoading || modelLoadingModels || providerModelOptions().length === 0} /></div>
+								</label>
+								{#if isCloudProvider(draftProvider.type)}
+									<label class="mock-item field-row">
+										<span>
+											API key
+											<small>{draftProvider.has_api_key ? 'Leave blank to keep the saved key' : 'Stored outside config.yaml'} · <a href={providerKeyUrl(draftProvider.type)} target="_blank" rel="noreferrer">Get API key</a></small>
+										</span>
+										<input type="password" bind:value={draftProviderKey} placeholder="sk-..." disabled={contextLoading} />
+									</label>
+								{/if}
+								{#if isCodexProvider(draftProvider.type)}
+									<div class="mock-item field-row codex-login-row">
+										<span>
+											Codex authorization
+											<small>{codexStatus || 'Authorize BitBuddy with your ChatGPT/Codex account.'}</small>
+											{#if codexAuthUrl}<small><a href={codexAuthUrl} target="_blank" rel="noreferrer">Open ChatGPT authorization</a></small>{/if}
+											{#if codexCallbackMode === 'manual'}<small>After approving, paste the final callback URL or code below.</small>{/if}
+										</span>
+										<div class="provider-actions">
+											<button class="secondary-action" onclick={connectCodex} disabled={contextLoading || codexWorking}>{codexWorking ? 'Working...' : codexLoggedIn ? 'Reconnect Codex' : 'Connect Codex'}</button>
+											<button class="secondary-action" onclick={refreshCodexStatus} disabled={contextLoading || codexWorking}>Check status</button>
+											<button class="ghost danger" onclick={disconnectCodex} disabled={contextLoading || codexWorking || !codexLoggedIn}>Disconnect</button>
+										</div>
+									</div>
+									{#if codexCallbackMode === 'manual'}
+										<label class="mock-item field-row">
+											<span>Finish authorization<small>Paste the final browser URL, query string, or authorization code</small></span>
+											<input bind:value={codexManualInput} placeholder="http://localhost:1455/auth/callback?code=...&state=..." disabled={contextLoading || codexWorking} />
+										</label>
+										<div class="mock-item provider-manual-actions"><button class="secondary-action" onclick={finishCodexLogin} disabled={contextLoading || codexWorking || !codexManualInput.trim()}>Finish Codex authorization</button></div>
+									{/if}
+								{/if}
+							{/if}
 							<label class="mock-item field-row">
 								<span>
 									Project scan interval
@@ -684,12 +1563,16 @@
 							</div>
 						{/if}
 
-						<div class="context-actions">
+						<div class="context-actions model-actions">
+							<button class={addProviderOpen ? 'primary-action' : 'secondary-action add-provider-button'} onclick={addProvider} disabled={contextLoading || Boolean(editingProviderKey) || Boolean(pendingAddedProviderKey)} title={pendingAddedProviderKey ? 'Save model settings or remove the unsaved provider first' : editingProviderKey ? 'Finish or cancel editing before adding another provider' : addProviderOpen ? 'Save provider card' : 'Show new provider form'}>
+								{addProviderOpen ? 'Save' : '+ Add provider'}
+							</button>
+							{#if addProviderOpen}
+								<button class="cancel-add-action" onclick={cancelAddProvider} disabled={contextLoading}>Cancel</button>
+							{/if}
+							<span class="action-spacer"></span>
 							<button class="secondary-action" onclick={checkProvider} disabled={contextLoading || modelChecking || modelRuntime.provider.type === 'none'}>
 								{modelChecking ? 'Checking...' : 'Check connection'}
-							</button>
-							<button class="secondary-action" onclick={loadProviderModels} disabled={contextLoading || modelLoadingModels || modelRuntime.provider.type === 'none'}>
-								{modelLoadingModels ? 'Loading...' : 'List models'}
 							</button>
 							<button class="primary-action" onclick={saveModelRuntime} disabled={contextLoading || modelSaving}>
 								{modelSaving ? 'Saving...' : 'Save model settings'}
@@ -737,13 +1620,13 @@
 						{/if}
 
 						<div class="context-panel">
-							<label class="mock-item toggle-row">
+							<div class="mock-item toggle-row">
 								<span>
 									Enable MCP discovery
 									<small>External MCP tools appear in chat only when this is on</small>
 								</span>
-								<input type="checkbox" bind:checked={mcp.enabled} />
-							</label>
+								<Checkbox bind:checked={mcp.enabled} ariaLabel="Enable MCP discovery" />
+							</div>
 							<div class="mock-item status-row">
 								<span>
 									Linux desktop control
@@ -821,20 +1704,20 @@
 						{/if}
 
 						<div class="context-panel">
-							<label class="mock-item toggle-row">
+							<div class="mock-item toggle-row">
 								<span>
 									Enable autonomy
 									<small>Master switch for idle autonomous behavior</small>
 								</span>
-								<input type="checkbox" bind:checked={autonomy.enabled} />
-							</label>
-							<label class="mock-item toggle-row">
+								<Checkbox bind:checked={autonomy.enabled} ariaLabel="Enable autonomy" />
+							</div>
+							<div class="mock-item toggle-row">
 								<span>
 									Run after memory consolidation
 									<small>Schedule autonomy after private idle memory review finishes</small>
 								</span>
-								<input type="checkbox" bind:checked={autonomy.run_after_idle_consolidation} />
-							</label>
+								<Checkbox bind:checked={autonomy.run_after_idle_consolidation} ariaLabel="Run after memory consolidation" />
+							</div>
 							<label class="mock-item field-row">
 								<span>
 									Idle delay
@@ -842,13 +1725,13 @@
 								</span>
 								<input type="number" min="0" bind:value={autonomy.idle_delay_seconds} />
 							</label>
-							<label class="mock-item toggle-row">
+							<div class="mock-item toggle-row">
 								<span>
 									Repeat idle cycles
 									<small>Allow another cycle while you remain away</small>
 								</span>
-								<input type="checkbox" bind:checked={autonomy.repeat_idle_cycles} />
-							</label>
+								<Checkbox bind:checked={autonomy.repeat_idle_cycles} ariaLabel="Repeat idle cycles" />
+							</div>
 							<label class="mock-item field-row">
 								<span>
 									Backoff multiplier
@@ -898,13 +1781,13 @@
 								</span>
 								<input type="number" min="1" max="50" bind:value={autonomy.max_autonomous_deliveries_per_day} />
 							</label>
-							<label class="mock-item toggle-row">
+							<div class="mock-item toggle-row">
 								<span>
 									Web search
 									<small>Allow safe web curiosity through the local search backend</small>
 								</span>
-								<input type="checkbox" bind:checked={autonomy.web_search.enabled} />
-							</label>
+								<Checkbox bind:checked={autonomy.web_search.enabled} ariaLabel="Web search" />
+							</div>
 							<label class="mock-item field-row">
 								<span>
 									Search URL
@@ -959,20 +1842,20 @@
 						{/if}
 
 						<div class="context-panel">
-							<label class="mock-item toggle-row">
+							<div class="mock-item toggle-row">
 								<span>
 									Enable dreaming
 									<small>Allow NightEligible, MiniDream cleanup, and Sleep lifecycle states</small>
 								</span>
-								<input type="checkbox" bind:checked={dreaming.enabled} />
-							</label>
-							<label class="mock-item toggle-row">
+								<Checkbox bind:checked={dreaming.enabled} ariaLabel="Enable dreaming" />
+							</div>
+							<div class="mock-item toggle-row">
 								<span>
 									Quiet mode after bedtime
 									<small>Reduce low-priority autonomy while the user may be winding down</small>
 								</span>
-								<input type="checkbox" bind:checked={dreaming.quiet_mode_after_bedtime} />
-							</label>
+								<Checkbox bind:checked={dreaming.quiet_mode_after_bedtime} ariaLabel="Quiet mode after bedtime" />
+							</div>
 							<label class="mock-item field-row">
 								<span>
 									Bedtime
@@ -1029,13 +1912,13 @@
 								</span>
 								<input bind:value={goodmorningTriggers} placeholder="good morning, morning" />
 							</label>
-							<label class="mock-item toggle-row">
+							<div class="mock-item toggle-row">
 								<span>
 									SelfNote injection
 									<small>Experimental: selectively inject a few relevant SelfNotes into prompts</small>
 								</span>
-								<input type="checkbox" bind:checked={dreaming.self_note_injection_enabled} />
-							</label>
+								<Checkbox bind:checked={dreaming.self_note_injection_enabled} ariaLabel="SelfNote injection" />
+							</div>
 						</div>
 
 						<div class="context-actions">
@@ -1051,45 +1934,387 @@
 				{/if}
 			</div>
 		</section>
-	</div>
+
+		<section class="settings-section">
+			<div class="section-header">
+				<h2>Calendar</h2>
+			</div>
+
+			<div class="settings-list">
+				<button
+					class="mock-item settings-row"
+					class:open={calendarOpen}
+					onclick={() => (calendarOpen = !calendarOpen)}
+					aria-expanded={calendarOpen}
+				>
+					<span>
+						Calendar awareness
+						<small>Local schedule, reminders, and conflict warnings</small>
+					</span>
+					<div class="row-meta">
+						<span class="badge">{calendar.enabled ? 'Enabled' : 'Off'}</span>
+						<span class="badge">{Math.round(Number(calendar.reminder_starting_soon_minutes) || 0)}m soon</span>
+						<span class="row-caret"><CaretRightIcon size={18} /></span>
+					</div>
+				</button>
+
+				{#if calendarOpen}
+					<div class="collapsible-panel">
+						<p class="section-intro">BitBuddy keeps a local-first calendar and can remind you about upcoming events. Use Calendar access below to control what it may do on its own.</p>
+
+						{#if calendarError}
+							<div class="inline-error">{calendarError}</div>
+						{/if}
+
+						<div class="context-panel">
+							<div class="mock-item toggle-row">
+								<span>
+									Enable calendar
+									<small>Master switch for calendar reading and reminders</small>
+								</span>
+								<Checkbox bind:checked={calendar.enabled} ariaLabel="Enable calendar" />
+							</div>
+							<label class="mock-item field-row">
+								<span>
+									Upcoming reminder lead
+									<small>Minutes before an event to send the first heads-up</small>
+								</span>
+								<input type="number" min="1" bind:value={calendar.reminder_upcoming_minutes} disabled={!calendar.enabled} />
+							</label>
+							<label class="mock-item field-row">
+								<span>
+									Starting-soon lead
+									<small>Minutes before an event for the "starting soon" reminder</small>
+								</span>
+								<input type="number" min="1" bind:value={calendar.reminder_starting_soon_minutes} disabled={!calendar.enabled} />
+							</label>
+							<div class="mock-item toggle-row">
+								<span>
+									Urgent calendar interrupts
+									<small>Starting-soon reminders appear as urgent UI alerts without waiting for autonomy</small>
+								</span>
+								<Checkbox bind:checked={calendar.urgent_interrupts_enabled} disabled={!calendar.enabled} ariaLabel="Urgent calendar interrupts" />
+							</div>
+							<div class="mock-item toggle-row">
+								<span>
+									Persistent urgent reminders
+									<small>Urgent calendar reminders stay visible until dismissed or opened</small>
+								</span>
+								<Checkbox bind:checked={calendar.urgent_interrupt_persistent} disabled={!calendar.enabled || !calendar.urgent_interrupts_enabled} ariaLabel="Persistent urgent reminders" />
+							</div>
+							<div class="mock-item toggle-row">
+								<span>
+									Conflict warnings
+									<small>Warn when two events overlap</small>
+								</span>
+								<Checkbox bind:checked={calendar.conflict_warnings_enabled} disabled={!calendar.enabled} ariaLabel="Conflict warnings" />
+							</div>
+							<div class="mock-item toggle-row">
+								<span>
+									Chat nudges
+									<small>Let imminent and conflict reminders also speak up in chat (respects quiet hours and rate limits). Off means notifications only.</small>
+								</span>
+								<Checkbox bind:checked={calendar.chat_nudges_enabled} disabled={!calendar.enabled} ariaLabel="Chat nudges" />
+							</div>
+							<label class="mock-item field-row">
+								<span>
+									Scheduler tick
+									<small>How often BitBuddy checks for due reminders, in seconds (minimum 15)</small>
+								</span>
+								<input type="number" min="15" bind:value={calendar.scheduler_tick_seconds} disabled={!calendar.enabled} />
+							</label>
+							<div class="mock-item toggle-row">
+								<span>
+									Show holidays
+									<small>Overlay public holidays for your country (read-only) onto the calendar</small>
+								</span>
+								<Checkbox bind:checked={calendar.holidays_enabled} disabled={!calendar.enabled} ariaLabel="Show holidays" />
+							</div>
+							<label class="mock-item field-row">
+								<span>
+									Holidays country
+									<small>ISO country code (e.g. US, GB, DE). Leave blank to use your locale ({userContext.locale || 'en-US'})</small>
+								</span>
+								<input
+									placeholder={(userContext.locale.split(/[-_]/)[1] || 'US').toUpperCase()}
+									maxlength="2"
+									bind:value={calendar.holidays_country}
+									disabled={!calendar.enabled || !calendar.holidays_enabled}
+									oninput={(e) => (calendar.holidays_country = e.currentTarget.value.toUpperCase())}
+								/>
+							</label>
+						</div>
+
+						<div class="context-actions">
+							<button class="primary-action" onclick={saveCalendarConfig} disabled={calendarSaving || contextLoading}>
+								{calendarSaving ? 'Saving...' : 'Save calendar settings'}
+							</button>
+						</div>
+
+						{#if calendarStatus}
+							<p class="save-status">{calendarStatus}</p>
+						{/if}
+
+						<div class="calendar-access">
+							<div class="access-heading">Calendar access</div>
+							<p class="section-intro">Control what BitBuddy may do with your calendar on its own. You can always manage events yourself on the Calendar page.</p>
+							{#if calendarPermError}
+								<div class="inline-error">{calendarPermError}</div>
+							{/if}
+							{#if calendarPermissions}
+								<div class="scope-list">
+									{#each calendarScopes as scope}
+										<div class="scope-row">
+											<span class="scope-label">{SCOPE_LABELS[scope]}</span>
+											<div class="scope-states">
+												{#each SCOPE_STATES as state}
+													<button
+														type="button"
+														class="scope-state {state}"
+														class:active={calendarPermissions[scope] === state}
+														onclick={() => setScope(scope, state)}
+													>
+														{state === 'ask' ? 'Ask' : state === 'granted' ? 'Allow' : 'Deny'}
+													</button>
+												{/each}
+											</div>
+										</div>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					</div>
+				{/if}
+			</div>
+		</section>
+
+		<section class="settings-section">
+			<div class="section-header">
+				<h2>Email</h2>
+			</div>
+
+			<div class="settings-list">
+				<button class="mock-item settings-row" class:open={emailOpen} onclick={() => (emailOpen = !emailOpen)} aria-expanded={emailOpen}>
+					<span>
+						Email awareness
+						<small>Generic IMAP account, read/search awareness, and safe permission gates</small>
+					</span>
+					<div class="row-meta">
+						<span class="badge">{email.enabled ? 'Enabled' : 'Off'}</span>
+						<span class="badge">{email.email_address || 'IMAP'}</span>
+						<span class="row-caret"><CaretRightIcon size={18} /></span>
+					</div>
+				</button>
+
+				{#if emailOpen}
+					<div class="collapsible-panel">
+						<p class="section-intro">BitBuddy can become email-aware through local IMAP or self-hosted Gmail OAuth. Credentials and tokens stay on this machine. Gmail can read/search mail and, with explicit local permission, move messages to Trash. No send, reply, archive, permanent delete, mark-read, or remote image loading.</p>
+						{#if emailError}<div class="inline-error">{emailError}</div>{/if}
+
+						<div class="context-panel">
+							<div class="mock-item toggle-row"><span>Enable email<small>Master switch for email awareness and inbox access</small></span><Checkbox bind:checked={email.enabled} ariaLabel="Enable email" /></div>
+							<div class="mock-item field-row"><span>Provider<small>Use generic IMAP or Google's Gmail API</small></span><div class="select-field"><SelectMenu value={email.provider} options={emailProviderOptions} ariaLabel="Email provider" disabled={!email.enabled} onChange={(value) => (email.provider = value as EmailConfig['provider'])} /></div></div>
+							<label class="mock-item field-row"><span>Email address<small>The account BitBuddy should know about</small></span><input bind:value={email.email_address} placeholder="you@example.com" disabled={!email.enabled} /></label>
+							<label class="mock-item field-row"><span>Account label<small>A local display name, such as Personal or Work</small></span><input bind:value={email.account_label} placeholder="Personal" disabled={!email.enabled} /></label>
+							{#if email.provider === 'imap'}
+								<label class="mock-item field-row"><span>IMAP host<small>Your provider's incoming mail server</small></span><input bind:value={email.imap_host} placeholder="imap.example.com" disabled={!email.enabled} /></label>
+								<label class="mock-item field-row"><span>IMAP port<small>Usually 993 for SSL</small></span><input type="number" min="1" bind:value={email.imap_port} disabled={!email.enabled} /></label>
+								<label class="mock-item field-row"><span>Security<small>Connection security for IMAP</small></span><select bind:value={email.imap_security} disabled={!email.enabled}><option value="ssl">SSL</option><option value="starttls">STARTTLS</option><option value="none">None</option></select></label>
+								<label class="mock-item field-row"><span>Username<small>Usually the full email address</small></span><input bind:value={email.username} placeholder="you@example.com" disabled={!email.enabled} /></label>
+								<label class="mock-item field-row"><span>Password / app password<small>{email.has_password ? 'Saved locally. Enter a new value to replace it.' : 'Stored as a local credential reference, not in config.'}</small></span><input type="password" bind:value={emailPassword} placeholder={email.has_password ? 'Saved' : 'App password'} disabled={!email.enabled} /></label>
+							{:else}
+								<div class="setup-card">
+									<div>
+										<p class="eyebrow">Self-hosted Gmail setup</p>
+										<h3>Use your own Google Web Application OAuth client</h3>
+										<p>BitBuddy never receives your Gmail credentials. Your OAuth client secret and Gmail tokens are stored locally in BitBuddy secrets.</p>
+									</div>
+									<ol class="setup-steps">
+										<li><span>Create or open a Google Cloud project.</span></li>
+										<li><span>Configure OAuth consent and add yourself as a test user if the app is in testing mode.</span></li>
+										<li><span>Add Gmail scope <code>https://www.googleapis.com/auth/gmail.modify</code>.</span></li>
+										<li><span>Create OAuth client credentials with application type <strong>Web application</strong> and add redirect URI <code>{email.gmail_redirect_uri || 'http://localhost:8787/email/gmail/callback'}</code>.</span></li>
+										<li><span>Paste the Web Application client ID and client secret below, save settings, then connect Gmail.</span></li>
+									</ol>
+								</div>
+								<label class="mock-item field-row"><span>Google Web OAuth client ID<small>From your own Google Cloud Web Application OAuth client</small></span><input bind:value={email.gmail_client_id} placeholder="...apps.googleusercontent.com" disabled={!email.enabled} /></label>
+								<label class="mock-item field-row"><span>Google OAuth client secret<small>{email.has_gmail_client_secret ? 'Saved locally. Enter a new value to replace it.' : 'Required for Web Application OAuth. Stored locally outside config.'}</small></span><input type="password" bind:value={gmailClientSecret} placeholder={email.has_gmail_client_secret ? 'Saved' : 'Client secret'} disabled={!email.enabled} /></label>
+								<div class="mock-item status-row"><span>Gmail connection<small>{gmailStatus?.message ?? (email.gmail_connected ? 'Connected. Reconnect if you added Trash access after first setup.' : 'Not connected')}</small></span><div class="provider-actions"><button class="secondary-action" onclick={() => connectGmail(Boolean(email.gmail_connected || gmailStatus?.connected))} disabled={!email.enabled || gmailWorking || emailSaving}>{gmailWorking ? 'Working...' : email.gmail_connected || gmailStatus?.connected ? 'Reconnect Gmail' : 'Connect Gmail'}</button><button class="secondary-action" onclick={refreshGmailStatus} disabled={!email.enabled || gmailWorking}>Check status</button><button class="ghost danger" onclick={disconnectGmail} disabled={!email.enabled || gmailWorking || !(email.gmail_connected || gmailStatus?.connected)}>Disconnect</button></div></div>
+
+								<button class="mock-item settings-row mini-row" class:open={emailAdvancedOpen} onclick={() => (emailAdvancedOpen = !emailAdvancedOpen)} aria-expanded={emailAdvancedOpen}>
+									<span>Advanced OAuth<small>Redirect URI and inbox tuning</small></span>
+									<span class="row-caret"><CaretRightIcon size={18} /></span>
+								</button>
+								{#if emailAdvancedOpen}
+									<label class="mock-item field-row"><span>Redirect URI<small>Add this exact URI to your Google Web Application OAuth client.</small></span><input bind:value={email.gmail_redirect_uri} placeholder="http://localhost:8787/email/gmail/callback" disabled={!email.enabled} /></label>
+									<label class="mock-item field-row"><span>Default mailbox<small>The inbox folder to open first</small></span><input bind:value={email.default_mailbox} placeholder="INBOX" disabled={!email.enabled} /></label>
+									<label class="mock-item field-row"><span>Preview message limit<small>Maximum messages to preview in lightweight inbox views</small></span><input type="number" min="1" max="200" bind:value={email.max_preview_messages} disabled={!email.enabled} /></label>
+								{/if}
+
+								<button class="mock-item settings-row mini-row" class:open={emailTroubleshootingOpen} onclick={() => (emailTroubleshootingOpen = !emailTroubleshootingOpen)} aria-expanded={emailTroubleshootingOpen}>
+									<span>Troubleshooting<small>Fallbacks for broken browser profiles or OAuth callback issues</small></span>
+									<span class="row-caret"><CaretRightIcon size={18} /></span>
+								</button>
+								{#if emailTroubleshootingOpen}
+									<div class="mock-item status-row"><span>Google says “Something went wrong”<small>Usually caused by VPN/IP protection, a blocked Google session, or a Google Cloud test-user/scope mismatch. Turn off VPN/IP protection for the OAuth attempt first.</small></span></div>
+									<div class="mock-item status-row"><span>Clean Firefox OAuth<small>Opens Google auth in an isolated normal Firefox profile, not private mode.</small></span><div class="provider-actions"><button class="secondary-action" onclick={connectGmailCleanFirefox} disabled={!email.enabled || gmailWorking || emailSaving}>Open Clean Firefox</button></div></div>
+									<label class="mock-item field-row"><span>Finish in another browser<small>Paste the final callback URL if the browser reaches BitBuddy but cannot complete automatically.</small></span><input bind:value={gmailManualInput} placeholder="http://localhost:8787/email/gmail/callback?code=...&state=..." disabled={!email.enabled || gmailWorking} /></label>
+									<div class="mock-item provider-manual-actions"><button class="secondary-action" onclick={finishGmailLogin} disabled={!email.enabled || gmailWorking || !gmailManualInput.trim()}>Finish Gmail authorization</button></div>
+								{/if}
+							{/if}
+							{#if email.provider !== 'gmail'}
+								<label class="mock-item field-row"><span>Default mailbox<small>The inbox folder to open first</small></span><input bind:value={email.default_mailbox} placeholder="INBOX" disabled={!email.enabled} /></label>
+								<label class="mock-item field-row"><span>Preview message limit<small>Maximum messages to preview in lightweight inbox views</small></span><input type="number" min="1" max="200" bind:value={email.max_preview_messages} disabled={!email.enabled} /></label>
+							{/if}
+						</div>
+
+						<div class="context-actions"><button class="primary-action" onclick={saveEmailSettings} disabled={emailSaving || contextLoading}>{emailSaving ? 'Saving...' : 'Save email settings'}</button></div>
+						{#if emailStatus}<p class="save-status">{emailStatus}</p>{/if}
+
+						<div class="calendar-access email-access">
+							<div class="access-heading">Email access</div>
+							<p class="section-intro">Control what BitBuddy may do with email. Trash access only moves messages to Trash; it does not permanently delete mail.</p>
+							{#if emailPermError}<div class="inline-error">{emailPermError}</div>{/if}
+							{#if emailPermissions}
+								<div class="scope-list">
+									{#each emailScopes as scope}
+										<div class="scope-row">
+											<span class="scope-label">{EMAIL_SCOPE_LABELS[scope] ?? scope}</span>
+											<div class="scope-states">
+												{#each SCOPE_STATES as state}
+													<button type="button" class="scope-state {state}" class:active={emailPermissions[scope] === state} onclick={() => setEmailScope(scope, state)}>{state === 'ask' ? 'Ask' : state === 'granted' ? 'Allow' : 'Deny'}</button>
+												{/each}
+											</div>
+										</div>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					</div>
+				{/if}
+			</div>
+		</section>
+		</div>
+	</section>
 </div>
+
+<Overlay open={Boolean(providerPendingRemoval)} label="Remove provider" onClose={cancelRemoveProvider}>
+	<div class="confirm-dialog">
+		<p class="eyebrow">Remove Provider</p>
+		<h2>Remove {providerPendingRemoval ? providerLabel(providerPendingRemoval.type) : 'provider'}?</h2>
+		<p>This removes the provider card from Settings. Save model settings afterward to apply the change.</p>
+		<div class="confirm-actions">
+			<button class="secondary-action" onclick={cancelRemoveProvider}>Cancel</button>
+			<button class="danger-action" onclick={confirmRemoveProvider}>Remove</button>
+		</div>
+	</div>
+</Overlay>
 
 <style>
 	.settings-page {
+		--page-accent: var(--accent);
+		--page-soft: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+		--page-border: color-mix(in srgb, var(--accent) 20%, var(--border));
+		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
+		--card-glass-sheen: none;
+		--card-inner-line: transparent;
+		--card-shadow: none;
+		--card-top-edge: transparent;
+		--card-top-light: transparent;
+		--shadow-panel: none;
+
 		box-sizing: border-box;
 		width: 100%;
 		max-width: 100%;
 		min-width: 0;
 		height: 100%;
 		min-height: 0;
-		overflow-y: auto;
-		overflow-x: hidden;
 		padding: 0 1rem;
 		margin: 0 auto;
-		animation: fade-in 0.3s ease-out;
-		scrollbar-color: var(--scrollbar-thumb) transparent;
+		display: flex;
+		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
 
 	@keyframes fade-in {
-		from { opacity: 0; transform: translateY(10px); }
+		from { opacity: 0; transform: translateY(12px); }
 		to { opacity: 1; transform: translateY(0); }
 	}
 
+	.settings-panel {
+		width: 100%;
+		height: 100%;
+		max-height: calc(100vh - 3rem);
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		border: 1px solid var(--page-border);
+		border-radius: 1.45rem;
+		background:
+			linear-gradient(135deg, var(--glass-overlay), transparent 22rem),
+			radial-gradient(circle at top right, var(--page-glow), transparent 30rem),
+			var(--panel);
+		box-shadow: var(--shadow-chat);
+		overflow: hidden;
+	}
+
 	.settings-header {
-		margin-bottom: 2.5rem;
+		flex: 0 0 auto;
+		padding: 1.35rem 1.5rem;
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		border-bottom: 1px solid var(--border);
+		background:
+			linear-gradient(135deg, var(--page-soft), transparent 70%),
+			var(--header-bg);
+	}
+
+	.title-mark {
+		width: 3.5rem;
+		height: 3.5rem;
+		display: grid;
+		place-items: center;
+		border-radius: 1.1rem;
+		background: var(--surface-glass);
+		border: 1px solid var(--page-border);
+		color: var(--page-accent);
+		box-shadow: 0 0 20px var(--page-soft);
+		flex: 0 0 auto;
+	}
+
+	.title-copy {
+		min-width: 0;
+	}
+
+	.eyebrow {
+		color: var(--page-accent);
+		font-size: 0.72rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
 	}
 
 	h1 {
-		font-size: 2.25rem;
+		font-size: 1.65rem;
 		font-weight: 900;
-		letter-spacing: -0.02em;
+		letter-spacing: -0.03em;
+		line-height: 1.1;
+	}
+
+	.title-copy p:last-child {
+		margin: 0.15rem 0 0;
+		color: var(--text-soft);
 	}
 
 	.settings-content {
+		flex: 1 1 auto;
+		min-height: 0;
 		display: grid;
-		gap: 3rem;
+		gap: 1.75rem;
 		min-width: 0;
-		padding-bottom: 2rem;
+		padding: 1.5rem;
+		overflow-y: auto;
+		scrollbar-color: var(--scrollbar-thumb) transparent;
 	}
 
 	.settings-section,
@@ -1097,6 +2322,29 @@
 	.context-panel,
 	.collapsible-panel {
 		min-width: 0;
+	}
+
+	.settings-section + .settings-section {
+		position: relative;
+		padding-top: 0.15rem;
+	}
+
+	.settings-section + .settings-section::before {
+		content: '';
+		position: absolute;
+		left: 0;
+		top: -0.9rem;
+		width: 100%;
+		height: 2px;
+		background: linear-gradient(
+			90deg,
+			transparent,
+			color-mix(in srgb, var(--border-strong) 68%, transparent) 12%,
+			color-mix(in srgb, var(--accent) 18%, var(--border-strong)) 50%,
+			color-mix(in srgb, var(--border-strong) 68%, transparent) 88%,
+			transparent
+		);
+		opacity: 0.9;
 	}
 
 	.settings-section h2 {
@@ -1133,14 +2381,11 @@
 	.theme-card:hover {
 		border-color: var(--border-strong);
 		background: var(--panel-raised);
-		transform: translateY(-2px);
-		box-shadow: var(--shadow-panel);
 	}
 
 	.theme-card.active {
 		border-color: var(--accent);
 		background: var(--accent-soft);
-		box-shadow: 0 8px 24px rgba(121, 184, 255, 0.12);
 	}
 
 	.theme-icon {
@@ -1221,10 +2466,20 @@
 	}
 
 	.settings-list {
-		overflow: hidden;
-		border: 1px solid var(--border);
-		border-radius: 1.25rem;
-		background: var(--panel);
+		overflow: visible;
+		border: 1px solid var(--card-border);
+		border-radius: 1.15rem;
+		background:
+			var(--card-glass-sheen),
+			var(--card-bg);
+		box-shadow: inset 0 1px 0 var(--card-inner-line), var(--card-shadow);
+	}
+
+	.runtime-settings-list,
+	.provider-runtime-panel,
+	.collapsible-panel,
+	.context-panel {
+		overflow: visible;
 	}
 
 	.settings-row {
@@ -1232,14 +2487,38 @@
 		border-top: none;
 		border-right: none;
 		border-left: none;
+		border-bottom-color: color-mix(in srgb, var(--card-border) 84%, var(--accent) 8%);
 		background: transparent;
 		font: inherit;
 		text-align: left;
 		transition: background 180ms ease;
 	}
 
+	.settings-page .settings-list > .settings-row {
+		background: transparent;
+		box-shadow: none;
+	}
+
+	.settings-list > .settings-row:first-child,
+	.settings-list > .collapsible-panel:first-child {
+		border-top-left-radius: calc(1.15rem - 1px);
+		border-top-right-radius: calc(1.15rem - 1px);
+	}
+
+	.settings-list > .settings-row:last-child,
+	.settings-list > .collapsible-panel:last-child {
+		border-bottom-left-radius: calc(1.15rem - 1px);
+		border-bottom-right-radius: calc(1.15rem - 1px);
+	}
+
+	.settings-list > .settings-row:not(:last-child),
+	.settings-list > .collapsible-panel:not(:last-child) {
+		border-bottom: 1px solid color-mix(in srgb, var(--card-border) 82%, var(--accent) 8%);
+		box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--card-top-light) 45%, transparent);
+	}
+
 	.settings-row:hover {
-		background: var(--panel-raised);
+		background: transparent;
 	}
 
 	.settings-row > span {
@@ -1274,15 +2553,96 @@
 
 	.collapsible-panel {
 		padding: 1.25rem;
-		border-bottom: 1px solid var(--border);
-		background: linear-gradient(180deg, var(--panel-raised), var(--panel));
+		border-bottom: 1px solid var(--card-border);
+		background:
+			var(--card-glass-sheen),
+			color-mix(in srgb, var(--card-bg) 86%, var(--surface-inset));
 	}
 
 	.context-panel {
-		overflow: hidden;
+		overflow: visible;
+		border: 1px solid var(--card-border);
+		border-radius: 1.05rem;
+		background:
+			var(--card-glass-sheen),
+			var(--card-bg);
+		box-shadow: inset 0 1px 0 var(--card-inner-line);
+	}
+
+	.setup-card {
+		display: grid;
+		gap: 0.9rem;
+		padding: 1rem 1.25rem;
+		border-bottom: 1px solid var(--border);
+		color: var(--text-muted);
+	}
+
+	.setup-card h3 {
+		margin: 0.15rem 0 0.25rem;
+		color: var(--text);
+		font-size: 1rem;
+	}
+
+	.setup-card p {
+		margin: 0;
+		color: var(--text-soft);
+		line-height: 1.45;
+	}
+
+	.setup-steps {
+		counter-reset: setup-step;
+		display: grid;
+		gap: 0.6rem;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		color: var(--text-soft);
+		font-size: 0.88rem;
+		line-height: 1.45;
+	}
+
+	.setup-steps li {
+		counter-increment: setup-step;
+		display: grid;
+		grid-template-columns: 2rem minmax(0, 1fr);
+		align-items: start;
+		gap: 0.75rem;
+		padding: 0.75rem;
+		border: 1px solid color-mix(in srgb, var(--card-border) 84%, var(--accent) 12%);
+		border-radius: 0.85rem;
+		background:
+			linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 58%),
+			var(--surface-glass);
+	}
+
+	.setup-steps li::before {
+		content: counter(setup-step);
+		display: grid;
+		width: 2rem;
+		height: 2rem;
+		place-items: center;
+		border-radius: 999px;
+		background: var(--accent);
+		color: #fff;
+		font-weight: 900;
+		box-shadow: 0 0.45rem 1.2rem color-mix(in srgb, var(--accent) 24%, transparent);
+	}
+
+	.setup-steps li span {
+		min-width: 0;
+	}
+
+	.setup-steps code {
 		border: 1px solid var(--border);
-		border-radius: 1.25rem;
-		background: var(--panel);
+		border-radius: 0.38rem;
+		background: var(--surface-inset);
+		color: var(--text);
+		font-size: 0.78rem;
+		padding: 0.08rem 0.28rem;
+	}
+
+	.mini-row {
+		padding: 0.95rem 1.25rem;
 	}
 
 	.compact-context-panel {
@@ -1304,9 +2664,11 @@
 		justify-content: center;
 		gap: 0.35rem;
 		padding: 1rem;
-		border: 1px solid var(--border);
-		border-radius: 1rem;
-		background: var(--panel);
+		border: 1px solid var(--card-border);
+		border-radius: 0.95rem;
+		background:
+			var(--card-glass-sheen),
+			var(--card-bg);
 		color: var(--text);
 		font: inherit;
 		text-align: left;
@@ -1315,14 +2677,12 @@
 
 	.animation-card:hover {
 		border-color: var(--border-strong);
-		background: var(--panel-raised);
-		transform: translateY(-1px);
+		background: var(--card-hover);
 	}
 
 	.animation-card.active {
 		border-color: var(--accent);
 		background: var(--accent-soft);
-		box-shadow: 0 8px 24px rgba(121, 184, 255, 0.1);
 	}
 
 	.animation-card span {
@@ -1371,16 +2731,226 @@
 		width: min(20rem, 52vw);
 		min-width: 0;
 		max-width: 100%;
-		border: 1px solid var(--border);
-		border-radius: 0.8rem;
-		background: var(--bg-soft);
+		border: 1px solid var(--card-border);
+		border-radius: 0.78rem;
+		background: var(--surface-inset);
 		color: var(--text);
 		font: inherit;
 		padding: 0.75rem 0.9rem;
 	}
 
-	.field-row select {
-		appearance: none;
+	.quirk-panel {
+		overflow: visible;
+	}
+
+	.empty-quirks span {
+		display: flex;
+		flex-direction: column;
+		font-weight: 800;
+	}
+
+	.quirk-row {
+		grid-template-columns: minmax(10rem, 13rem) minmax(12rem, 1fr) auto;
+	}
+
+	.quirk-row input {
+		width: 100%;
+	}
+
+	.quirk-add {
+		position: relative;
+		z-index: 60;
+	}
+
+	.quirk-add-menu {
+		position: absolute;
+		left: 0;
+		bottom: calc(100% + 0.45rem);
+		z-index: 5002;
+		min-width: 9rem;
+		padding: 0.35rem;
+		display: grid;
+		gap: 0.25rem;
+		border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--card-border));
+		border-radius: 0.85rem;
+		background: var(--panel-raised);
+		box-shadow: 0 16px 34px rgba(0, 0, 0, 0.34);
+	}
+
+	.quirk-add-menu button {
+		border: none;
+		border-radius: 0.65rem;
+		background: transparent;
+		color: var(--text);
+		font: inherit;
+		font-weight: 800;
+		text-align: left;
+		padding: 0.55rem 0.7rem;
+	}
+
+	.quirk-add-menu button:hover {
+		background: var(--card-hover);
+	}
+
+	.provider-list {
+		display: grid;
+		gap: 0.75rem;
+	}
+
+	.provider-card {
+		overflow: hidden;
+		border: 1px solid var(--card-border);
+		border-radius: 1rem;
+		background:
+			var(--card-glass-sheen),
+			var(--card-bg);
+	}
+
+	.provider-card.active {
+		border-color: color-mix(in srgb, var(--accent) 46%, var(--card-border));
+		box-shadow: inset 0 1px 0 var(--card-top-light), 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
+	}
+
+	.provider-card.editing {
+		position: relative;
+		z-index: 120;
+		overflow: visible;
+		border-color: color-mix(in srgb, var(--accent) 58%, var(--card-border));
+		background: color-mix(in srgb, var(--card-bg) 92%, var(--accent-soft));
+	}
+
+	.provider-card.unsaved {
+		border-color: color-mix(in srgb, var(--warning) 58%, var(--card-border));
+		box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 16%, transparent);
+	}
+
+	.warning-badge {
+		border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+		background: color-mix(in srgb, var(--warning) 18%, transparent);
+		color: var(--warning);
+	}
+
+	.provider-row {
+		align-items: flex-start;
+		gap: 1rem;
+		border-bottom: 0;
+		border-radius: 1rem;
+		background: transparent;
+	}
+
+	.provider-card.editing .provider-row {
+		border-bottom: 1px solid var(--card-border);
+		border-radius: 1rem 1rem 0 0;
+	}
+
+	.provider-row > span {
+		display: flex;
+		min-width: min(18rem, 100%);
+		flex: 1 1 18rem;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.provider-row strong {
+		color: var(--text);
+		font-size: 0.98rem;
+	}
+
+	.provider-row small {
+		color: var(--text-soft);
+		font-size: 0.78rem;
+		font-weight: 500;
+		overflow-wrap: anywhere;
+	}
+
+	.provider-edit-panel {
+		overflow: visible;
+		border-radius: 0 0 1rem 1rem;
+		background: color-mix(in srgb, var(--surface-inset) 48%, transparent);
+	}
+
+	.provider-edit-panel .mock-item {
+		border-radius: 0;
+		background: transparent;
+	}
+
+	.provider-manual-actions {
+		justify-content: flex-end;
+		background: transparent;
+	}
+
+	.select-field {
+		width: min(20rem, 52vw);
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.codex-login-row {
+		align-items: flex-start;
+	}
+
+	.codex-login-row span {
+		gap: 0.25rem;
+	}
+
+	.codex-log-row {
+		align-items: stretch;
+	}
+
+	.provider-actions {
+		display: flex;
+		flex: 0 1 auto;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 0.5rem;
+		align-items: center;
+	}
+
+	.provider-actions .primary-action,
+	.provider-actions .secondary-action,
+	.provider-actions .ghost {
+		padding: 0.55rem 0.75rem;
+		font-size: 0.78rem;
+	}
+
+	.provider-actions .danger {
+		border-color: color-mix(in srgb, var(--danger) 52%, var(--border));
+		background: color-mix(in srgb, var(--danger) 14%, transparent);
+		color: var(--danger);
+	}
+
+	.provider-actions .danger:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--danger) 22%, transparent);
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 10%, transparent);
+	}
+
+	.model-actions {
+		align-items: center;
+		justify-content: flex-end;
+	}
+
+	.add-provider-button {
+		border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+		color: var(--accent-strong);
+	}
+
+	.cancel-add-action {
+		border: 1px solid color-mix(in srgb, var(--warning) 42%, var(--border));
+		border-radius: 0.82rem;
+		background: color-mix(in srgb, var(--warning) 9%, transparent);
+		color: color-mix(in srgb, var(--warning) 82%, var(--text));
+		font-weight: 800;
+		padding: 0.75rem 1rem;
+		transition: all 180ms ease;
+	}
+
+	.cancel-add-action:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--warning) 16%, transparent);
+		transform: translateY(-1px);
+	}
+
+	.action-spacer {
+		flex: 1 1 auto;
 	}
 
 	.toggle-row {
@@ -1402,10 +2972,7 @@
 		font-weight: 500;
 	}
 
-	.toggle-row input {
-		width: 1.2rem;
-		height: 1.2rem;
-		accent-color: var(--accent);
+	.toggle-row :global(.checkbox) {
 		flex: 0 0 auto;
 	}
 
@@ -1453,9 +3020,11 @@
 		gap: 0.75rem;
 		margin-top: 1rem;
 		padding: 0.9rem 1rem;
-		border: 1px solid var(--border);
-		border-radius: 1rem;
-		background: var(--surface-card);
+		border: 1px solid var(--card-border);
+		border-radius: 0.95rem;
+		background:
+			var(--card-glass-sheen),
+			var(--card-bg);
 		color: var(--text-soft);
 	}
 
@@ -1480,7 +3049,7 @@
 	.primary-action,
 	.secondary-action {
 		border: 1px solid var(--border);
-		border-radius: 999px;
+		border-radius: 0.82rem;
 		font-weight: 800;
 		padding: 0.75rem 1rem;
 		transition: all 180ms ease;
@@ -1493,7 +3062,7 @@
 	}
 
 	.secondary-action {
-		background: var(--panel);
+		background: var(--card-bg);
 		color: var(--text);
 	}
 
@@ -1520,22 +3089,122 @@
 	}
 
 	.inline-error {
-		border: 1px solid rgba(248, 113, 113, 0.35);
-		background: rgba(248, 113, 113, 0.1);
+		border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+		background: color-mix(in srgb, var(--danger) 10%, transparent);
 		color: var(--danger);
 	}
 
 	.save-status {
 		margin-top: 1rem;
 		margin-bottom: 0;
-		border: 1px solid rgba(110, 231, 183, 0.35);
-		background: rgba(110, 231, 183, 0.1);
+		border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
+		background: color-mix(in srgb, var(--success) 10%, transparent);
 		color: var(--text-soft);
+	}
+
+	.confirm-dialog {
+		padding: 1.35rem;
+	}
+
+	.confirm-dialog h2 {
+		margin: 0.25rem 0 0.5rem;
+		font-size: 1.2rem;
+	}
+
+	.confirm-dialog p:not(.eyebrow) {
+		margin: 0;
+		color: var(--text-soft);
+		line-height: 1.5;
+	}
+
+	.confirm-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 0.65rem;
+		margin-top: 1.2rem;
+	}
+
+	.danger-action {
+		border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--border));
+		border-radius: 0.82rem;
+		background: color-mix(in srgb, var(--danger) 88%, #000);
+		color: white;
+		font-weight: 850;
+		padding: 0.75rem 1rem;
+		transition: all 180ms ease;
+	}
+
+	.danger-action:hover {
+		transform: translateY(-1px);
+		box-shadow: 0 12px 28px color-mix(in srgb, var(--danger) 22%, transparent);
 	}
 
 	.mock-item:last-child {
 		border-bottom: none;
 	}
+
+	.calendar-access {
+		margin-top: 1.1rem;
+		padding-top: 1.1rem;
+		border-top: 1px solid var(--border);
+	}
+
+	.access-heading {
+		font-weight: 800;
+		font-size: 0.85rem;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--text-muted);
+	}
+
+	.calendar-access .section-intro {
+		margin: 0.45rem 0 0.85rem;
+		max-width: 42rem;
+	}
+
+	.scope-list {
+		display: grid;
+		gap: 0.55rem;
+	}
+
+	.scope-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.6rem 0.85rem;
+		border: 1px solid var(--card-border);
+		border-radius: 0.85rem;
+		background: var(--event-bg);
+	}
+
+	.scope-label {
+		font-weight: 750;
+		font-size: 0.9rem;
+	}
+
+	.scope-states {
+		display: inline-flex;
+		gap: 0.3rem;
+		padding: 0.25rem;
+		border: 1px solid var(--border);
+		border-radius: 0.7rem;
+		background: var(--surface-inset);
+	}
+
+	.scope-state {
+		padding: 0.4rem 0.7rem;
+		border-radius: 0.5rem;
+		background: transparent;
+		color: var(--text-muted);
+		font-weight: 750;
+		font-size: 0.78rem;
+		cursor: pointer;
+	}
+
+	.scope-state.active.granted { background: var(--success); color: var(--on-accent); }
+	.scope-state.active.ask { background: var(--warning); color: var(--on-accent); }
+	.scope-state.active.denied { background: var(--danger); color: var(--on-accent); }
 
 	@media (max-width: 640px) {
 		.field-row {

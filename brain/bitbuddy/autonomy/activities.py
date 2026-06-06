@@ -182,7 +182,10 @@ def project_familiarization(cycle_id: str, client: ProviderClient, decision: Aut
 
 def web_curiosity(cycle_id: str, client: ProviderClient, decision: AutonomyDecision, model: str | None = None) -> AutonomyActivityResult:
     config = load_config()
-    query = str(decision.inputs.get("query") or decision.reason or "local-first AI companion design ideas").strip()
+    query = str(decision.inputs.get("query") or "").strip()
+    if not query:
+        likes = list(config.personality.bitbuddy_likes)
+        query = f"interesting ideas about {likes[0]}" if likes else str(decision.reason or "local-first AI companion design ideas").strip()
     try:
         results = safe_web_search(query, config.autonomy.web_search)
     except Exception as error:

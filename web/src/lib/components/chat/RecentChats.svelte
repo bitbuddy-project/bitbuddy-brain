@@ -78,6 +78,7 @@
 <style>
 	.recent-wrap {
 		position: relative;
+		z-index: 20;
 		--recent-button-bg: rgba(255, 255, 255, 0.03);
 		--recent-button-hover-bg: rgba(255, 255, 255, 0.06);
 		--recent-menu-bg: var(--panel);
@@ -87,7 +88,7 @@
 	}
 
 	:global(:root.light) .recent-wrap {
-		--recent-button-bg: rgba(15, 23, 42, 0.035);
+		--recent-button-bg: rgba(15, 23, 42, 0.08);
 		--recent-button-hover-bg: rgba(37, 99, 235, 0.08);
 		--recent-menu-bg: color-mix(in srgb, var(--panel) 96%, var(--accent-soft));
 		--recent-header-bg: linear-gradient(180deg, rgba(37, 99, 235, 0.055), rgba(15, 23, 42, 0.018));
@@ -96,23 +97,41 @@
 		--new-chat-text: #ffffff;
 	}
 
+	:global(:root.light) .recent-button {
+		color: #24364d;
+	}
+
 	.recent-button {
+		width: 2.75rem;
+		height: 2.75rem;
 		display: inline-flex;
 		align-items: center;
+		justify-content: center;
 		gap: 0.45rem;
-		padding: 0.5rem 0.9rem;
-		border: 1px solid var(--border);
-		border-radius: 999px;
+		padding: 0;
+		border: 1px solid transparent;
+		border-radius: 0.82rem;
 		background: var(--recent-button-bg);
-		color: var(--text-muted);
+		color: rgba(255, 255, 255, 0.86);
 		font-size: 0.85rem;
 		font-weight: 600;
+		box-shadow: none;
+	}
+
+	.recent-button > span:not(.notification-badge) {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		clip: rect(0 0 0 0);
+		clip-path: inset(50%);
+		overflow: hidden;
+		white-space: nowrap;
 	}
 
 	.recent-button:hover,
 	.recent-button.open {
-		color: var(--text);
-		border-color: var(--border-strong);
+		color: var(--mode-color, var(--accent));
+		border-color: transparent;
 		background: var(--recent-button-hover-bg);
 	}
 
@@ -125,11 +144,13 @@
 		display: flex;
 		flex-direction: column;
 		border: 1px solid var(--border-strong);
-		border-radius: 1.25rem;
-		background: var(--recent-menu-bg);
-		box-shadow: var(--recent-shadow);
+		border-radius: 1.15rem;
+		background:
+			linear-gradient(135deg, rgba(255, 255, 255, 0.065), transparent 68%),
+			var(--recent-menu-bg);
+		box-shadow: var(--recent-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.055);
 		backdrop-filter: blur(24px);
-		z-index: 50;
+		z-index: 1000;
 		overflow: hidden;
 		animation: scale-up 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -157,6 +178,9 @@
 	}
 
 	.notification-badge {
+		position: absolute;
+		top: -0.35rem;
+		right: -0.35rem;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;

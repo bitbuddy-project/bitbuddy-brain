@@ -19,6 +19,7 @@ READ_ONLY_TOOLS = {
     "list_directory",
     "search_text",
     "web_search",
+    "web_fetch",
     "get_project_memory",
     "get_project_brief",
     "search_memory",
@@ -30,11 +31,32 @@ READ_ONLY_TOOLS = {
     "list_skills",
     "load_skill",
     "validate_skill",
+    "calendar_view_events",
+    "calendar_find_free_time",
+    "email_list_mailboxes",
+    "email_recent_messages",
+    "email_search_messages",
+    "email_read_message",
 }
 FILE_WRITE_TOOLS = {
     "write_file",
     "patch_file",
     "make_directory",
+}
+CALENDAR_TOOL_SCOPES = {
+    "calendar_view_events": "read",
+    "calendar_find_free_time": "read",
+    "calendar_create_event": "create",
+    "calendar_modify_event": "modify",
+    "calendar_delete_event": "delete",
+}
+EMAIL_TOOL_SCOPES = {
+    "email_list_mailboxes": "read",
+    "email_recent_messages": "read",
+    "email_read_message": "read",
+    "email_search_messages": "search",
+    "email_trash_message": "trash",
+    "email_create_auto_trash_rule": "trash",
 }
 MEMORY_WRITE_TOOLS = {
     "record_episode",
@@ -492,7 +514,7 @@ def tool_instruction_message(registry: ToolRegistry, native_tools: bool = False)
             "- For generated artifacts or project files, prefer write_file, patch_file, and make_directory over shell heredocs. Relative paths default to ~/.bitbuddy/artifacts.",
             "- For artifact workflows such as KiCad, CAD, images, data files, scripts, or reports: generate deterministic source/scripts/files first, validate with command-line tools when available, then optionally use desktop MCP to inspect or open apps.",
             "- Use run_shell_command with working_directory for validators, exports, tests, and toolchain checks after files are written.",
-            "- Use web_search for searching the web for information using SearxNG.",
+            "- Use web_search for searching the web for information using SearxNG, then web_fetch to open and read the full text of a specific result or any direct URL.",
             "- Use run_subagent for bounded delegated research or implementation subtasks where a private worker can inspect context and report back.",
             "- Use list_skills to inspect available reusable procedures and load_skill before relying on a skill's detailed workflow.",
             "- Use create_skill, patch_skill, write_skill_file, archive_skill, and validate_skill only for explicit skill maintenance work under ~/.bitbuddy/skills/.",
@@ -663,17 +685,7 @@ def parse_tool_call_lines(text: str) -> list[ToolCall]:
 
 def _strip_system_reminders(text: str) -> str:
     """Remove <system-reminder> blocks that may leak into model responses."""
-    result = text
-    while True:
-        start = result.find("<system-reminder>")
-        if start == -1:
-            break
-        end = result.find("</system-reminder>", start)
-        if end == -1:
-            result = result[:start]
-            break
-        result = result[:start] + result[end + len("</system-reminder>"):]
-    return result.strip()
+    return re.sub(r"(?is)<system-reminder\b[^>]*>.*?(?:</system-reminder>|$)", "", text).strip()
 
 
 def invalid_tool_result(error: str) -> ToolResult:
@@ -746,6 +758,44 @@ def needs_permission(call: ToolCall, definition: ToolDefinition | None = None) -
         if bool(annotations.get("openWorldHint")) or bool(annotations.get("destructiveHint")):
             return True, f"MCP tool `{original_tool}` from `{server}` can control external app or system state."
         return True, f"MCP tool `{original_tool}` from `{server}` can change local state."
+
+    calendar_scope = CALENDAR_TOOL_SCOPES.get(call.tool)
+    if calendar_scope:
+        try:
+            from ..calendar.permissions import permission_state
+            from ..calendar.service import user_timezone
+            from ..calendar.store import ensure_default_calendar
+
+            account, _calendar = ensure_default_calendar(user_timezone())
+            state = permission_state(account.id, calendar_scope)
+        except Exception:
+            state = "ask"
+        if state == "ask":
+            verb = {
+                "read": "view your calendar",
+                "create": "create calendar events",
+                "modify": "modify calendar events",
+                "delete": "delete calendar events",
+            }.get(calendar_scope, f"use calendar scope `{calendar_scope}`")
+            return True, f"Tool `{call.tool}` needs your permission to {verb}."
+
+    email_scope = EMAIL_TOOL_SCOPES.get(call.tool)
+    if email_scope:
+        try:
+            from ..email.permissions import permission_state
+            from ..email.service import email_account_id
+
+            state = permission_state(email_account_id(), email_scope)
+        except Exception:
+            state = "ask"
+        if state == "ask":
+            verb = {
+                "read": "read your email",
+                "search": "search your email",
+                "watch": "watch your email for rules",
+                "trash": "move email messages to Trash",
+            }.get(email_scope, f"use email scope `{email_scope}`")
+            return True, f"Tool `{call.tool}` needs your permission to {verb}."
 
     if call.tool in FILE_WRITE_TOOLS:
         if is_default_artifact_write(call):

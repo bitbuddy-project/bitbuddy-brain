@@ -88,16 +88,16 @@ export type BitBuddyConfig = {
 	config_path?: string;
 	personalities_dir?: string;
 	legacy_personality_path?: string;
-	provider: {
-		type: string;
-		url: string;
-		model: string;
-	};
+	provider: ProviderEntry;
+	providers?: ProviderEntry[];
+	active_provider?: string;
 	runtime?: RuntimeConfig;
 	user_context?: UserContextConfig;
 	chat?: ChatConfig;
 	autonomy?: AutonomyConfig;
 	dreaming?: DreamingConfig;
+	calendar?: CalendarConfig;
+	email?: EmailConfig;
 	mcp?: McpConfig;
 	mcp_servers?: Record<string, McpServerConfig>;
 	presentation?: {
@@ -111,6 +111,8 @@ export type BitBuddyConfig = {
 		expressiveness: string;
 		proactivity: string;
 		quirk_frequency: string;
+		bitbuddy_likes?: string[];
+		bitbuddy_dislikes?: string[];
 		display_name?: string;
 		dislikes?: string[];
 	};
@@ -200,12 +202,19 @@ export type UserContextConfig = {
 };
 
 export type ModelRuntimeConfig = {
-	provider: {
-		type: string;
-		url: string;
-		model: string;
-	};
+	provider: ProviderEntry;
+	providers?: ProviderEntry[];
+	active_provider?: string;
 	project_scan_interval_seconds: number;
+};
+
+export type ProviderEntry = {
+	key?: string;
+	type: string;
+	url: string;
+	model: string;
+	has_api_key?: boolean;
+	api_key?: string;
 };
 
 export type RuntimeConfig = {
@@ -215,6 +224,12 @@ export type RuntimeConfig = {
 export type ProviderHealth = {
 	ok: boolean;
 	message: string;
+	log_path?: string;
+	connected?: boolean;
+	auth_url?: string;
+	callback_mode?: string;
+	device_code?: string;
+	log_excerpt?: string;
 };
 
 export type ProviderContext = {
@@ -780,6 +795,17 @@ export async function updateUserContext(userContext: UserContextConfig): Promise
 	return data;
 }
 
+export async function updatePersonalityConfig(personality: Partial<NonNullable<BitBuddyConfig['personality']>>): Promise<BitBuddyConfig> {
+	const response = await fetch(`${BITBUDDY_API}/config/personality`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(personality)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not save personality settings.');
+	return data;
+}
+
 export async function updateDreamingConfig(dreaming: DreamingConfig): Promise<BitBuddyConfig> {
 	const response = await fetch(`${BITBUDDY_API}/config/dreaming`, {
 		method: 'PATCH',
@@ -811,6 +837,346 @@ export async function updateAutonomyConfig(autonomy: AutonomyConfig): Promise<Bi
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not save autonomy settings.');
 	return data;
+}
+
+export type CalendarConfig = {
+	enabled: boolean;
+	default_provider: string;
+	reminder_upcoming_minutes: number;
+	reminder_starting_soon_minutes: number;
+	urgent_interrupts_enabled: boolean;
+	urgent_interrupt_persistent: boolean;
+	conflict_warnings_enabled: boolean;
+	free_day_summary_enabled: boolean;
+	chat_nudges_enabled: boolean;
+	scheduler_tick_seconds: number;
+	holidays_enabled: boolean;
+	holidays_country: string;
+};
+
+export type CalendarEvent = {
+	id: string;
+	calendar_id: string;
+	title: string;
+	description: string;
+	location: string;
+	start_at: string;
+	end_at: string;
+	all_day: boolean;
+	timezone: string;
+	rrule: string | null;
+	status: string;
+	attendees: string[];
+	source: string;
+	metadata: Record<string, unknown>;
+	created_at: string;
+	updated_at: string;
+};
+
+export type EmailConfig = {
+	enabled: boolean;
+	provider: string;
+	account_label: string;
+	email_address: string;
+	imap_host: string;
+	imap_port: number;
+	imap_security: 'ssl' | 'starttls' | 'none' | string;
+	username: string;
+	credentials_ref: string;
+	gmail_client_id: string;
+	gmail_credentials_ref: string;
+	gmail_token_ref: string;
+	gmail_redirect_uri: string;
+	default_mailbox: string;
+	max_preview_messages: number;
+	has_password?: boolean;
+	has_gmail_client_secret?: boolean;
+	gmail_connected?: boolean;
+};
+
+export type GmailOAuthStatus = {
+	ok: boolean;
+	connected: boolean;
+	message: string;
+	auth_url?: string;
+	redirect_uri?: string;
+	oauth_mode?: string;
+	diagnostics?: Record<string, string>;
+};
+
+export type EmailMailbox = {
+	name: string;
+	flags: string[];
+	delimiter: string;
+};
+
+export type EmailMessage = {
+	id: string;
+	mailbox: string;
+	subject: string;
+	from_addr: string;
+	to_addrs: string[];
+	date: string;
+	snippet: string;
+	flags: string[];
+	body?: string;
+};
+
+export type EmailRule = {
+	id: number;
+	account_id: string;
+	kind: string;
+	value: string;
+	action: string;
+	enabled: boolean;
+	created_at: string;
+	updated_at: string;
+};
+
+export type CalendarEventInput = {
+	title: string;
+	start: string;
+	end: string;
+	description?: string;
+	location?: string;
+	all_day?: boolean;
+	attendees?: string[];
+};
+
+export type CalendarScope = 'read' | 'create' | 'modify' | 'delete';
+export type CalendarPermissionState = 'granted' | 'denied' | 'ask';
+
+export async function getCalendarEvents(
+	options: { range?: string; start?: string; end?: string } = {}
+): Promise<{ timezone: string; events: CalendarEvent[] }> {
+	const params = new URLSearchParams();
+	if (options.range) params.set('range', options.range);
+	if (options.start) params.set('start', options.start);
+	if (options.end) params.set('end', options.end);
+	const suffix = params.toString() ? `?${params.toString()}` : '';
+	const response = await fetch(`${BITBUDDY_API}/calendar/events${suffix}`);
+	if (!response.ok) throw new Error('Could not load calendar events.');
+	return response.json();
+}
+
+export async function createCalendarEvent(
+	input: CalendarEventInput
+): Promise<{ event: CalendarEvent; conflicts: CalendarEvent[] }> {
+	const response = await fetch(`${BITBUDDY_API}/calendar/events`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(input)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not create event.');
+	return data;
+}
+
+export async function updateCalendarEvent(
+	id: string,
+	updates: Partial<CalendarEventInput> & { status?: string }
+): Promise<{ event: CalendarEvent; conflicts: CalendarEvent[] }> {
+	const response = await fetch(`${BITBUDDY_API}/calendar/events/${id}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(updates)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not update event.');
+	return data;
+}
+
+export async function deleteCalendarEvent(id: string): Promise<boolean> {
+	const response = await fetch(`${BITBUDDY_API}/calendar/events/${id}`, { method: 'DELETE' });
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not delete event.');
+	return Boolean(data.deleted);
+}
+
+export async function getCalendarPermissions(): Promise<{
+	scopes: CalendarScope[];
+	permissions: Record<CalendarScope, CalendarPermissionState>;
+}> {
+	const response = await fetch(`${BITBUDDY_API}/calendar/permissions`);
+	if (!response.ok) throw new Error('Could not load calendar permissions.');
+	return response.json();
+}
+
+export async function setCalendarPermission(
+	scope: CalendarScope,
+	state: CalendarPermissionState
+): Promise<Record<CalendarScope, CalendarPermissionState>> {
+	const response = await fetch(`${BITBUDDY_API}/calendar/permissions`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ scope, state })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not update calendar permission.');
+	return data.permissions;
+}
+
+export async function updateCalendarConfig(calendar: Partial<CalendarConfig>): Promise<BitBuddyConfig> {
+	const response = await fetch(`${BITBUDDY_API}/config/calendar`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(calendar)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not save calendar settings.');
+	return data;
+}
+
+export async function updateEmailConfig(email: Partial<EmailConfig> & { password?: string; gmail_client_secret?: string }): Promise<BitBuddyConfig> {
+	const response = await fetch(`${BITBUDDY_API}/config/email`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(email)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not save email settings.');
+	return data;
+}
+
+export async function getGmailStatus(): Promise<GmailOAuthStatus> {
+	const response = await fetch(`${BITBUDDY_API}/email/gmail/status`);
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not load Gmail status.');
+	return data;
+}
+
+export async function startGmailLogin(force = false): Promise<GmailOAuthStatus> {
+	const response = await fetch(`${BITBUDDY_API}/email/gmail/login`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ force })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not start Gmail authorization.');
+	return data;
+}
+
+export async function openGmailCleanFirefox(force = false): Promise<GmailOAuthStatus> {
+	const response = await fetch(`${BITBUDDY_API}/email/gmail/open-clean-firefox`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ force })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not open clean Firefox OAuth profile.');
+	return data;
+}
+
+export async function completeGmailLogin(input: string): Promise<GmailOAuthStatus> {
+	const response = await fetch(`${BITBUDDY_API}/email/gmail/complete`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ input })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.message ?? data.error ?? 'Could not complete Gmail authorization.');
+	return data;
+}
+
+export async function logoutGmail(): Promise<GmailOAuthStatus> {
+	const response = await fetch(`${BITBUDDY_API}/email/gmail/logout`, { method: 'POST' });
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not disconnect Gmail.');
+	return data;
+}
+
+export async function getEmailOverview(): Promise<EmailConfig & { permissions: Record<string, string>; account_id: string }> {
+	const response = await fetch(`${BITBUDDY_API}/email/overview`);
+	if (!response.ok) throw new Error('Could not load email overview.');
+	return response.json();
+}
+
+export async function getEmailPermissions(): Promise<{ scopes: string[]; permissions: Record<string, string> }> {
+	const response = await fetch(`${BITBUDDY_API}/email/permissions`);
+	if (!response.ok) throw new Error('Could not load email permissions.');
+	return response.json();
+}
+
+export async function setEmailPermission(scope: string, state: string): Promise<Record<string, string>> {
+	const response = await fetch(`${BITBUDDY_API}/email/permissions`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ scope, state })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not update email permission.');
+	return data.permissions;
+}
+
+export async function getEmailMailboxes(): Promise<EmailMailbox[]> {
+	const response = await fetch(`${BITBUDDY_API}/email/mailboxes`);
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not load email mailboxes.');
+	return data.mailboxes ?? [];
+}
+
+export async function getEmailMessages(mailbox = '', limit = 25): Promise<EmailMessage[]> {
+	const params = new URLSearchParams();
+	if (mailbox) params.set('mailbox', mailbox);
+	params.set('limit', String(limit));
+	const response = await fetch(`${BITBUDDY_API}/email/messages?${params}`);
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not load email messages.');
+	return data.messages ?? [];
+}
+
+export async function searchEmailMessages(query: string, mailbox = '', limit = 25): Promise<EmailMessage[]> {
+	const params = new URLSearchParams({ q: query, limit: String(limit) });
+	if (mailbox) params.set('mailbox', mailbox);
+	const response = await fetch(`${BITBUDDY_API}/email/search?${params}`);
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not search email messages.');
+	return data.messages ?? [];
+}
+
+export async function readEmailMessage(id: string, mailbox = ''): Promise<EmailMessage> {
+	const params = new URLSearchParams({ id });
+	if (mailbox) params.set('mailbox', mailbox);
+	const response = await fetch(`${BITBUDDY_API}/email/message?${params}`);
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not read email message.');
+	return data.message;
+}
+
+export async function trashEmailMessage(id: string, mailbox = ''): Promise<EmailMessage> {
+	const response = await fetch(`${BITBUDDY_API}/email/message/trash`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ message_id: id, mailbox })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not move email to Trash.');
+	return data.message;
+}
+
+export async function getEmailRules(): Promise<EmailRule[]> {
+	const response = await fetch(`${BITBUDDY_API}/email/rules`);
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not load email rules.');
+	return data.rules ?? [];
+}
+
+export async function createSenderTrashRule(sender: string, options: { mailbox?: string; applyExisting?: boolean } = {}): Promise<{ rule: EmailRule; applied: number }> {
+	const response = await fetch(`${BITBUDDY_API}/email/rules/sender-trash`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ sender, mailbox: options.mailbox ?? 'INBOX', apply_existing: options.applyExisting ?? false })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not create email rule.');
+	return data;
+}
+
+export async function deleteEmailRule(id: number): Promise<boolean> {
+	const response = await fetch(`${BITBUDDY_API}/email/rules/${id}`, { method: 'DELETE' });
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not delete email rule.');
+	return Boolean(data.deleted);
 }
 
 export async function updateModelRuntimeConfig(config: ModelRuntimeConfig): Promise<BitBuddyConfig> {
@@ -873,8 +1239,14 @@ export async function getProviderHealth(): Promise<ProviderHealth> {
 	};
 }
 
-export async function getProviderModels(): Promise<string[]> {
-	const response = await fetch(`${BITBUDDY_API}/provider/models`);
+export async function getProviderModels(provider?: Partial<ProviderEntry>): Promise<string[]> {
+	const response = provider
+		? await fetch(`${BITBUDDY_API}/provider/models`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(provider)
+			})
+		: await fetch(`${BITBUDDY_API}/provider/models`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not list provider models.');
 	return data.models ?? [];
@@ -884,6 +1256,68 @@ export async function getProviderContext(): Promise<ProviderContext> {
 	const response = await fetch(`${BITBUDDY_API}/provider/context`);
 	if (!response.ok) throw new Error('Could not load provider context window.');
 	return response.json();
+}
+
+export async function getCodexStatus(): Promise<ProviderHealth> {
+	const response = await fetch(`${BITBUDDY_API}/provider/codex/status`);
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not check Codex login status.');
+	return {
+		ok: Boolean(data.ok),
+		message: String(data.message ?? 'Codex status unavailable.'),
+		log_path: typeof data.log_path === 'string' ? data.log_path : undefined,
+		connected: typeof data.connected === 'boolean' ? data.connected : undefined,
+		auth_url: typeof data.auth_url === 'string' ? data.auth_url : undefined,
+		callback_mode: typeof data.callback_mode === 'string' ? data.callback_mode : undefined,
+		device_code: typeof data.device_code === 'string' ? data.device_code : undefined,
+		log_excerpt: typeof data.log_excerpt === 'string' ? data.log_excerpt : undefined
+	};
+}
+
+export async function startCodexLogin(options: { force?: boolean } = {}): Promise<ProviderHealth> {
+	const response = await fetch(`${BITBUDDY_API}/provider/codex/login`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(options)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not start Codex login.');
+	return {
+		ok: Boolean(data.ok),
+		message: String(data.message ?? 'Codex login started.'),
+		log_path: typeof data.log_path === 'string' ? data.log_path : undefined,
+		connected: typeof data.connected === 'boolean' ? data.connected : undefined,
+		auth_url: typeof data.auth_url === 'string' ? data.auth_url : undefined,
+		callback_mode: typeof data.callback_mode === 'string' ? data.callback_mode : undefined,
+		device_code: typeof data.device_code === 'string' ? data.device_code : undefined,
+		log_excerpt: typeof data.log_excerpt === 'string' ? data.log_excerpt : undefined
+	};
+}
+
+export async function completeCodexLogin(input: string): Promise<ProviderHealth> {
+	const response = await fetch(`${BITBUDDY_API}/provider/codex/complete`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ input })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not complete Codex authorization.');
+	return {
+		ok: Boolean(data.ok),
+		message: String(data.message ?? 'Codex authorization complete.'),
+		connected: typeof data.connected === 'boolean' ? data.connected : undefined
+	};
+}
+
+export async function logoutCodex(): Promise<ProviderHealth> {
+	const response = await fetch(`${BITBUDDY_API}/provider/codex/logout`, { method: 'POST' });
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not logout Codex.');
+	return {
+		ok: Boolean(data.ok),
+		message: String(data.message ?? 'Codex logout complete.'),
+		log_path: typeof data.log_path === 'string' ? data.log_path : undefined
+	};
 }
 
 export async function getChatContextUsage(options: { mode: ChatMode; messages: ChatMessage[] }): Promise<ProviderContext> {

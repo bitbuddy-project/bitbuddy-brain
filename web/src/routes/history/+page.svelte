@@ -5,6 +5,7 @@
 	import TrashIcon from 'phosphor-svelte/lib/TrashIcon';
 	import MagnifyingGlassIcon from 'phosphor-svelte/lib/MagnifyingGlassIcon';
 	import { deleteChat, getChats, type ChatSummary } from '$lib/api/bitbuddy';
+	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import { loadPersistedChat } from '$lib/stores/chat.svelte';
 	import { formatTimestamp } from '$lib/stores/time.svelte';
 
@@ -14,6 +15,9 @@
 	let search = $state('');
 	let modeFilter = $state<'all' | string>('all');
 	let deletingId = $state<string | null>(null);
+	let selectedChatIds = $state<string[]>([]);
+	let bulkConfirm = $state(false);
+	let bulkDeleting = $state(false);
 
 	const modes = ['all', 'chat', 'plan', 'debug'];
 
@@ -24,6 +28,8 @@
 			return matchesMode && matchesSearch;
 		})
 	);
+	let selectedCount = $derived(selectedChatIds.length);
+	let allFilteredSelected = $derived(filtered.length > 0 && filtered.every((chat) => selectedChatIds.includes(chat.id)));
 
 	onMount(() => {
 		void load();
@@ -33,6 +39,7 @@
 		loading = true;
 		try {
 			allChats = await getChats({ limit: 500 });
+			selectedChatIds = selectedChatIds.filter((id) => allChats.some((chat) => chat.id === id));
 			error = '';
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Could not load chat history.';
@@ -59,6 +66,47 @@
 			}
 		} else {
 			deletingId = chatId;
+		}
+	}
+
+	function toggleSelected(chatId: string, checked: boolean) {
+		bulkConfirm = false;
+		selectedChatIds = checked ? [...new Set([...selectedChatIds, chatId])] : selectedChatIds.filter((id) => id !== chatId);
+	}
+
+	function toggleAllFiltered(checked: boolean) {
+		bulkConfirm = false;
+		const filteredIds = filtered.map((chat) => chat.id);
+		if (checked) {
+			selectedChatIds = [...new Set([...selectedChatIds, ...filteredIds])];
+			return;
+		}
+		selectedChatIds = selectedChatIds.filter((id) => !filteredIds.includes(id));
+	}
+
+	function clearSelection() {
+		selectedChatIds = [];
+		bulkConfirm = false;
+	}
+
+	async function deleteSelectedChats() {
+		if (selectedChatIds.length === 0 || bulkDeleting) return;
+		if (!bulkConfirm) {
+			bulkConfirm = true;
+			return;
+		}
+
+		bulkDeleting = true;
+		const ids = [...selectedChatIds];
+		try {
+			await Promise.all(ids.map((id) => deleteChat(id)));
+			allChats = allChats.filter((chat) => !ids.includes(chat.id));
+			clearSelection();
+			error = '';
+		} catch (e: unknown) {
+			error = e instanceof Error ? e.message : 'Could not delete selected chats.';
+		} finally {
+			bulkDeleting = false;
 		}
 	}
 
@@ -110,6 +158,22 @@
 				</div>
 			</div>
 
+			{#if !error && !loading && filtered.length > 0}
+				<div class="selection-toolbar" aria-live="polite">
+					<Checkbox checked={allFilteredSelected} label={allFilteredSelected ? 'Unselect visible' : 'Select visible'} onChange={toggleAllFiltered} />
+					<span class="selection-count">{selectedCount > 0 ? `${selectedCount} selected` : 'Select chats to bulk delete'}</span>
+					{#if selectedCount > 0}
+						<div class="selection-actions">
+							<button class="clear-selection" type="button" onclick={clearSelection} disabled={bulkDeleting}>Clear</button>
+							<button class="bulk-delete" class:confirm={bulkConfirm} type="button" onclick={deleteSelectedChats} disabled={bulkDeleting}>
+								<TrashIcon size={15} />
+								{bulkDeleting ? 'Deleting...' : bulkConfirm ? `Delete ${selectedCount}?` : 'Delete selected'}
+							</button>
+						</div>
+					{/if}
+				</div>
+			{/if}
+
 			{#if error}
 				<div class="error-banner">{error}</div>
 			{:else if loading}
@@ -121,7 +185,10 @@
 			{:else}
 				<ul class="chat-list" aria-label="Chat history">
 					{#each filtered as chat (chat.id)}
-						<li class="chat-card" role="presentation">
+						<li class="chat-card" class:selected={selectedChatIds.includes(chat.id)} role="presentation">
+							<div class="chat-select">
+								<Checkbox checked={selectedChatIds.includes(chat.id)} ariaLabel={`Select ${chat.title}`} onChange={(checked) => toggleSelected(chat.id, checked)} />
+							</div>
 							<button class="chat-body" type="button" onclick={() => openChat(chat.id)}>
 								<span class="chat-title">{chat.title}</span>
 								<span class="chat-meta">
@@ -150,10 +217,10 @@
 
 <style>
 	.history-page {
-		--page-accent: #a78bfa;
-		--page-soft: rgba(167, 139, 250, 0.12);
-		--page-border: rgba(167, 139, 250, 0.25);
-		--page-glow: rgba(167, 139, 250, 0.14);
+		--page-accent: var(--accent);
+		--page-soft: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+		--page-border: color-mix(in srgb, var(--accent) 20%, var(--border));
+		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
 
 		width: 100%;
 		max-width: 100%;
@@ -182,7 +249,7 @@
 		background:
 			linear-gradient(135deg, var(--glass-overlay), transparent 22rem),
 			radial-gradient(circle at top right, var(--page-glow), transparent 30rem),
-			radial-gradient(circle at bottom left, rgba(110, 231, 183, 0.055), transparent 34rem),
+			radial-gradient(circle at bottom left, color-mix(in srgb, var(--success) 5.5%, transparent), transparent 34rem),
 			var(--panel);
 		box-shadow: var(--shadow-chat);
 		overflow: hidden;
@@ -255,15 +322,85 @@
 		flex-wrap: wrap;
 	}
 
-	.search-wrap {
+	.selection-toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		padding: 0.7rem 0.85rem;
+		border: 1px solid color-mix(in srgb, var(--page-accent) 28%, var(--border));
+		border-radius: 0.95rem;
+		background:
+			linear-gradient(135deg, color-mix(in srgb, var(--page-accent) 12%, transparent), transparent 70%),
+			var(--surface-card);
+		box-shadow: var(--shadow-panel);
+	}
+
+	.selection-count {
+		flex: 1;
+		color: var(--text-soft);
+		font-size: 0.82rem;
+		font-weight: 750;
+	}
+
+	.selection-actions {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
+	}
+
+	.clear-selection,
+	.bulk-delete {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.38rem;
+		min-height: 2.15rem;
+		padding: 0 0.78rem;
+		border-radius: 0.72rem;
+		font-size: 0.82rem;
+		font-weight: 800;
+		transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+	}
+
+	.clear-selection {
+		border: 1px solid var(--border);
+		color: var(--text-muted);
+	}
+
+	.clear-selection:hover:not(:disabled) {
+		border-color: var(--border-strong);
+		color: var(--text);
+		background: var(--surface-glass);
+	}
+
+	.bulk-delete {
+		border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+		background: color-mix(in srgb, var(--danger) 11%, transparent);
+		color: var(--danger);
+	}
+
+	.bulk-delete:hover:not(:disabled),
+	.bulk-delete.confirm {
+		background: color-mix(in srgb, var(--danger) 18%, transparent);
+		border-color: color-mix(in srgb, var(--danger) 42%, transparent);
+	}
+
+	.clear-selection:disabled,
+	.bulk-delete:disabled {
+		opacity: 0.65;
+		cursor: not-allowed;
+	}
+
+	.search-wrap {
+		display: flex;
+		align-items: center;
+		gap: 0.65rem;
 		flex: 1;
-		min-width: 12rem;
-		padding: 0.5rem 0.85rem;
+		min-width: 18rem;
+		padding: 0.72rem 1rem;
 		border: 1px solid var(--border-strong);
-		border-radius: 0.75rem;
+		border-radius: 0.9rem;
 		background: var(--surface-inset);
 		color: var(--text-muted);
 	}
@@ -273,13 +410,39 @@
 		color: var(--text);
 	}
 
-	.search-input {
+	.search-wrap .search-input.search-input {
 		flex: 1;
 		border: none;
 		background: transparent;
+		background-color: transparent;
 		color: var(--text);
-		font-size: 0.9rem;
+		font-size: 1rem;
 		outline: none;
+		box-shadow: none;
+		appearance: none;
+		-webkit-appearance: none;
+	}
+
+	:global(:root.light) .search-wrap .search-input.search-input,
+	.search-wrap .search-input.search-input:focus,
+	.search-wrap .search-input.search-input:focus-visible {
+		background: transparent;
+		background-color: transparent;
+		box-shadow: none;
+	}
+
+	:global(:root.light body .history-page .search-wrap input.search-input),
+	:global(body .history-page .search-wrap input.search-input) {
+		background: transparent !important;
+		background-color: transparent !important;
+		box-shadow: none !important;
+	}
+
+	.search-wrap .search-input::-webkit-search-decoration,
+	.search-wrap .search-input::-webkit-search-cancel-button,
+	.search-wrap .search-input::-webkit-search-results-button,
+	.search-wrap .search-input::-webkit-search-results-decoration {
+		-webkit-appearance: none;
 	}
 
 	.search-input::placeholder {
@@ -294,7 +457,7 @@
 	.chip {
 		padding: 0.4rem 0.8rem;
 		border: 1px solid var(--border);
-		border-radius: 999px;
+		border-radius: 0.55rem;
 		background: transparent;
 		color: var(--text-muted);
 		font-size: 0.8rem;
@@ -339,6 +502,29 @@
 	.chat-card:hover {
 		border-color: var(--border-strong);
 		background: var(--panel-raised);
+	}
+
+	.chat-card.selected {
+		border-color: color-mix(in srgb, var(--page-accent) 44%, var(--border));
+		background:
+			linear-gradient(135deg, color-mix(in srgb, var(--page-accent) 10%, transparent), transparent 72%),
+			var(--panel-raised);
+	}
+
+	.chat-select {
+		width: 2.25rem;
+		height: 2.5rem;
+		margin-left: 0.28rem;
+		display: grid;
+		place-items: center;
+		flex-shrink: 0;
+		border-radius: 0.65rem;
+		cursor: pointer;
+		transition: background 120ms ease;
+	}
+
+	.chat-select:hover {
+		background: var(--surface-glass);
 	}
 
 	.chat-body {
@@ -468,6 +654,20 @@
 			width: 100%;
 			overflow-x: auto;
 			padding-bottom: 0.2rem;
+		}
+
+		.selection-toolbar {
+			align-items: flex-start;
+			flex-direction: column;
+		}
+
+		.selection-actions {
+			width: 100%;
+		}
+
+		.clear-selection,
+		.bulk-delete {
+			flex: 1;
 		}
 	}
 </style>

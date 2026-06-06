@@ -212,10 +212,10 @@
 	}
 
 	.projects-panel {
-		--page-accent: #38bdf8;
-		--page-soft: rgba(56, 189, 248, 0.12);
-		--page-border: rgba(56, 189, 248, 0.25);
-		--page-glow: rgba(56, 189, 248, 0.14);
+		--page-accent: var(--accent);
+		--page-soft: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+		--page-border: color-mix(in srgb, var(--accent) 20%, var(--border));
+		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
 
 		width: 100%;
 		height: 100%;
@@ -228,7 +228,7 @@
 		background:
 			linear-gradient(135deg, var(--glass-overlay), transparent 22rem),
 			radial-gradient(circle at top right, var(--page-glow), transparent 30rem),
-			radial-gradient(circle at bottom left, rgba(110, 231, 183, 0.055), transparent 34rem),
+			radial-gradient(circle at bottom left, color-mix(in srgb, var(--success) 5.5%, transparent), transparent 34rem),
 			var(--panel);
 		box-shadow: var(--shadow-chat);
 		overflow: hidden;
@@ -457,7 +457,7 @@
 
 	.delete-project-button:hover {
 		border-color: var(--danger);
-		background: rgba(255, 107, 122, 0.1);
+		background: color-mix(in srgb, var(--danger) 10%, transparent);
 		color: var(--danger);
 	}
 
@@ -537,9 +537,9 @@
 	.inline-error {
 		margin-bottom: 1rem;
 		padding: 0.85rem 1rem;
-		border: 1px solid rgba(255, 107, 122, 0.3);
+		border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
 		border-radius: 1rem;
-		background: rgba(255, 107, 122, 0.08);
+		background: color-mix(in srgb, var(--danger) 8%, transparent);
 		color: var(--danger);
 	}
 

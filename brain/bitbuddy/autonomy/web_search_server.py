@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, TYPE_CHECKING
 
 from ..utils import log_activity
-from .web_search import SearchResult, normalize_search_category, safe_result_url
+from .web_search import BROWSER_USER_AGENT, SearchResult, normalize_search_category, safe_result_url
 
 if TYPE_CHECKING:
     from ..config import WebSearchConfig
@@ -22,6 +22,10 @@ if TYPE_CHECKING:
 MANAGED_STARTUP_COMMANDS = {"", "managed", "builtin", "bitbuddy", "searxng"}
 _managed_server: ThreadingHTTPServer | None = None
 _managed_thread: threading.Thread | None = None
+
+
+class SearchProviderBlocked(ValueError):
+    pass
 
 
 def ensure_web_search_server(config: WebSearchConfig) -> None:
@@ -187,7 +191,7 @@ def search_response(query: str, limit: int = 10, category: str = "general") -> d
         if clean_category == "images":
             results = search_duckduckgo_images(clean_query, limit=limit)
         else:
-            results = search_duckduckgo_html(clean_query, limit=limit)
+            results = search_general_web(clean_query, limit=limit)
     except Exception as error:
         log_activity("web_search.search_error", f"Managed web search failed: {error}", {"query": clean_query, "category": clean_category})
         results = []
@@ -201,7 +205,7 @@ def search_response(query: str, limit: int = 10, category: str = "general") -> d
                 "content": result.snippet,
                 "img_src": result.image_url,
                 "thumbnail_src": result.thumbnail_url,
-                "engine": "duckduckgo",
+                "engine": result.source,
                 "category": result.category,
             }
             for result in results
@@ -211,18 +215,111 @@ def search_response(query: str, limit: int = 10, category: str = "general") -> d
     }
 
 
+def search_general_web(query: str, limit: int = 10) -> list[SearchResult]:
+    providers = [
+        ("duckduckgo_html", search_duckduckgo_html),
+        ("duckduckgo_lite", search_duckduckgo_lite),
+        ("mojeek", search_mojeek_html),
+    ]
+    for provider_name, search_func in providers:
+        try:
+            results = search_func(query, limit=limit)
+        except SearchProviderBlocked as error:
+            log_activity(
+                "web_search.provider_blocked",
+                f"Managed web search provider blocked or challenged the request: {provider_name}.",
+                {"query": query, "provider": provider_name, "error": str(error)},
+            )
+            continue
+        except Exception as error:
+            log_activity(
+                "web_search.provider_error",
+                f"Managed web search provider failed: {provider_name}: {error}",
+                {"query": query, "provider": provider_name, "error": str(error)},
+            )
+            continue
+        if results:
+            return results
+        log_activity(
+            "web_search.provider_empty",
+            f"Managed web search provider returned no results: {provider_name}.",
+            {"query": query, "provider": provider_name},
+        )
+
+    log_activity(
+        "web_search.search_empty",
+        "Managed web search returned no results after trying all providers.",
+        {"query": query, "providers": [name for name, _func in providers]},
+    )
+    return []
+
+
 def search_duckduckgo_html(query: str, limit: int = 10) -> list[SearchResult]:
     params = urllib.parse.urlencode({"q": query})
     request = urllib.request.Request(
         f"https://html.duckduckgo.com/html/?{params}",
         headers={
             "Accept": "text/html,application/xhtml+xml",
-            "User-Agent": "Mozilla/5.0 (compatible; BitBuddy/0.1; local search)",
+            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": BROWSER_USER_AGENT,
         },
     )
     with urllib.request.urlopen(request, timeout=12) as response:
         html = response.read(1_500_000).decode("utf-8", errors="replace")
+        raise_if_blocked("duckduckgo_html", getattr(response, "status", 200), html)
     return parse_duckduckgo_html_results(html, limit=limit)
+
+
+def search_duckduckgo_lite(query: str, limit: int = 10) -> list[SearchResult]:
+    params = urllib.parse.urlencode({"q": query})
+    request = urllib.request.Request(
+        f"https://lite.duckduckgo.com/lite/?{params}",
+        headers={
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": BROWSER_USER_AGENT,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=12) as response:
+        html = response.read(1_500_000).decode("utf-8", errors="replace")
+        raise_if_blocked("duckduckgo_lite", getattr(response, "status", 200), html)
+    parser = DuckDuckGoLiteHTMLParser()
+    parser.feed(html)
+    parser._flush_current()
+    return parser.results[:limit]
+
+
+def search_mojeek_html(query: str, limit: int = 10) -> list[SearchResult]:
+    params = urllib.parse.urlencode({"q": query})
+    request = urllib.request.Request(
+        f"https://www.mojeek.com/search?{params}",
+        headers={
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": BROWSER_USER_AGENT,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=12) as response:
+        html = response.read(1_500_000).decode("utf-8", errors="replace")
+        raise_if_blocked("mojeek", getattr(response, "status", 200), html)
+    parser = MojeekHTMLParser()
+    parser.feed(html)
+    parser._flush_current()
+    return parser.results[:limit]
+
+
+def raise_if_blocked(provider: str, status: int, html: str) -> None:
+    lower = html[:20000].lower()
+    blocked_markers = (
+        "anomaly detected",
+        "challenge",
+        "captcha",
+        "unusual traffic",
+        "automated requests",
+        "verify you are human",
+    )
+    if status == 202 or any(marker in lower for marker in blocked_markers):
+        raise SearchProviderBlocked(f"{provider} returned a blocked/challenge page (HTTP {status}).")
 
 
 def search_duckduckgo_images(query: str, limit: int = 10) -> list[SearchResult]:
@@ -358,6 +455,129 @@ class DuckDuckGoHTMLParser(HTMLParser):
                     url=self._current.url,
                     snippet=self._current.snippet[:1000],
                     source="duckduckgo",
+                    category="general",
+                )
+            )
+        self._current = None
+        self._title_parts = []
+        self._snippet_parts = []
+
+
+class DuckDuckGoLiteHTMLParser(HTMLParser):
+    """Parser for lite.duckduckgo.com/lite/ — a simple table layout where result
+    titles use <a class="result-link"> and snippets use <td class="result-snippet">."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[SearchResult] = []
+        self._current: _PartialResult | None = None
+        self._collecting_title = False
+        self._collecting_snippet = False
+        self._title_parts: list[str] = []
+        self._snippet_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {name: value or "" for name, value in attrs}
+        classes = set(attr_map.get("class", "").split())
+
+        if tag == "a" and "result-link" in classes:
+            self._flush_current()
+            self._current = _PartialResult(url=normalize_duckduckgo_url(attr_map.get("href", "")))
+            self._collecting_title = True
+            self._title_parts = []
+            return
+
+        if self._current is not None and tag == "td" and "result-snippet" in classes:
+            self._collecting_snippet = True
+            self._snippet_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._collecting_title:
+            self._title_parts.append(data)
+        if self._collecting_snippet:
+            self._snippet_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._collecting_title and self._current is not None:
+            self._current.title = normalize_text(" ".join(self._title_parts))
+            self._collecting_title = False
+            return
+
+        if self._collecting_snippet and tag == "td" and self._current is not None:
+            self._current.snippet = normalize_text(" ".join(self._snippet_parts))
+            self._collecting_snippet = False
+            self._flush_current()
+
+    def _flush_current(self) -> None:
+        if self._current is None:
+            return
+        if self._current.title and safe_result_url(self._current.url):
+            self.results.append(
+                SearchResult(
+                    title=self._current.title[:300],
+                    url=self._current.url,
+                    snippet=self._current.snippet[:1000],
+                    source="duckduckgo",
+                    category="general",
+                )
+            )
+        self._current = None
+        self._title_parts = []
+        self._snippet_parts = []
+
+
+class MojeekHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[SearchResult] = []
+        self._current: _PartialResult | None = None
+        self._collecting_title = False
+        self._collecting_snippet = False
+        self._title_parts: list[str] = []
+        self._snippet_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {name: value or "" for name, value in attrs}
+        classes = set(attr_map.get("class", "").split())
+
+        if tag == "a" and "title" in classes:
+            self._flush_current()
+            self._current = _PartialResult(url=attr_map.get("href", ""))
+            self._collecting_title = True
+            self._title_parts = []
+            return
+
+        if self._current is not None and tag == "p" and "s" in classes:
+            self._collecting_snippet = True
+            self._snippet_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._collecting_title:
+            self._title_parts.append(data)
+        if self._collecting_snippet:
+            self._snippet_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._collecting_title and self._current is not None:
+            self._current.title = normalize_text(" ".join(self._title_parts))
+            self._collecting_title = False
+            return
+
+        if tag == "p" and self._collecting_snippet and self._current is not None:
+            self._current.snippet = normalize_text(" ".join(self._snippet_parts))
+            self._collecting_snippet = False
+            self._flush_current()
+
+    def _flush_current(self) -> None:
+        if self._current is None:
+            return
+        if self._current.title and safe_result_url(self._current.url):
+            self.results.append(
+                SearchResult(
+                    title=self._current.title[:300],
+                    url=self._current.url,
+                    snippet=self._current.snippet[:1000],
+                    source="mojeek",
                     category="general",
                 )
             )

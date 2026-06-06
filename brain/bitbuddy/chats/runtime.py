@@ -210,6 +210,77 @@ def tool_signature(call: ToolCall) -> str:
     return f"{call.tool}:{json.dumps(call.arguments, sort_keys=True)}"
 
 
+def tool_effect_key(call: ToolCall) -> str | None:
+    """Return a semantic key for mutating tool side effects.
+
+    Exact JSON matching is not enough for model-driven tools: the model can
+    repeat the same action with a slightly different description or argument
+    order. Effect keys intentionally ignore non-identifying fields for tools
+    where repeated execution would duplicate external/local state.
+    """
+    tool = call.tool
+    arguments = call.arguments
+    if tool == "calendar_create_event":
+        return "calendar_create:" + "|".join(
+            [
+                _normalize_effect_text(arguments.get("title")),
+                _normalize_effect_datetime(arguments.get("start")),
+                _normalize_effect_datetime(arguments.get("end")),
+                _normalize_effect_text(arguments.get("location")),
+            ]
+        )
+    if tool in {"calendar_modify_event", "calendar_delete_event"}:
+        event_id = _normalize_effect_text(arguments.get("event_id"))
+        return f"{tool}:{event_id}" if event_id else tool_signature(call)
+    if tool in {"write_file", "patch_file", "make_directory"}:
+        target = arguments.get("file_path") or arguments.get("path") or ""
+        identity = {
+            "project_id": _normalize_effect_text(arguments.get("project_id")),
+            "root_path": _normalize_effect_text(arguments.get("root_path")),
+            "target": _normalize_effect_text(target),
+        }
+        if tool == "write_file":
+            identity["content"] = str(arguments.get("content") or "")
+            identity["overwrite"] = bool(arguments.get("overwrite", False))
+        elif tool == "patch_file":
+            identity["old_text"] = str(arguments.get("old_text") or "")
+            identity["new_text"] = str(arguments.get("new_text") or "")
+            identity["replace_all"] = bool(arguments.get("replace_all", False))
+        else:
+            identity["parents"] = bool(arguments.get("parents", True))
+            identity["exist_ok"] = bool(arguments.get("exist_ok", True))
+        return f"{tool}:{json.dumps(identity, sort_keys=True)}"
+    if tool == "run_shell_command":
+        return "run_shell_command:" + json.dumps(
+            {
+                "command": " ".join(str(arguments.get("command") or "").split()),
+                "working_directory": _normalize_effect_text(arguments.get("working_directory")),
+            },
+            sort_keys=True,
+        )
+    if tool in {"record_episode", "update_episode", "forget_episode", "record_project_memory", "update_project_memory", "record_memory", "write_memory", "update_memory", "archive_memory", "move_memory", "merge_memory", "create_skill", "patch_skill", "archive_skill", "write_skill_file"}:
+        cleaned = {key: value for key, value in arguments.items() if key != "conversation_id"}
+        return f"{tool}:{json.dumps(cleaned, sort_keys=True, default=str)}"
+    return None
+
+
+def _normalize_effect_text(value: object) -> str:
+    return " ".join(re.sub(r"[^\w]+", " ", str(value or "").casefold()).split())
+
+
+def _normalize_effect_datetime(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        from ..calendar.service import user_timezone
+        from ..calendar.store import to_utc_iso
+
+        return to_utc_iso(raw, fallback_tz=user_timezone())
+    except Exception:
+        return _normalize_effect_text(raw)
+
+
 
 def final_tool_fallback_message(result: ToolResult | None) -> str:
     """Last-resort error text after synthesis repair fails.
@@ -454,6 +525,8 @@ def start_chat_run(run: ActiveChatRun) -> None:
         persist_retry_at = 0.0
         last_persist_error = ""
         fallback_tool_event_id = -1
+        suppress_system_reminder_thinking = False
+        suppress_system_reminder_response = False
 
         def persist(force: bool = False) -> None:
             nonlocal last_persist_at, persist_retry_at, last_persist_error
@@ -593,10 +666,45 @@ def start_chat_run(run: ActiveChatRun) -> None:
             throw_if_cancelled()
             ensure_assistant_message()
 
+            text = strip_live_system_reminder_response(text)
+            if not text:
+                return
+
             run.assistant_text += text
 
             persist(force=True)
             run.broadcast({"kind": "response", "text": text})
+
+        def strip_live_system_reminder_response(text: str) -> str:
+            nonlocal suppress_system_reminder_response
+
+            remaining = text
+            out = ""
+            close_tag = "</system-reminder>"
+
+            while remaining:
+                lowered = remaining.lower()
+                if suppress_system_reminder_response:
+                    end = lowered.find(close_tag)
+                    if end == -1:
+                        return out
+                    remaining = remaining[end + len(close_tag):]
+                    suppress_system_reminder_response = False
+                    continue
+
+                start = lowered.find("<system-reminder")
+                if start == -1:
+                    out += remaining
+                    break
+
+                out += remaining[:start]
+                end = lowered.find(close_tag, start)
+                if end == -1:
+                    suppress_system_reminder_response = True
+                    break
+                remaining = remaining[end + len(close_tag):]
+
+            return _strip_system_reminders(out)
 
         def emit_thinking_text(text: str) -> None:
             """Emit already-sanitized model thinking text."""
@@ -633,6 +741,10 @@ def start_chat_run(run: ActiveChatRun) -> None:
             last_persist_at = 0.0
 
         def emit_live_clean_thinking_line(raw_line: str, phase: str) -> int:
+            raw_line = strip_live_system_reminder_thinking(raw_line)
+            if not raw_line.strip():
+                return 0
+
             cleaned = clean_model_thinking_text(raw_line, phase=phase)
 
             if not cleaned:
@@ -641,6 +753,37 @@ def start_chat_run(run: ActiveChatRun) -> None:
             emit_thinking_text(cleaned)
 
             return len(cleaned) + 1
+
+        def strip_live_system_reminder_thinking(text: str) -> str:
+            nonlocal suppress_system_reminder_thinking
+
+            remaining = text
+            out = ""
+            close_tag = "</system-reminder>"
+
+            while remaining:
+                lowered = remaining.lower()
+                if suppress_system_reminder_thinking:
+                    end = lowered.find(close_tag)
+                    if end == -1:
+                        return out
+                    remaining = remaining[end + len(close_tag):]
+                    suppress_system_reminder_thinking = False
+                    continue
+
+                start = lowered.find("<system-reminder")
+                if start == -1:
+                    out += remaining
+                    break
+
+                out += remaining[:start]
+                end = lowered.find(close_tag, start)
+                if end == -1:
+                    suppress_system_reminder_thinking = True
+                    break
+                remaining = remaining[end + len(close_tag):]
+
+            return out
 
         def collect_response(
             prompt_messages: list[dict[str, str]],
@@ -878,6 +1021,7 @@ def start_chat_run(run: ActiveChatRun) -> None:
             duplicate_tool_rounds = 0
             artifact_creation_repair_rounds = 0
             called_tools_signatures: set[str] = set()
+            called_tool_effect_keys: set[str] = set()
             pending_tool_calls: list[ToolCall] = []
             last_successful_tool_result: ToolResult | None = None
             all_successful_tool_results: list[ToolResult] = []
@@ -885,16 +1029,22 @@ def start_chat_run(run: ActiveChatRun) -> None:
 
             def enqueue_tool_calls(calls: list[ToolCall]) -> int:
                 queued_signatures = {tool_signature(call) for call in pending_tool_calls}
+                queued_effect_keys = {key for call in pending_tool_calls if (key := tool_effect_key(call)) is not None}
                 added = 0
 
                 for call in calls:
                     signature = tool_signature(call)
+                    effect_key = tool_effect_key(call)
 
                     if signature in called_tools_signatures or signature in queued_signatures:
+                        continue
+                    if effect_key is not None and (effect_key in called_tool_effect_keys or effect_key in queued_effect_keys):
                         continue
 
                     pending_tool_calls.append(call)
                     queued_signatures.add(signature)
+                    if effect_key is not None:
+                        queued_effect_keys.add(effect_key)
                     added += 1
 
                 return added
@@ -1426,13 +1576,14 @@ def start_chat_run(run: ActiveChatRun) -> None:
                         )
 
                     signature = tool_signature(tool_call)
+                    effect_key = tool_effect_key(tool_call)
 
-                    if signature in called_tools_signatures:
+                    if signature in called_tools_signatures or (effect_key is not None and effect_key in called_tool_effect_keys):
                         duplicate_tool_rounds += 1
                         log_activity(
                             "tool.duplicate",
                             "Suppressed duplicate tool call output",
-                            {"tool": tool_call.tool, "arguments": summarize_arguments(tool_call.arguments)},
+                            {"tool": tool_call.tool, "arguments": summarize_arguments(tool_call.arguments), "effect_key": effect_key or ""},
                         )
 
                         if last_successful_tool_result is not None:
@@ -1452,6 +1603,8 @@ def start_chat_run(run: ActiveChatRun) -> None:
                         continue
 
                     called_tools_signatures.add(signature)
+                    if effect_key is not None:
+                        called_tool_effect_keys.add(effect_key)
 
                     # Inject conversation_id into memory tool arguments
                     if tool_call.tool in {"record_episode", "update_episode", "forget_episode", "record_project_memory", "update_project_memory", "record_memory", "write_memory", "update_memory", "archive_memory", "move_memory", "merge_memory"}:
@@ -1552,6 +1705,7 @@ def start_chat_run(run: ActiveChatRun) -> None:
                             f"Permission granted for {tool_call.tool}",
                             {"tool": tool_call.tool, "arguments": tool_call.arguments},
                         )
+                        grant_approved_tool_permission(tool_call.tool)
 
                         with run.lock:
                             run.permission_request = None
@@ -1727,6 +1881,54 @@ def start_chat_run(run: ActiveChatRun) -> None:
 
     run.thread = threading.Thread(target=generate, name=f"bitbuddy-chat-run-{run.chat_id}", daemon=True)
     run.thread.start()
+
+
+def grant_approved_tool_permission(tool_name: str) -> None:
+    calendar_scopes = {
+        "calendar_view_events": "read",
+        "calendar_find_free_time": "read",
+        "calendar_create_event": "create",
+        "calendar_modify_event": "modify",
+        "calendar_delete_event": "delete",
+    }
+    email_scopes = {
+        "email_list_mailboxes": "read",
+        "email_recent_messages": "read",
+        "email_read_message": "read",
+        "email_search_messages": "search",
+        "email_trash_message": "trash",
+        "email_create_auto_trash_rule": "trash",
+    }
+    scope = calendar_scopes.get(tool_name)
+    if not scope:
+        email_scope = email_scopes.get(tool_name)
+        if not email_scope:
+            return
+        try:
+            from ..email.permissions import set_permission
+            from ..email.service import email_account_id
+
+            set_permission(email_account_id(), email_scope, "granted")
+        except Exception as error:
+            log_activity(
+                "tool.permission_grant_failed",
+                f"Failed to persist approved permission for {tool_name}: {error}",
+                {"tool": tool_name, "scope": email_scope, "error": str(error)},
+            )
+        return
+    try:
+        from ..calendar.permissions import set_permission
+        from ..calendar.service import user_timezone
+        from ..calendar.store import ensure_default_calendar
+
+        account, _calendar = ensure_default_calendar(user_timezone())
+        set_permission(account.id, scope, "granted")
+    except Exception as error:
+        log_activity(
+            "tool.permission_grant_failed",
+            f"Failed to persist approved permission for {tool_name}: {error}",
+            {"tool": tool_name, "scope": scope, "error": str(error)},
+        )
 
 
 def active_project_from_tool_results(results: list[ToolResult]) -> str:

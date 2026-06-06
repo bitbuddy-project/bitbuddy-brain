@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import shlex
 import subprocess
 import sys
+import time
+import urllib.request
+import zipfile
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-from .activity import log_activity
-from .config import ProviderConfig, load_config, update_mcp_config, upsert_mcp_server, validate_timezone, write_config
+from .activity import list_activity, log_activity
+from .chats.repository import delete_chat, get_chat, list_recent_chats
+from .config import ProviderConfig, load_config, update_calendar_config, update_mcp_config, update_model_runtime_config, upsert_mcp_server, validate_timezone, write_config
+from .database import db_connection
 from .personality import BUILTIN_PERSONALITIES
-from .paths import CONFIG_PATH, PERSONALITIES_DIR, WEB_DIR, ensure_app_dirs
+from .paths import APP_DIR, CONFIG_PATH, GLOBAL_DB_PATH, PERSONALITIES_DIR, WEB_DIR, ensure_app_dirs
 from .librarian import (
     delete_card,
     format_whisper,
@@ -21,6 +32,7 @@ from .managed_tools import computer_use_linux_status, install_computer_use_linux
 from .memory.project import index_project, list_projects, project_map, register_project
 from .providers import ProviderClient
 from .server import serve
+from .self_model import record_personality_quirks
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -63,6 +75,80 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument("--host", default="127.0.0.1", help="Host for the dev server.")
     web_parser.add_argument("--port", default="5173", help="Port for the dev server.")
     web_parser.set_defaults(handler=run_web)
+
+    dashboard_parser = subparsers.add_parser("dashboard", help="Start the local web UI dashboard.")
+    dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host for the dev server.")
+    dashboard_parser.add_argument("--port", default="5173", help="Port for the dev server.")
+    dashboard_parser.set_defaults(handler=run_dashboard)
+
+    doctor_parser = subparsers.add_parser("doctor", help="Diagnose BitBuddy setup, storage, services, autonomy, and web search.")
+    doctor_subparsers = doctor_parser.add_subparsers(dest="doctor_command", metavar="command")
+    doctor_fix = doctor_subparsers.add_parser("fix", help="Apply safe automatic repairs suggested by doctor.")
+    doctor_fix.set_defaults(handler=doctor_fix_command)
+    doctor_parser.set_defaults(handler=doctor_command)
+
+    status_parser = subparsers.add_parser("status", help="Show local BitBuddy setup and component status.")
+    status_parser.add_argument("--doctor", action="store_true", help="Include doctor pass/warn/fail totals.")
+    status_parser.set_defaults(handler=status_command)
+
+    config_parser = subparsers.add_parser("config", help="View or edit local configuration.")
+    config_subparsers = config_parser.add_subparsers(dest="config_command", metavar="command")
+    config_show = config_subparsers.add_parser("show", help="Print config.yaml.")
+    config_show.set_defaults(handler=config_show_command)
+    config_path = config_subparsers.add_parser("path", help="Print the config path.")
+    config_path.set_defaults(handler=config_path_command)
+    config_edit = config_subparsers.add_parser("edit", help="Open config.yaml in $EDITOR.")
+    config_edit.set_defaults(handler=config_edit_command)
+    config_parser.set_defaults(handler=config_show_command)
+
+    model_parser = subparsers.add_parser("model", help="List, add, or switch model providers.")
+    model_parser.add_argument("--list", action="store_true", help="List configured providers.")
+    model_parser.add_argument("--set", dest="set_provider", help="Set active provider by key/type.")
+    model_parser.add_argument("--add", action="store_true", help="Open the provider add/update picker.")
+    model_parser.set_defaults(handler=model_command)
+
+    logs_parser = subparsers.add_parser("logs", help="View local BitBuddy activity logs.")
+    logs_parser.add_argument("kind", nargs="?", default="all", choices=["all", "errors"], help="Log stream to show.")
+    logs_parser.add_argument("-n", "--limit", type=int, default=50, help="Number of rows to show.")
+    logs_parser.add_argument("-f", "--follow", action="store_true", help="Follow new activity rows.")
+    logs_parser.add_argument("--json", action="store_true", help="Print JSON rows.")
+    logs_parser.set_defaults(handler=logs_command)
+
+    sessions_parser = subparsers.add_parser("sessions", help="Manage persisted chat sessions.")
+    sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_command", metavar="command")
+    sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions.")
+    sessions_list.add_argument("-n", "--limit", type=int, default=20, help="Number of sessions to list.")
+    sessions_list.add_argument("--search", default="", help="Search session titles.")
+    sessions_list.set_defaults(handler=sessions_list_command)
+    sessions_show = sessions_subparsers.add_parser("show", help="Show a session transcript.")
+    sessions_show.add_argument("session", help="Session id.")
+    sessions_show.set_defaults(handler=sessions_show_command)
+    sessions_export = sessions_subparsers.add_parser("export", help="Export a session as JSON.")
+    sessions_export.add_argument("session", help="Session id.")
+    sessions_export.add_argument("output", nargs="?", help="Output path. Defaults to stdout.")
+    sessions_export.set_defaults(handler=sessions_export_command)
+    sessions_rename = sessions_subparsers.add_parser("rename", help="Rename a session.")
+    sessions_rename.add_argument("session", help="Session id.")
+    sessions_rename.add_argument("title", help="New session title.")
+    sessions_rename.set_defaults(handler=sessions_rename_command)
+    sessions_delete = sessions_subparsers.add_parser("delete", help="Delete a session after preserving its continuity capsule.")
+    sessions_delete.add_argument("session", help="Session id.")
+    sessions_delete.add_argument("--yes", action="store_true", help="Confirm deletion.")
+    sessions_delete.set_defaults(handler=sessions_delete_command)
+    sessions_prune = sessions_subparsers.add_parser("prune", help="Delete old sessions, keeping the newest N.")
+    sessions_prune.add_argument("--keep", type=int, default=50, help="Number of newest sessions to keep.")
+    sessions_prune.add_argument("--yes", action="store_true", help="Confirm pruning.")
+    sessions_prune.set_defaults(handler=sessions_prune_command)
+    sessions_parser.set_defaults(handler=sessions_list_command)
+
+    backup_parser = subparsers.add_parser("backup", help="Back up the local BitBuddy home directory.")
+    backup_parser.add_argument("output", nargs="?", help="Output zip path. Defaults to ./bitbuddy-backup-<timestamp>.zip")
+    backup_parser.add_argument("--include-secrets", action="store_true", help="Include secrets.json in the backup zip.")
+    backup_parser.set_defaults(handler=backup_command)
+
+    completion_parser = subparsers.add_parser("completion", help="Print a shell completion script.")
+    completion_parser.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell to generate completion for.")
+    completion_parser.set_defaults(handler=completion_command)
 
     provider_parser = subparsers.add_parser("provider", help="Inspect the configured local model provider.")
     provider_subparsers = provider_parser.add_subparsers(dest="provider_command", metavar="command")
@@ -182,18 +268,24 @@ def run_setup(_args: argparse.Namespace) -> int:
     if current_config is not None:
         setup_action = questionary.select(
             "Existing BitBuddy setup found. What do you want to do?",
-            choices=["Modify current setup", "Keep current setup", "Start new setup"],
-            default="Modify current setup",
+            choices=["Quick: calendar/reminder settings", "Full guided setup", "Keep current setup", "Start new setup"],
+            default="Quick: calendar/reminder settings",
             qmark="◆",
             pointer="›",
             style=style,
         ).ask()
         if setup_action is None:
             return 1
+        if setup_action == "Quick: calendar/reminder settings":
+            if not configure_calendar_setup(questionary, style, current_config):
+                return 1
+            return 0
         if setup_action == "Keep current setup":
             print(f"Keeping current setup at {CONFIG_PATH}")
             print("Run `bitbuddy serve` when you are ready.")
             return 0
+        if setup_action == "Full guided setup":
+            setup_action = "Modify current setup"
 
     provider_default = "Ollama"
     provider_url_default = "http://127.0.0.1:11434"
@@ -205,6 +297,8 @@ def run_setup(_args: argparse.Namespace) -> int:
     personality_id_default = "cozy-companion"
     expressiveness_default = "balanced"
     proactivity_default = "helpful_nudges"
+    bitbuddy_likes_default: list[str] = []
+    bitbuddy_dislikes_default: list[str] = []
     location_label_default = ""
     timezone_default = "UTC"
     locale_default = "en-US"
@@ -216,6 +310,8 @@ def run_setup(_args: argparse.Namespace) -> int:
         personality_id_default = current_config.personality.id
         expressiveness_default = current_config.personality.expressiveness
         proactivity_default = current_config.personality.proactivity
+        bitbuddy_likes_default = list(current_config.personality.bitbuddy_likes)
+        bitbuddy_dislikes_default = list(current_config.personality.bitbuddy_dislikes)
         location_label_default = current_config.user_context.location_label
         timezone_default = current_config.user_context.timezone
         locale_default = current_config.user_context.locale
@@ -304,6 +400,25 @@ def run_setup(_args: argparse.Namespace) -> int:
         return 1
     proactivity = proactivity_label.replace(" ", "_")
 
+    bitbuddy_likes = parse_setup_quirks(
+        questionary.text(
+            "Optional: up to 3 things BitBuddy likes (comma-separated)",
+            default=", ".join(bitbuddy_likes_default),
+            qmark="◆",
+            style=style,
+        ).ask()
+        or ""
+    )
+    bitbuddy_dislikes = parse_setup_quirks(
+        questionary.text(
+            "Optional: up to 3 things BitBuddy dislikes (comma-separated)",
+            default=", ".join(bitbuddy_dislikes_default),
+            qmark="◆",
+            style=style,
+        ).ask()
+        or ""
+    )
+
     location_label = (
         questionary.text(
             "Where are you based? (optional city/region label)",
@@ -342,12 +457,14 @@ def run_setup(_args: argparse.Namespace) -> int:
 
     configure_provider = True
     configure_project_memory: bool | None = None
+    configure_calendar: bool | None = None
     if setup_action == "Modify current setup":
         optional_sections = questionary.checkbox(
             "Which optional setup sections do you want to configure now?",
             choices=[
                 questionary.Choice("Local model provider", checked=False),
                 questionary.Choice("Read-only project memory", checked=False),
+                questionary.Choice("Calendar reminders", checked=False),
             ],
             qmark="◆",
             pointer="›",
@@ -357,60 +474,56 @@ def run_setup(_args: argparse.Namespace) -> int:
             return 1
         configure_provider = "Local model provider" in optional_sections
         configure_project_memory = "Read-only project memory" in optional_sections
+        configure_calendar = "Calendar reminders" in optional_sections
 
     provider_config = existing_or_empty_provider_config(current_config)
+    configured_providers = provider_entries_from_config(current_config)
+    active_provider = provider_config.key or provider_config.type
     provider = provider_config.type
     provider_url = provider_config.url
     provider_model = provider_config.model
-    skip_preserved_existing = False
     if configure_provider:
-        provider_label = questionary.select(
-            "Choose your local model provider",
-            choices=["Ollama", "llama.cpp", "Skip for now"],
-            default=provider_default,
-            qmark="◆",
-            pointer="›",
-            style=style,
-        ).ask()
-        if provider_label is None:
-            return 1
-        provider_config, skip_preserved_existing = provider_config_from_setup_choice(provider_label, setup_action, current_config)
-        provider = provider_config.type
-        provider_url = provider_config.url
-        provider_model = provider_config.model
-
-    if configure_provider and provider != "none" and not skip_preserved_existing:
-        default_url = (
-            provider_url_default
-            if setup_action == "Modify current setup" and provider == current_provider_key(current_config) and provider_url_default
-            else provider_url_default_for(provider)
-        )
-        provider_url = (
-            questionary.text(
-                provider_url_question(provider),
-                default=default_url,
+        configured_providers = [] if setup_action == "Start new setup" else configured_providers
+        while True:
+            provider_label = questionary.select(
+                "Add a model provider",
+                choices=["Ollama", "llama.cpp", "OpenAI API", "Codex", "Anthropic", "Done"],
+                default=provider_default,
                 qmark="◆",
+                pointer="›",
                 style=style,
             ).ask()
-            or default_url
-        )
-        detected_models = detect_provider_models(provider, provider_url)
-        default_model = provider_model or (detected_models[0] if detected_models else "")
-        if detected_models:
-            print(f"Found model: {default_model}")
+            if provider_label is None:
+                return 1
+            if provider_label == "Done":
+                break
+            entry = configure_provider_entry(questionary, style, provider_label, configured_providers)
+            configured_providers = [existing for existing in configured_providers if existing.get("type") != entry.get("type")]
+            configured_providers.append(entry)
+            add_another = questionary.confirm("Add another provider?", default=False, qmark="◆", style=style).ask()
+            if not add_another:
+                break
+        if configured_providers:
+            active_label = questionary.select(
+                "Which provider should be active now?",
+                choices=[provider_choice_label(entry) for entry in configured_providers],
+                default=provider_choice_label(configured_providers[0]),
+                qmark="◆",
+                pointer="›",
+                style=style,
+            ).ask()
+            if active_label is None:
+                return 1
+            active_provider = provider_type_from_choice_label(active_label)
+            active_entry = next((entry for entry in configured_providers if entry.get("type") == active_provider), configured_providers[0])
+            provider = str(active_entry.get("type") or "none")
+            provider_url = str(active_entry.get("url") or "")
+            provider_model = str(active_entry.get("model") or "")
         else:
-            print("No model name found automatically. You can enter one now or leave it blank.")
-        provider_model = (
-            questionary.text(
-                "Model name",
-                default=default_model,
-                qmark="◆",
-                style=style,
-            ).ask()
-            or default_model
-        )
-    elif skip_preserved_existing:
-        print("Keeping existing provider settings because setup was skipped.")
+            active_provider = "none"
+            provider = "none"
+            provider_url = ""
+            provider_model = ""
 
     scan_interval_answer = questionary.text(
         "Project memory scan interval in seconds (0 disables monitor)",
@@ -429,6 +542,8 @@ def run_setup(_args: argparse.Namespace) -> int:
         "expressiveness": expressiveness,
         "proactivity": proactivity,
         "quirk_frequency": "occasional",
+        "bitbuddy_likes": bitbuddy_likes,
+        "bitbuddy_dislikes": bitbuddy_dislikes,
     }
     user_context_config = {
         "location_label": location_label,
@@ -449,6 +564,14 @@ def run_setup(_args: argparse.Namespace) -> int:
         user_context_config,
         chat_config,
         preserve_existing=setup_action == "Modify current setup",
+    )
+    record_personality_quirks(personality_id, bitbuddy_likes, bitbuddy_dislikes)
+    update_model_runtime_config(
+        {
+            "providers": configured_providers,
+            "active_provider": active_provider,
+            "project_scan_interval_seconds": scan_interval,
+        }
     )
 
     print()
@@ -498,6 +621,18 @@ def run_setup(_args: argparse.Namespace) -> int:
                 f"deleted={result.deleted}, skipped={result.skipped}"
             )
 
+    if configure_calendar is None:
+        configure_calendar = bool(
+            questionary.confirm(
+                "Set up calendar reminders now?",
+                default=False,
+                qmark="◆",
+                style=style,
+            ).ask()
+        )
+    if configure_calendar and not configure_calendar_setup(questionary, style, load_config()):
+        return 1
+
     print()
     print("Setup complete. Run `bitbuddy serve` to start the BitBuddy backend server.")
     return 0
@@ -511,11 +646,110 @@ def provider_url_question(provider: str) -> str:
     return "Provider URL"
 
 
+def provider_type_from_label(label: str) -> str:
+    if label == "Ollama":
+        return "ollama"
+    if label == "llama.cpp":
+        return "llama.cpp"
+    if label in {"OpenAI", "OpenAI API"}:
+        return "openai"
+    if label == "Codex":
+        return "codex"
+    if label == "Anthropic":
+        return "anthropic"
+    return "none"
+
+
+def provider_display_name(provider_type: str) -> str:
+    if provider_type == "ollama":
+        return "Ollama"
+    if provider_type == "llama.cpp":
+        return "llama.cpp"
+    if provider_type == "openai":
+        return "OpenAI API"
+    if provider_type == "codex":
+        return "Codex"
+    if provider_type == "anthropic":
+        return "Anthropic"
+    return "None"
+
+
+def provider_entries_from_config(config: object | None) -> list[dict[str, Any]]:
+    providers = getattr(config, "providers", ()) if config is not None else ()
+    entries: list[dict[str, Any]] = []
+    for provider in providers:
+        if isinstance(provider, ProviderConfig) and provider.type != "none":
+            entry = {
+                "type": provider.type,
+                "url": provider.url,
+                "model": provider.model,
+                "key": provider.key or provider.type,
+                "embedding_model": provider.embedding_model,
+                "embedding_url": provider.embedding_url,
+                "native_tools": provider.native_tools,
+                "has_api_key": provider.has_api_key,
+            }
+            if provider.api_key_ref:
+                entry["api_key_ref"] = provider.api_key_ref
+            entries.append(entry)
+    if not entries:
+        provider = existing_or_empty_provider_config(config)
+        if provider.type != "none":
+            entry = {"type": provider.type, "url": provider.url, "model": provider.model, "key": provider.key or provider.type, "has_api_key": provider.has_api_key}
+            if provider.api_key_ref:
+                entry["api_key_ref"] = provider.api_key_ref
+            entries.append(entry)
+    return entries
+
+
+def provider_choice_label(entry: dict[str, Any]) -> str:
+    provider_type = str(entry.get("type") or "none")
+    model = str(entry.get("model") or "").strip()
+    return f"{provider_display_name(provider_type)}{f' · {model}' if model else ''}"
+
+
+def provider_type_from_choice_label(label: str) -> str:
+    return provider_type_from_label(label.split(" · ", 1)[0])
+
+
+def configure_provider_entry(questionary: Any, style: Any, provider_label: str, existing: list[dict[str, Any]]) -> dict[str, Any]:
+    provider_type = provider_type_from_label(provider_label)
+    previous = next((entry for entry in existing if entry.get("type") == provider_type), {})
+    if provider_type == "codex":
+        provider_url = provider_url_default_for(provider_type)
+    else:
+        default_url = str(previous.get("url") or provider_url_default_for(provider_type))
+        provider_url = questionary.text(provider_url_question(provider_type), default=default_url, qmark="◆", style=style).ask() or default_url
+    detected_models = detect_provider_models(provider_type, provider_url) if provider_type not in {"openai", "codex", "anthropic"} else []
+    default_model = str(previous.get("model") or (detected_models[0] if detected_models else provider_model_default_for(provider_type)))
+    if detected_models:
+        print(f"Found model: {default_model}")
+    provider_model = questionary.text("Model name", default=default_model, qmark="◆", style=style).ask() or default_model
+    entry: dict[str, Any] = {"type": provider_type, "url": provider_url, "model": provider_model}
+    if provider_type in {"openai", "anthropic"}:
+        has_key = bool(previous.get("has_api_key"))
+        prompt = "API key" + (" (leave blank to keep existing)" if has_key else "")
+        api_key = questionary.password(prompt, qmark="◆", style=style).ask() or ""
+        if api_key:
+            entry["api_key"] = api_key
+        elif has_key:
+            entry["has_api_key"] = True
+    elif provider_type == "codex":
+        print("Codex uses ChatGPT login. Finish login from Settings or run `codex login --device-auth`.")
+    return entry
+
+
 def provider_label_from_key(provider: str) -> str:
     if provider == "ollama":
         return "Ollama"
     if provider == "llama.cpp":
         return "llama.cpp"
+    if provider == "openai":
+        return "OpenAI API"
+    if provider == "codex":
+        return "Codex"
+    if provider == "anthropic":
+        return "Anthropic"
     return "Skip for now"
 
 
@@ -544,6 +778,22 @@ def provider_url_default_for(provider: str) -> str:
         return "http://127.0.0.1:11434"
     if provider == "llama.cpp":
         return "http://127.0.0.1:8080"
+    if provider == "openai":
+        return "https://api.openai.com"
+    if provider == "codex":
+        return "codex://chatgpt"
+    if provider == "anthropic":
+        return "https://api.anthropic.com"
+    return ""
+
+
+def provider_model_default_for(provider: str) -> str:
+    if provider == "openai":
+        return "gpt-4.1"
+    if provider == "codex":
+        return "gpt-5.5"
+    if provider == "anthropic":
+        return "claude-sonnet-4-6"
     return ""
 
 
@@ -575,6 +825,143 @@ def parse_tool_round_limit(value: str) -> int:
     return limit
 
 
+def configure_calendar_setup(questionary: Any, style: Any, current_config: object | None = None) -> bool:
+    calendar = getattr(current_config, "calendar", None)
+    enabled_default = bool(getattr(calendar, "enabled", False))
+    enabled = questionary.confirm(
+        "Enable calendar reminders and schedule awareness?",
+        default=enabled_default,
+        qmark="◆",
+        style=style,
+    ).ask()
+    if enabled is None:
+        return False
+
+    if not enabled:
+        update_calendar_config({"enabled": False})
+        print("Calendar setup updated: calendar is off.")
+        return True
+
+    upcoming_default = max(1, int(getattr(calendar, "reminder_upcoming_minutes", 60) or 60))
+    soon_default = max(1, int(getattr(calendar, "reminder_starting_soon_minutes", 15) or 15))
+    upcoming = setup_positive_int(
+        questionary,
+        style,
+        "Upcoming reminder lead time in minutes",
+        upcoming_default,
+    )
+    if upcoming is None:
+        return False
+    starting_soon = setup_positive_int(
+        questionary,
+        style,
+        "Starting-soon reminder lead time in minutes",
+        soon_default,
+    )
+    if starting_soon is None:
+        return False
+
+    urgent_interrupts = questionary.confirm(
+        "Show urgent UI alerts for starting-soon reminders?",
+        default=bool(getattr(calendar, "urgent_interrupts_enabled", True)),
+        qmark="◆",
+        style=style,
+    ).ask()
+    if urgent_interrupts is None:
+        return False
+    persistent_urgent = False
+    if urgent_interrupts:
+        persistent_answer = questionary.confirm(
+            "Keep urgent reminders visible until dismissed or opened?",
+            default=bool(getattr(calendar, "urgent_interrupt_persistent", True)),
+            qmark="◆",
+            style=style,
+        ).ask()
+        if persistent_answer is None:
+            return False
+        persistent_urgent = bool(persistent_answer)
+
+    conflict_warnings = questionary.confirm(
+        "Warn when calendar events overlap?",
+        default=bool(getattr(calendar, "conflict_warnings_enabled", True)),
+        qmark="◆",
+        style=style,
+    ).ask()
+    if conflict_warnings is None:
+        return False
+    chat_nudges = questionary.confirm(
+        "Let imminent reminders also speak up in chat?",
+        default=bool(getattr(calendar, "chat_nudges_enabled", True)),
+        qmark="◆",
+        style=style,
+    ).ask()
+    if chat_nudges is None:
+        return False
+    holidays_enabled = questionary.confirm(
+        "Overlay public holidays on the calendar?",
+        default=bool(getattr(calendar, "holidays_enabled", True)),
+        qmark="◆",
+        style=style,
+    ).ask()
+    if holidays_enabled is None:
+        return False
+
+    holidays_country = str(getattr(calendar, "holidays_country", "") or "").strip().upper()
+    if holidays_enabled:
+        holidays_country = (
+            questionary.text(
+                "Holiday country code (optional, e.g. US, GB, DE)",
+                default=holidays_country,
+                qmark="◆",
+                style=style,
+            ).ask()
+            or holidays_country
+        ).strip().upper()
+
+    update_calendar_config(
+        {
+            "enabled": True,
+            "reminder_upcoming_minutes": upcoming,
+            "reminder_starting_soon_minutes": starting_soon,
+            "urgent_interrupts_enabled": bool(urgent_interrupts),
+            "urgent_interrupt_persistent": persistent_urgent,
+            "conflict_warnings_enabled": bool(conflict_warnings),
+            "chat_nudges_enabled": bool(chat_nudges),
+            "holidays_enabled": bool(holidays_enabled),
+            "holidays_country": holidays_country if holidays_enabled else "",
+        }
+    )
+    print("Calendar setup updated. Reminders will use the new settings on the next scheduler tick.")
+    return True
+
+
+def setup_positive_int(questionary: Any, style: Any, prompt: str, default: int) -> int | None:
+    value = questionary.text(prompt, default=str(default), qmark="◆", style=style).ask()
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip() or default)
+    except ValueError as error:
+        raise ValueError(f"{prompt} must be a whole number.") from error
+    if parsed < 1:
+        raise ValueError(f"{prompt} must be at least 1.")
+    return parsed
+
+
+def parse_setup_quirks(value: str) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value.split(","):
+        clean = " ".join(item.strip().split())[:80]
+        key = clean.lower()
+        if clean and key not in seen:
+            result.append(clean)
+            seen.add(key)
+        if len(result) >= 3:
+            break
+    return result
+
+
 def run_web(args: argparse.Namespace) -> int:
     return subprocess.call(
         ["npm", "run", "dev", "--", "--host", args.host, "--port", str(args.port)],
@@ -582,15 +969,327 @@ def run_web(args: argparse.Namespace) -> int:
     )
 
 
+def run_dashboard(args: argparse.Namespace) -> int:
+    print("Starting BitBuddy dashboard. Run `bitbuddy serve` separately if the backend is not already running.")
+    return run_web(args)
+
+
 def run_serve(args: argparse.Namespace) -> int:
     serve(args.host, args.port)
     return 0
 
 
+def status_command(args: argparse.Namespace) -> int:
+    config = load_config()
+    projects = list_projects()
+    chat_count = len(list_recent_chats(limit=1000))
+    server_ok = check_backend_health()
+    print("BitBuddy Status")
+    print(f"Home: {APP_DIR}")
+    print(f"Config: {CONFIG_PATH}")
+    print(f"Backend: {'running' if server_ok else 'not detected'}")
+    print(f"Dashboard: {WEB_DIR}")
+    print(f"Provider: {provider_display_name(config.provider.type)}{f' / {config.provider.model}' if config.provider.model else ''}")
+    try:
+        ok, message = ProviderClient(config.provider).health()
+        print(f"Provider health: {'ok' if ok else 'problem'} - {message}")
+    except Exception as error:
+        print(f"Provider health: problem - {error}")
+    print(f"Projects: {len(projects)} registered")
+    print(f"Sessions: {chat_count} saved")
+    print(f"Calendar: {'enabled' if config.calendar.enabled else 'off'}")
+    print(f"Email: {'enabled' if config.email.enabled else 'off'}")
+    print(f"MCP: {'enabled' if config.mcp.enabled else 'disabled'} ({len(config.mcp_servers)} server(s))")
+    if args.doctor:
+        from .doctor import run_doctor_checks
+
+        results = run_doctor_checks()
+        totals = {status: len([result for result in results if result.status == status]) for status in ("pass", "warn", "fail", "skip")}
+        print(f"Doctor: pass={totals['pass']} warn={totals['warn']} fail={totals['fail']} skip={totals['skip']}")
+    return 0
+
+
+def check_backend_health() -> bool:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8787/health", timeout=1.5) as response:
+            return 200 <= response.status < 300
+    except OSError:
+        return False
+
+
+def config_show_command(_args: argparse.Namespace) -> int:
+    load_config()
+    print(CONFIG_PATH.read_text(encoding="utf-8"), end="")
+    return 0
+
+
+def config_path_command(_args: argparse.Namespace) -> int:
+    load_config()
+    print(CONFIG_PATH)
+    return 0
+
+
+def config_edit_command(_args: argparse.Namespace) -> int:
+    load_config()
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if not editor:
+        raise ValueError("Set $EDITOR or $VISUAL to edit config.yaml from the CLI.")
+    return subprocess.call([*shlex.split(editor), str(CONFIG_PATH)])
+
+
+def model_command(args: argparse.Namespace) -> int:
+    config = load_config()
+    if args.list:
+        return model_list_command(config)
+    if args.set_provider:
+        return model_set_active_command(args.set_provider, config)
+    if args.add:
+        return model_add_command(config)
+    return model_interactive_command(config)
+
+
+def model_list_command(config: object) -> int:
+    providers = provider_entries_from_config(config)
+    if not providers:
+        print("No model providers configured. Run `bitbuddy model --add` or `bitbuddy setup`.")
+        return 0
+    active = getattr(config, "active_provider", "")
+    for provider in providers:
+        key = str(provider.get("key") or provider.get("type") or "")
+        marker = "*" if key == active else " "
+        model = str(provider.get("model") or "")
+        print(f"{marker} {key}\t{provider_display_name(str(provider.get('type') or 'none'))}\t{model}")
+    return 0
+
+
+def model_set_active_command(active_provider: str, config: object) -> int:
+    providers = provider_entries_from_config(config)
+    keys = {str(provider.get("key") or provider.get("type") or "") for provider in providers}
+    if active_provider not in keys:
+        raise ValueError(f"Unknown provider `{active_provider}`. Run `bitbuddy model --list`.")
+    update_model_runtime_config({"providers": providers, "active_provider": active_provider})
+    print(f"Active model provider set to {active_provider}.")
+    return 0
+
+
+def model_add_command(config: object) -> int:
+    questionary, style = load_questionary_for_cli()
+    providers = provider_entries_from_config(config)
+    choices = ["Ollama", "llama.cpp", "OpenAI API", "Codex", "Anthropic"]
+    default_label = provider_label_from_key(getattr(getattr(config, "provider", None), "type", "ollama"))
+    label = questionary.select(
+        "Add or update provider",
+        choices=choices,
+        default=default_label if default_label in choices else "Ollama",
+        qmark="◆",
+        pointer="›",
+        style=style,
+    ).ask()
+    if label is None:
+        return 1
+    entry = configure_provider_entry(questionary, style, label, providers)
+    next_providers = [provider for provider in providers if provider.get("type") != entry.get("type")]
+    next_providers.append(entry)
+    active_provider = str(entry.get("key") or entry.get("type") or "none")
+    update_model_runtime_config({"providers": next_providers, "active_provider": active_provider})
+    print(f"Configured {provider_display_name(str(entry.get('type') or 'none'))} and made it active.")
+    return 0
+
+
+def model_interactive_command(config: object) -> int:
+    providers = provider_entries_from_config(config)
+    if not providers:
+        return model_add_command(config)
+    questionary, style = load_questionary_for_cli()
+    choices = [provider_choice_label(provider) for provider in providers]
+    choices.append("Add or update provider")
+    selected = questionary.select("Choose active model provider", choices=choices, qmark="◆", pointer="›", style=style).ask()
+    if selected is None:
+        return 1
+    if selected == "Add or update provider":
+        return model_add_command(config)
+    return model_set_active_command(provider_type_from_choice_label(selected), config)
+
+
+def load_questionary_for_cli() -> tuple[Any, Any]:
+    try:
+        import questionary
+        from questionary import Style
+    except ImportError as error:
+        raise ValueError("questionary is required. Install this package with `pip install -e .` first.") from error
+    return questionary, Style(
+        [
+            ("qmark", "fg:#79b8ff bold"),
+            ("question", "fg:#eef5ff bold"),
+            ("answer", "fg:#6ee7b7 bold"),
+            ("pointer", "fg:#79b8ff bold"),
+            ("highlighted", "fg:#eef5ff noreverse noinherit"),
+            ("selected", "fg:#eef5ff noreverse noinherit"),
+            ("instruction", "fg:#9fb2ca"),
+            ("text", "fg:#eef5ff"),
+        ]
+    )
+
+
+def logs_command(args: argparse.Namespace) -> int:
+    seen = 0
+    while True:
+        rows = filtered_activity(args.kind, max(1, args.limit))
+        rows_to_print = [row for row in reversed(rows) if int(row["id"]) > seen]
+        for row in rows_to_print:
+            print_activity_row(row, json_output=args.json)
+            seen = max(seen, int(row["id"]))
+        if not args.follow:
+            return 0
+        time.sleep(1)
+
+
+def filtered_activity(kind: str, limit: int) -> list[dict[str, Any]]:
+    rows = list_activity(limit=max(limit * 4, limit))
+    if kind == "errors":
+        rows = [row for row in rows if is_error_activity(row)]
+    return rows[:limit]
+
+
+def is_error_activity(row: dict[str, Any]) -> bool:
+    text = f"{row.get('kind', '')} {row.get('message', '')}".casefold()
+    return any(token in text for token in ("error", "fail", "failed", "crash", "exception"))
+
+
+def print_activity_row(row: dict[str, Any], *, json_output: bool = False) -> None:
+    if json_output:
+        print(json.dumps(row, sort_keys=True))
+        return
+    print(f"{row['created_at']}\t{row['kind']}\t{row['message']}")
+
+
+def sessions_list_command(args: argparse.Namespace) -> int:
+    sessions = list_recent_chats(limit=max(1, getattr(args, "limit", 20)), search=getattr(args, "search", ""))
+    if not sessions:
+        print("No saved sessions.")
+        return 0
+    for session in sessions:
+        print(f"{session.id}\t{session.updated_at}\t{session.mode}\t{session.title}")
+    return 0
+
+
+def sessions_show_command(args: argparse.Namespace) -> int:
+    chat = get_chat(args.session)
+    print(f"{chat['title']} ({chat['id']})")
+    print(f"mode={chat['mode']} created={chat['created_at']} updated={chat['updated_at']}")
+    print()
+    for message in chat["messages"]:
+        role = message.get("role") or message.get("kind") or "message"
+        content = str(message.get("content") or message.get("summary") or "").strip()
+        if content:
+            print(f"[{role}] {content}")
+    return 0
+
+
+def sessions_export_command(args: argparse.Namespace) -> int:
+    payload = json.dumps(get_chat(args.session), indent=2) + "\n"
+    if args.output:
+        Path(args.output).write_text(payload, encoding="utf-8")
+        print(f"Exported session to {args.output}")
+    else:
+        print(payload, end="")
+    return 0
+
+
+def sessions_rename_command(args: argparse.Namespace) -> int:
+    title = " ".join(args.title.split())[:80]
+    if not title:
+        raise ValueError("Session title cannot be blank.")
+    with db_connection(GLOBAL_DB_PATH) as connection:
+        cursor = connection.execute("update chats set title = ?, updated_at = current_timestamp where id = ?", (title, args.session))
+    if cursor.rowcount == 0:
+        raise ValueError(f"Unknown session: {args.session}")
+    print(f"Renamed session {args.session} to {title}.")
+    return 0
+
+
+def sessions_delete_command(args: argparse.Namespace) -> int:
+    if not args.yes:
+        raise ValueError("Refusing to delete without --yes.")
+    if not delete_chat(args.session):
+        raise ValueError(f"Unknown session: {args.session}")
+    print(f"Deleted session {args.session}.")
+    return 0
+
+
+def sessions_prune_command(args: argparse.Namespace) -> int:
+    if not args.yes:
+        raise ValueError("Refusing to prune without --yes.")
+    keep = max(0, int(args.keep))
+    sessions = list_recent_chats(limit=100000)
+    stale = sessions[keep:]
+    for session in stale:
+        delete_chat(session.id)
+    print(f"Pruned {len(stale)} session(s); kept {min(keep, len(sessions))}.")
+    return 0
+
+
+def backup_command(args: argparse.Namespace) -> int:
+    ensure_app_dirs()
+    output = Path(args.output) if args.output else Path.cwd() / f"bitbuddy-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+    output = output.expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in APP_DIR.rglob("*"):
+            if path.is_symlink() or path.is_dir():
+                continue
+            if path.name == "secrets.json" and not args.include_secrets:
+                continue
+            try:
+                archive.write(path, path.relative_to(APP_DIR.parent))
+            except FileNotFoundError:
+                continue
+    print(f"Backup written: {output}")
+    if not args.include_secrets:
+        print("Note: secrets.json was excluded. Use --include-secrets only for trusted local backups.")
+    return 0
+
+
+def completion_command(args: argparse.Namespace) -> int:
+    commands = "setup serve web dashboard status doctor config model logs sessions backup completion provider mcp projects librarian"
+    if args.shell == "bash":
+        print(f"complete -W '{commands}' bitbuddy")
+    elif args.shell == "zsh":
+        print(f"#compdef bitbuddy\n_arguments '1:command:({commands})'")
+    else:
+        for command in commands.split():
+            print(f"complete -c bitbuddy -f -a {command}")
+    return 0
+
+
+def doctor_command(_args: argparse.Namespace) -> int:
+    from .doctor import doctor_exit_code, render_doctor_report, run_doctor_checks
+
+    try:
+        results = run_doctor_checks()
+    except Exception as error:
+        print(f"BitBuddy Doctor crashed: {error}", file=sys.stderr)
+        return 2
+    print(render_doctor_report(results), end="")
+    return doctor_exit_code(results)
+
+
+def doctor_fix_command(_args: argparse.Namespace) -> int:
+    from .doctor.fixers import render_fix_report, run_doctor_fix
+
+    try:
+        fixes, after, exit_code = run_doctor_fix()
+    except Exception as error:
+        print(f"BitBuddy Doctor crashed while fixing: {error}", file=sys.stderr)
+        return 2
+    print(render_fix_report(fixes, after), end="")
+    return exit_code
+
+
 def provider_help(_args: argparse.Namespace) -> int:
     print("usage: bitbuddy provider {check,models,stream-test} ...")
     print()
-    print("Inspect the configured local model provider.")
+    print("Inspect the active model provider.")
     return 0
 
 

@@ -16,6 +16,7 @@ const THINK_STORAGE_KEY = 'bitbuddy:think-enabled';
 type ActiveStream = {
 	token: number;
 	chatId: string;
+	initialChatId: string;
 	controller: AbortController;
 };
 
@@ -56,7 +57,11 @@ export const chatSession = $state({
 	attachments: [] as PendingChatAttachment[],
 	pendingSteer: null as PendingSteerMessage | null,
 	backgroundNotifications: {} as Record<string, number>,
-	thinkEnabled: false
+	thinkEnabled: false,
+	// Thinking setting captured at the start of the active stream. Visibility of the
+	// in-flight thinking stream is gated on this, so toggling thinkEnabled mid-response
+	// does not tear down the thinking already being shown for the current run.
+	activeThinkEnabled: false
 });
 
 function loadThinkPreference() {
@@ -131,11 +136,15 @@ function beginStream(chatId: string): ActiveStream {
 	const stream = {
 		token: ++streamSequence,
 		chatId,
+		initialChatId: chatId,
 		controller: new AbortController(),
 	};
 	activeStream = stream;
 	chatSession.isStreaming = true;
 	chatSession.streamingChatId = chatId;
+	// Capture the thinking setting for this run so later toggles of thinkEnabled
+	// don't hide the thinking stream already rendering for the in-flight response.
+	chatSession.activeThinkEnabled = chatSession.thinkEnabled;
 	return stream;
 }
 
@@ -148,6 +157,14 @@ function finishStream(stream: ActiveStream) {
 	activeStream = null;
 	chatSession.isStreaming = false;
 	chatSession.streamingChatId = '';
+}
+
+function syncPendingSteerChatId(stream: ActiveStream, chatId: string) {
+	const pending = chatSession.pendingSteer;
+	if (!pending || !chatId) return;
+	if (!pending.chatId || pending.chatId === stream.initialChatId || pending.chatId === stream.chatId) {
+		pending.chatId = chatId;
+	}
 }
 
 function detachActiveStream() {
@@ -311,6 +328,7 @@ async function attemptReconnect() {
 				if (chunk.kind === 'tool_call' || chunk.kind === 'tool_result' || chunk.kind === 'tool_error') handleToolChunk(chunk);
 				if (chunk.kind === 'permission_request') handlePermissionChunk(chunk);
 				if (chunk.kind === 'chat' && chunk.chat_id) {
+					syncPendingSteerChatId(stream, chunk.chat_id);
 					stream.chatId = chunk.chat_id;
 					chatSession.streamingChatId = chunk.chat_id;
 					chatSession.currentChatId = chunk.chat_id;
@@ -400,6 +418,7 @@ export async function sendMessage(content: string, attachments: ChatAttachment[]
 			onChunk: (chunk) => {
 				if (!ownsStream(stream)) return;
 				if (chunk.kind === 'chat' && chunk.chat_id) {
+					syncPendingSteerChatId(stream, chunk.chat_id);
 					stream.chatId = chunk.chat_id;
 					chatSession.streamingChatId = chunk.chat_id;
 					chatSession.currentChatId = chunk.chat_id;
@@ -481,7 +500,9 @@ export async function steerPendingMessage() {
 async function sendPendingSteerAfterTurn(chatId: string) {
 	const pending = chatSession.pendingSteer;
 	if (!pending || chatSession.isStreaming) return;
-	if (pending.chatId && chatId && pending.chatId !== chatId) return;
+	const activeChatId = chatSession.currentChatId || chatId;
+	if (pending.chatId && activeChatId && pending.chatId !== activeChatId && pending.chatId !== chatId) return;
+	if (activeChatId) pending.chatId = activeChatId;
 	chatSession.pendingSteer = null;
 	await sendMessage(pending.content, pending.attachments);
 }
@@ -498,8 +519,12 @@ export function scheduleContextUsage(draft: string) {
 	}, 350);
 }
 
-export async function refreshContextUsage(draft = '') {
+export async function refreshContextUsage(draft = '', options: { providerOnly?: boolean } = {}) {
 	try {
+		if (options.providerOnly) {
+			chatSession.contextUsage = await getProviderContext();
+			return;
+		}
 		const draftMessage = draft.trim() ? [{ role: 'user' as const, content: draft.trim() }] : [];
 		const messages = [...chatSession.messages, ...draftMessage].filter(
 			(message) => message.role !== 'assistant' || message.content.trim() || message.thinking?.trim()

@@ -94,9 +94,19 @@
 		min-height: 100vh;
 		display: grid;
 		grid-template-columns: var(--sidebar-width) 1fr;
-		background: var(--bg);
+		background:
+			radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent-soft) 72%, transparent), transparent 34rem),
+			radial-gradient(circle at 92% 100%, rgba(110, 231, 183, 0.045), transparent 32rem),
+			linear-gradient(180deg, color-mix(in srgb, var(--bg-soft) 36%, var(--bg)), var(--bg) 34rem);
 		position: relative;
 		transition: grid-template-columns 180ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	:global(:root.light) .app-shell {
+		background:
+			radial-gradient(circle at 18% 0%, rgba(37, 99, 235, 0.09), transparent 34rem),
+			radial-gradient(circle at 92% 100%, rgba(4, 120, 87, 0.035), transparent 32rem),
+			linear-gradient(180deg, #dce9f5, var(--bg) 36rem);
 	}
 
 	.app-shell.sidebar-collapsed {
@@ -105,18 +115,25 @@
 
 	.sidebar-toggle {
 		position: fixed;
-		top: 3.25rem;
+		top: 4.9rem;
 		left: var(--sidebar-width);
 		z-index: 20;
 		width: 2.25rem;
 		height: 2.25rem;
 		display: grid;
 		place-items: center;
-		border: 1px solid var(--border-strong);
-		border-radius: 999px;
-		background: var(--bg-soft);
-		color: var(--text-muted);
-		box-shadow: var(--shadow-panel);
+		border: 1px solid color-mix(in srgb, var(--bg-soft) 60%, var(--border-strong));
+		border-radius: 0.82rem;
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--panel-raised) 76%, #10233d) 0%,
+				color-mix(in srgb, var(--panel) 92%, #01050d) 100%
+			);
+		color: rgba(255, 255, 255, 0.86);
+		box-shadow:
+			0 10px 24px rgba(0, 0, 0, 0.22),
+			inset 0 1px 0 rgba(255, 255, 255, 0.07);
 		transform: translateX(-50%);
 		transition:
 			left 180ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -127,7 +144,36 @@
 
 	.sidebar-toggle:hover {
 		border-color: var(--accent);
-		background: var(--panel-raised);
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--accent) 12%, var(--panel-raised)) 0%,
+				color-mix(in srgb, var(--panel) 92%, #01050d) 100%
+			);
+		color: var(--accent);
+	}
+
+	:global(:root.light) .sidebar-toggle {
+		border-color: rgba(73, 104, 145, 0.2);
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, #d8e6f4 82%, var(--panel) 18%) 0%,
+				#cbdbea 100%
+			);
+		color: #24364d;
+		box-shadow:
+			0 10px 24px rgba(50, 80, 118, 0.12),
+			inset 0 1px 0 rgba(255, 255, 255, 0.74);
+	}
+
+	:global(:root.light) .sidebar-toggle:hover {
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--accent) 12%, #d8e6f4) 0%,
+				#cbdbea 100%
+			);
 		color: var(--accent);
 	}
 
@@ -143,13 +189,11 @@
 		align-items: center;
 		padding: 1.5rem;
 		overflow: hidden;
-		background:
-			radial-gradient(circle at top left, var(--accent-soft), transparent 40rem),
-			radial-gradient(circle at bottom right, rgba(110, 231, 183, 0.05), transparent 30rem);
+		background: transparent;
 	}
 
 	:global(:root.light) .main-content {
-		background: var(--bg);
+		background: transparent;
 	}
 
 	@media (max-width: 1100px) {
@@ -163,10 +207,7 @@
 			z-index: 50;
 			width: 2.6rem;
 			height: 2.6rem;
-			background: color-mix(in srgb, var(--panel) 88%, transparent);
 			transform: none;
-			backdrop-filter: blur(16px);
-			-webkit-backdrop-filter: blur(16px);
 		}
 
 		.mobile-sidebar-backdrop {

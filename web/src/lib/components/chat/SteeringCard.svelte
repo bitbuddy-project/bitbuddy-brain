@@ -38,7 +38,7 @@
 
 <style>
 	.steering-dock {
-		padding: 0 1.25rem;
+		padding: 0.45rem 1.6rem 0.65rem;
 		display: flex;
 		justify-content: center;
 		background: transparent;
@@ -47,20 +47,34 @@
 	}
 
 	.steering-card {
-		width: min(72%, 46rem);
-		max-width: 60rem;
-		margin: 0 auto -1px;
-		padding: 0.48rem 0.45rem 0.48rem 0.75rem;
+		width: 100%;
+		max-width: 72rem;
+		margin: 0 auto;
+		padding: 0.58rem 0.62rem 0.58rem 0.78rem;
 		display: flex;
 		align-items: center;
 		gap: 0.75rem;
-		border: 1px solid color-mix(in srgb, var(--mode-color) 36%, var(--border));
-		border-bottom-color: var(--border);
-		border-radius: 0.95rem 0.95rem 0 0;
+		border: 1px solid color-mix(in srgb, var(--mode-color) 34%, rgba(148, 163, 184, 0.36));
+		border-radius: 1.18rem;
 		background:
-			linear-gradient(135deg, color-mix(in srgb, var(--mode-soft) 76%, transparent), transparent),
-			var(--surface-card);
-		box-shadow: 0 -0.45rem 1.4rem rgba(0, 0, 0, 0.12);
+			linear-gradient(135deg, color-mix(in srgb, var(--mode-color) 16%, transparent), transparent 64%),
+			linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)),
+			color-mix(in srgb, var(--surface-glass) 72%, #081322);
+		box-shadow:
+			0 14px 34px rgba(0, 0, 0, 0.18),
+			inset 0 1px 0 rgba(255, 255, 255, 0.075);
+		backdrop-filter: blur(18px) saturate(1.08);
+	}
+
+	:global(:root.light) .steering-card {
+		border-color: color-mix(in srgb, var(--mode-color) 24%, rgba(73, 104, 145, 0.22));
+		background:
+			linear-gradient(135deg, color-mix(in srgb, var(--mode-color) 11%, transparent), transparent 64%),
+			linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.52)),
+			color-mix(in srgb, var(--panel) 82%, #d8e6f4);
+		box-shadow:
+			0 12px 28px rgba(50, 80, 118, 0.12),
+			inset 0 1px 0 rgba(255, 255, 255, 0.88);
 	}
 
 	.steering-copy {
@@ -74,9 +88,13 @@
 	.steering-label {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.3rem;
+		gap: 0.38rem;
 		flex-shrink: 0;
-		color: var(--mode-color);
+		padding: 0.38rem 0.58rem;
+		border: 1px solid color-mix(in srgb, var(--mode-color) 24%, transparent);
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--mode-color) 11%, rgba(255, 255, 255, 0.04));
+		color: color-mix(in srgb, var(--mode-color) 86%, white 8%);
 		font-size: 0.72rem;
 		font-weight: 800;
 		letter-spacing: 0.03em;
@@ -88,8 +106,9 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		color: var(--text);
+		color: color-mix(in srgb, var(--text) 92%, white 8%);
 		font-size: 0.86rem;
+		font-weight: 600;
 	}
 
 	.steering-actions {
@@ -101,35 +120,40 @@
 
 	.steer-button,
 	.cancel-button {
-		height: 2rem;
+		height: 2.25rem;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		border-radius: 999px;
-		transition: background 120ms ease, color 120ms ease, filter 120ms ease, transform 120ms ease;
+		border: 1px solid transparent;
+		border-radius: 0.78rem;
+		transition: background 120ms ease, color 120ms ease, border-color 120ms ease, filter 120ms ease;
 	}
 
 	.steer-button {
 		gap: 0.35rem;
-		padding: 0 0.75rem;
-		background: var(--mode-color);
-		color: var(--on-accent);
+		padding: 0 0.82rem;
+		background: color-mix(in srgb, var(--mode-color) 22%, transparent);
+		border-color: color-mix(in srgb, var(--mode-color) 26%, transparent);
+		color: color-mix(in srgb, var(--mode-color) 90%, white 14%);
 		font-size: 0.78rem;
 		font-weight: 800;
 	}
 
 	.cancel-button {
-		width: 2rem;
+		width: 2.25rem;
+		background: rgba(255, 255, 255, 0.035);
 		color: var(--text-soft);
 	}
 
 	.steer-button:hover {
+		background: color-mix(in srgb, var(--mode-color) 30%, transparent);
+		border-color: color-mix(in srgb, var(--mode-color) 38%, transparent);
 		filter: brightness(1.05);
-		transform: translateY(-1px);
 	}
 
 	.cancel-button:hover {
 		background: rgba(239, 68, 68, 0.12);
+		border-color: rgba(239, 68, 68, 0.22);
 		color: var(--danger, #ef4444);
 	}
 
@@ -141,6 +165,7 @@
 		.steering-card {
 			width: 100%;
 			gap: 0.5rem;
+			padding-left: 0.62rem;
 		}
 
 		.steering-label {

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 import json
+import re
 
 from ..database import db_connection
 from ..paths import GLOBAL_DB_PATH, ensure_app_dirs
@@ -548,6 +549,9 @@ def replace_chat_messages(chat_id: str, messages: list[dict[str, str]], mode: st
         role = message.get("role", "")
         content = message.get("content", "").strip()
         thinking_content = message.get("thinking", "").strip()
+        if role == "assistant":
+            content = strip_system_reminders(content)
+            thinking_content = strip_system_reminders(thinking_content)
         sequence = int_value(message.get("sequence"), (index + 1) * 1000)
         msg_mode = message.get("mode", "") or mode
 
@@ -582,6 +586,9 @@ def replace_chat_messages(chat_id: str, messages: list[dict[str, str]], mode: st
 def append_chat_message(chat_id: str, role: str, content: str, thinking_content: str = "", mode: str = "", metadata: dict[str, object] | None = None) -> None:
     clean_content = content.strip()
     clean_thinking = thinking_content.strip()
+    if role == "assistant":
+        clean_content = strip_system_reminders(clean_content)
+        clean_thinking = strip_system_reminders(clean_thinking)
 
     if role == "user" and not clean_content:
         return
@@ -705,6 +712,8 @@ def update_tool_event(
 
 
 def update_assistant_message(message_id: int, content: str, thinking_content: str = "") -> None:
+    clean_content = strip_system_reminders(content.strip())
+    clean_thinking = strip_system_reminders(thinking_content.strip())
     ensure_chat_database()
     with db_connection(GLOBAL_DB_PATH) as connection:
         connection.execute(
@@ -713,7 +722,7 @@ def update_assistant_message(message_id: int, content: str, thinking_content: st
             set content = ?, thinking_content = ?
             where id = ? and role = 'assistant'
             """,
-            (content.strip(), thinking_content.strip(), message_id),
+            (clean_content, clean_thinking, message_id),
         )
         connection.execute(
             """
@@ -743,12 +752,17 @@ def chat_message_to_json(row: tuple[Any, ...]) -> dict[str, object]:
     message_id, role, content, thinking_content, created_at, kind, status, metadata, sequence, parent_message_id, mode = row
     clean_kind = kind or "message"
     metadata_object = safe_json_object(metadata)
+    clean_content = str(content or "")
+    clean_thinking = str(thinking_content or "")
+    if role == "assistant":
+        clean_content = strip_system_reminders(clean_content)
+        clean_thinking = strip_system_reminders(clean_thinking)
     return {
         "id": message_id,
         "kind": clean_kind,
         "role": role,
-        "content": content,
-        "thinking": thinking_content,
+        "content": clean_content,
+        "thinking": clean_thinking,
         "status": status or "",
         "metadata": metadata_object,
         "attachments": metadata_object.get("attachments", []) if isinstance(metadata_object.get("attachments"), list) else [],
@@ -757,6 +771,12 @@ def chat_message_to_json(row: tuple[Any, ...]) -> dict[str, object]:
         "mode": mode or "",
         "created_at": created_at,
     }
+
+
+def strip_system_reminders(text: str) -> str:
+    if not text:
+        return ""
+    return re.sub(r"(?is)<system-reminder\b[^>]*>.*?(?:</system-reminder>|$)", "", text).strip()
 
 
 def normalized_message_attachments(message: dict[str, Any]) -> list[dict[str, object]]:

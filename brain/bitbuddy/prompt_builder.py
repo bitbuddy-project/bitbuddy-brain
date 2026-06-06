@@ -14,6 +14,8 @@ from .chats.state import (
     active_chat_run,
 )
 from .config import load_config
+from .email.permissions import all_permissions as email_permissions
+from .email.service import email_account_id
 from .autonomy.intentions import list_pending_intentions
 from .librarian import build_advisory_whisper_message
 from .personality import build_personality_prompt, load_selected_personality
@@ -62,7 +64,7 @@ def session_gap_note(current_chat_id: str = "") -> str:
         return ""
 
 
-TOOLS_WITH_USEFUL_RESULT_CONTENT = {"get_project_brief", "get_project_memory", "search_memory", "list_memory", "read_file", "write_file", "patch_file", "run_shell_command", "load_skill"}
+TOOLS_WITH_USEFUL_RESULT_CONTENT = {"get_project_brief", "get_project_memory", "search_memory", "list_memory", "read_file", "write_file", "patch_file", "run_shell_command", "load_skill", "email_recent_messages", "email_search_messages", "email_read_message"}
 MAX_RAW_TOOL_HISTORY_EVENTS = 3
 PREVIOUS_TOOL_RESULT_CONTENT_CHARS = 24000
 PREVIOUS_TOOL_SUMMARY_CHARS = 4000
@@ -218,6 +220,7 @@ def build_chat_messages(messages: list[dict[str, Any]], mode: str, chat_id: str 
         "Playful comments are allowed when the user/context clearly welcomes fun and the comment still carries signal; keep important questions clear and useful.",
         "Memory retrieval is runtime-supplied, not a thing you must route through as a tool call. Relevant project cards, layered memories, continuity, and recent tool results may appear below as private context; treat those blocks as your memory surfaces.",
         "Automatic memory writes are handled after your visible answer by BitBuddy’s backend memory broker. Use explicit memory-write tools only when the user clearly asks you to remember/save something or when a visible memory action is essential to this turn.",
+        email_capability_context(config),
         mode_boundary_prompt(mode),
         "Keep private reasoning and tool markup out of normal chat replies.",
         "If the user asks you to create, save, write, generate, export, update, edit, modify, or tweak a file/artifact, do not merely show code or claim a path. In Chat mode, actually create or update it with write_file/patch_file, or create a generator script with write_file and execute it with run_shell_command, then verify it exists.",
@@ -303,6 +306,46 @@ def mode_boundary_prompt(mode: str) -> str:
     return (
         "[Current Mode: Chat]\n"
         "Chat mode is unrestricted by mode boundaries. Normal permission checks still apply for sensitive tool actions."
+    )
+
+
+def email_capability_context(config: Any) -> str:
+    email = getattr(config, "email", None)
+    if email is None or not getattr(email, "enabled", False):
+        return "[Email Capability]\nEmail is not enabled. Do not claim email access unless the user configures it in Settings."
+
+    provider = str(getattr(email, "provider", "imap") or "imap")
+    address = str(getattr(email, "email_address", "") or getattr(email, "username", "") or "configured account")
+    connected = True
+    if provider == "gmail":
+        try:
+            from .calendar.secrets import get_credentials
+
+            connected = bool(get_credentials(getattr(email, "gmail_token_ref", "")).get("refresh_token"))
+        except Exception:
+            connected = False
+
+    if not connected:
+        return (
+            "[Email Capability]\n"
+            f"Email is enabled with provider {provider}, but it is not connected yet. Tell the user to finish Email setup in Settings if they ask you to read/search mail."
+        )
+
+    try:
+        permissions = email_permissions(email_account_id(email))
+    except Exception:
+        permissions = {"read": "ask", "search": "ask", "watch": "ask", "trash": "ask"}
+
+    read_state = permissions.get("read", "ask")
+    search_state = permissions.get("search", "ask")
+    trash_state = permissions.get("trash", "ask")
+    return (
+        "[Email Capability]\n"
+        f"Email is connected for {address} via {provider}. Read permission is {read_state}; search permission is {search_state}; trash permission is {trash_state}. "
+        "When the user asks about their inbox, email, messages, receipts, appointments, useful emails, or mail-derived calendar items, use email_recent_messages or email_search_messages before answering. "
+        "If the user explicitly asks to delete/clean up spam, use email_trash_message for individual messages or email_create_auto_trash_rule for sender-based cleanup. Trash is recoverable and not permanent delete. "
+        "If permission is ask/denied, let the tool permission flow handle it; do not claim email is unhooked or inaccessible unless the tool reports that. "
+        "Never send, reply, permanently delete, archive, mark messages read, or load remote email images."
     )
 
 

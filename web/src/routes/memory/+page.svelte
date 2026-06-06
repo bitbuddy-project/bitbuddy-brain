@@ -641,10 +641,10 @@
 	}
 
 	.memory-panel {
-		--page-accent: #818cf8;
-		--page-soft: rgba(129, 140, 248, 0.12);
-		--page-border: rgba(129, 140, 248, 0.25);
-		--page-glow: rgba(129, 140, 248, 0.14);
+		--page-accent: var(--accent);
+		--page-soft: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+		--page-border: color-mix(in srgb, var(--accent) 20%, var(--border));
+		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
 
 		width: 100%;
 		height: 100%;
@@ -657,7 +657,7 @@
 		background:
 			linear-gradient(135deg, var(--glass-overlay), transparent 22rem),
 			radial-gradient(circle at top right, var(--page-glow), transparent 30rem),
-			radial-gradient(circle at bottom left, rgba(110, 231, 183, 0.055), transparent 34rem),
+			radial-gradient(circle at bottom left, color-mix(in srgb, var(--success) 5.5%, transparent), transparent 34rem),
 			var(--panel);
 		box-shadow: var(--shadow-chat);
 		overflow: hidden;
@@ -847,14 +847,14 @@
 	}
 
 	.importance-badge.high {
-		background: rgba(245, 158, 11, 0.15);
+		background: color-mix(in srgb, var(--warning) 15%, transparent);
 		color: var(--warning);
 	}
 
 	.project-badge {
 		padding: 0.1rem 0.4rem;
 		border-radius: 0.3rem;
-		background: rgba(110, 231, 183, 0.1);
+		background: color-mix(in srgb, var(--success) 10%, transparent);
 		color: var(--success);
 		font-size: 0.7rem;
 		font-family: monospace;
@@ -924,7 +924,7 @@
 
 	.mem-action-danger:hover {
 		color: var(--danger);
-		border-color: rgba(255, 107, 122, 0.38);
+		border-color: color-mix(in srgb, var(--danger) 38%, transparent);
 	}
 
 	.move-layer-row {
@@ -1009,9 +1009,9 @@
 	.memory-action-error {
 		padding: 0.6rem 0.85rem;
 		margin-bottom: 0.75rem;
-		border: 1px solid rgba(255, 107, 122, 0.32);
+		border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
 		border-radius: 0.85rem;
-		background: rgba(255, 107, 122, 0.07);
+		background: color-mix(in srgb, var(--danger) 7%, transparent);
 		color: var(--danger);
 		font-size: 0.85rem;
 	}
@@ -1180,9 +1180,9 @@
 
 	.inference-box {
 		padding: 0.85rem;
-		border: 1px solid rgba(245, 158, 11, 0.22);
+		border: 1px solid color-mix(in srgb, var(--warning) 22%, transparent);
 		border-radius: 1rem;
-		background: rgba(245, 158, 11, 0.08);
+		background: color-mix(in srgb, var(--warning) 8%, transparent);
 	}
 
 	.inference-box strong {
@@ -1211,8 +1211,8 @@
 	}
 
 	.priority-memory {
-		border-color: rgba(110, 231, 183, 0.2);
-		background: rgba(110, 231, 183, 0.035);
+		border-color: color-mix(in srgb, var(--success) 20%, transparent);
+		background: color-mix(in srgb, var(--success) 3.5%, transparent);
 	}
 
 	.stack-list article,
@@ -1249,7 +1249,7 @@
 	}
 
 	.file-card.stale {
-		border-color: rgba(245, 158, 11, 0.32);
+		border-color: color-mix(in srgb, var(--warning) 32%, transparent);
 	}
 
 	.file-meta {
@@ -1263,8 +1263,8 @@
 	}
 
 	.policy-card {
-		border-color: rgba(110, 231, 183, 0.18);
-		background: rgba(110, 231, 183, 0.045);
+		border-color: color-mix(in srgb, var(--success) 18%, transparent);
+		background: color-mix(in srgb, var(--success) 4.5%, transparent);
 	}
 
 	.center-state {
@@ -1307,9 +1307,9 @@
 	.inline-error {
 		margin-bottom: 1rem;
 		padding: 0.85rem 1rem;
-		border: 1px solid rgba(255, 107, 122, 0.3);
+		border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
 		border-radius: 1rem;
-		background: rgba(255, 107, 122, 0.08);
+		background: color-mix(in srgb, var(--danger) 8%, transparent);
 		color: var(--danger);
 	}
 

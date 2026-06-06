@@ -9,59 +9,84 @@
 :root {
   color-scheme: dark;
 
-  --font-body:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  --font-ui:
+    "JetBrains Mono", "Geist Mono", "IBM Plex Mono", "SFMono-Regular", Consolas,
+    "Liberation Mono", ui-monospace, monospace;
+  --font-body: var(--font-ui);
   --font-pixel: "Departure Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 
   /* BitBlue Theme - Dark (Default) */
-  --bg: #060b13;
-  --bg-soft: #0a111c;
-  --panel: #0d1726;
-  --panel-raised: #141f2f;
-  --panel-shell: color-mix(in srgb, var(--panel) 92%, #050914);
+  --bg: #010410;
+  --bg-soft: #050c19;
+  --panel: #07101e;
+  --panel-raised: #0b1a2d;
+  --panel-shell: color-mix(in srgb, var(--panel) 86%, #01050d);
   --panel-header: color-mix(in srgb, var(--panel-raised) 72%, transparent);
-  --card-bg: color-mix(in srgb, var(--panel-raised) 82%, transparent);
-  --card-border: color-mix(in srgb, var(--border-strong) 78%, transparent);
-  --card-hover: color-mix(in srgb, var(--panel-raised) 92%, var(--accent-soft));
-  --event-bg: color-mix(in srgb, var(--panel-raised) 58%, transparent);
-  --event-border: color-mix(in srgb, var(--border-strong) 82%, transparent);
-  --chip-bg: color-mix(in srgb, var(--surface-glass) 86%, transparent);
-  --chip-border: color-mix(in srgb, var(--border) 80%, transparent);
+  --card-bg: color-mix(in srgb, var(--panel-raised) 58%, transparent);
+  --card-border: color-mix(in srgb, var(--bg-soft) 38%, var(--border-strong));
+  --card-hover: color-mix(in srgb, var(--panel-raised) 74%, var(--accent-soft));
+  --card-top-light: rgba(255, 255, 255, 0.075);
+  --card-inner-line: rgba(255, 255, 255, 0.065);
+  --card-top-edge: rgba(255, 255, 255, 0.2);
+  --card-shadow: 0 14px 34px rgba(0, 0, 0, 0.14);
+  --card-glass-sheen: linear-gradient(180deg, var(--card-top-light), rgba(255, 255, 255, 0.012) 32%, transparent 68%);
+  --event-bg: color-mix(in srgb, var(--panel-raised) 42%, transparent);
+  --event-border: color-mix(in srgb, var(--bg-soft) 36%, var(--border-strong));
+  --chip-bg: color-mix(in srgb, var(--surface-glass) 76%, transparent);
+  --chip-border: color-mix(in srgb, var(--border-strong) 72%, transparent);
 
   --text: #f4f8ff;
   --text-muted: #a9bad2;
   --text-soft: #8192aa;
 
-  --border: rgba(121, 184, 255, 0.16);
-  --border-strong: rgba(121, 184, 255, 0.26);
+  --border: rgba(93, 119, 154, 0.14);
+  --border-strong: rgba(113, 143, 184, 0.22);
 
-  --accent: #79b8ff;
-  --accent-soft: rgba(121, 184, 255, 0.15);
-  --accent-strong: #a1ccff;
+  --accent: #4d8fe6;
+  --accent-soft: rgba(77, 143, 230, 0.16);
+  --accent-strong: #8bbdff;
   --on-accent: #06101d;
 
   --danger: #ff6b7a;
   --success: #6ee7b7;
   --warning: #f59e0b;
 
-  --surface-glass: rgba(255, 255, 255, 0.045);
-  --surface-card: rgba(255, 255, 255, 0.025);
-  --surface-inset: rgba(0, 0, 0, 0.12);
+  --surface-glass: rgba(84, 128, 186, 0.055);
+  --surface-card: rgba(84, 128, 186, 0.045);
+  --surface-inset: rgba(1, 7, 17, 0.34);
   --surface-code: rgba(0, 0, 0, 0.18);
 
-  --radius-sm: 8px;
-  --radius-md: 14px;
-  --radius-lg: 22px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 18px;
 
-  --shadow-soft: 0 16px 44px rgba(0, 0, 0, 0.24);
-  --shadow-panel: 0 10px 28px rgba(0, 0, 0, 0.22);
+  /* Shared radius scale (target reuses a small set of curves) */
+  --radius-notch: 0.5rem;
+  --radius-control: 0.78rem;
+  --radius-bubble: 0.95rem;
+  --radius-composer: 1.35rem;
+  --radius-panel: 1.45rem;
+
+  /* Spacing rhythm */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.35rem;
+  --space-6: 1.75rem;
+
+  /* Shared interaction primitives */
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 65%, transparent);
+  --hover-lift: translateY(-1px);
+
+  --shadow-soft: 0 18px 54px rgba(0, 0, 0, 0.32);
+  --shadow-panel: 0 14px 38px rgba(0, 0, 0, 0.24);
   --shadow-chat: none;
 
-  --glass-overlay: rgba(255, 255, 255, 0.045);
-  --toggle-bg: rgba(0, 0, 0, 0.2);
-  --toggle-hover-bg: rgba(255, 255, 255, 0.05);
-  --header-bg: rgba(255, 255, 255, 0.02);
+  --glass-overlay: rgba(84, 128, 186, 0.045);
+  --toggle-bg: rgba(2, 7, 15, 0.54);
+  --toggle-hover-bg: rgba(84, 128, 186, 0.07);
+  --header-bg: rgba(84, 128, 186, 0.025);
   --scrollbar-thumb: rgba(255, 255, 255, 0.18);
   --thinking-bg: rgba(5, 10, 18, 0.35);
   --thinking-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.018));
@@ -76,44 +101,49 @@
   --glass-overlay: rgba(37, 99, 235, 0.035);
   --composer-gradient: rgba(37, 99, 235, 0.045);
 
-  --bg: #e8f0f8;
-  --bg-soft: #dbe7f3;
-  --panel: #f4f8fd;
-  --panel-raised: #edf5fc;
-  --panel-shell: color-mix(in srgb, var(--panel) 94%, #dbe7f3);
-  --panel-header: color-mix(in srgb, var(--panel-raised) 88%, transparent);
-  --card-bg: color-mix(in srgb, var(--panel-raised) 94%, transparent);
-  --card-border: color-mix(in srgb, var(--border-strong) 74%, transparent);
-  --card-hover: color-mix(in srgb, var(--panel-raised) 88%, var(--accent-soft));
-  --event-bg: color-mix(in srgb, var(--panel-raised) 88%, transparent);
-  --event-border: color-mix(in srgb, var(--border-strong) 76%, transparent);
-  --chip-bg: color-mix(in srgb, var(--surface-glass) 88%, transparent);
-  --chip-border: color-mix(in srgb, var(--border) 84%, transparent);
+  --bg: #e6eef7;
+  --bg-soft: #d3e1ef;
+  --panel: #edf5fc;
+  --panel-raised: #d8e6f4;
+  --panel-shell: #d8e6f4;
+  --panel-header: color-mix(in srgb, #d6e4f2 86%, transparent);
+  --card-bg: color-mix(in srgb, #d8e6f4 76%, rgba(255, 255, 255, 0.34));
+  --card-border: rgba(73, 104, 145, 0.2);
+  --card-hover: color-mix(in srgb, #d8e6f4 72%, var(--accent-soft));
+  --card-top-light: rgba(255, 255, 255, 0.78);
+  --card-inner-line: rgba(255, 255, 255, 0.72);
+  --card-top-edge: rgba(255, 255, 255, 0.92);
+  --card-shadow: 0 12px 26px rgba(50, 80, 118, 0.08);
+  --card-glass-sheen: linear-gradient(180deg, var(--card-top-light), rgba(255, 255, 255, 0.18) 36%, transparent 76%);
+  --event-bg: color-mix(in srgb, #d8e6f4 72%, rgba(255, 255, 255, 0.36));
+  --event-border: rgba(73, 104, 145, 0.18);
+  --chip-bg: rgba(15, 23, 42, 0.06);
+  --chip-border: rgba(73, 104, 145, 0.16);
 
   --text: #020617;
   --text-muted: #253247;
   --text-soft: #3f5068;
 
-  --border: rgba(15, 23, 42, 0.12);
-  --border-strong: rgba(15, 23, 42, 0.2);
+  --border: rgba(34, 60, 94, 0.12);
+  --border-strong: rgba(34, 60, 94, 0.2);
 
   --accent: #2563eb;
   --accent-soft: rgba(37, 99, 235, 0.11);
   --accent-strong: #1d4ed8;
   --on-accent: #ffffff;
 
-  --surface-glass: rgba(37, 99, 235, 0.055);
-  --surface-card: rgba(37, 99, 235, 0.04);
-  --surface-inset: rgba(15, 60, 110, 0.06);
-  --surface-code: rgba(15, 60, 110, 0.08);
+  --surface-glass: rgba(73, 104, 145, 0.075);
+  --surface-card: rgba(73, 104, 145, 0.065);
+  --surface-inset: rgba(73, 104, 145, 0.1);
+  --surface-code: rgba(73, 104, 145, 0.08);
 
-  --shadow-soft: 0 12px 32px rgba(15, 23, 42, 0.07);
-  --shadow-panel: 0 8px 22px rgba(15, 23, 42, 0.05);
+  --shadow-soft: 0 18px 42px rgba(50, 80, 118, 0.12);
+  --shadow-panel: 0 12px 26px rgba(50, 80, 118, 0.09);
   --shadow-chat: none;
 
-  --toggle-bg: rgba(37, 99, 235, 0.055);
+  --toggle-bg: rgba(15, 23, 42, 0.08);
   --toggle-hover-bg: rgba(37, 99, 235, 0.08);
-  --header-bg: rgba(37, 99, 235, 0.055);
+  --header-bg: rgba(214, 228, 242, 0.78);
   --scrollbar-thumb: rgba(100, 116, 139, 0.32);
   --thinking-bg: rgba(234, 243, 252, 0.88);
   --thinking-overlay: linear-gradient(180deg, rgba(37, 99, 235, 0.06), rgba(15, 60, 110, 0.022));
@@ -162,24 +192,35 @@ button {
   cursor: pointer;
 }
 
+/* Unified keyboard focus ring across the app */
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Shared card hover lift — opt-in via .u-lift */
+.u-lift {
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1), border-color 140ms ease, background-color 140ms ease;
+}
+
+.u-lift:hover {
+  transform: var(--hover-lift);
+}
+
 :where(
-  h1,
-  h2,
-  h3,
-  button,
-  .brand,
-  .nav-link,
+  .brand strong,
+  .brand small,
   .group-label,
-  .status-card,
-  .growth-meter,
-  .mode-toggle,
+  .status-copy small,
+  .nav-copy small,
   .code-header,
   .badge,
   .eyebrow,
   .section-kicker,
-  .theme-label,
   .theme-desc,
   .metadata-block span,
+  .mode-tag,
+  .time,
   dt
 ) {
   font-family: var(--font-pixel);
@@ -214,58 +255,634 @@ canvas {
   color: var(--text);
 }
 
+/* ============================================================
+   Shared floating-surface system
+   ------------------------------------------------------------
+   Every page composes the same token-driven panels, headers,
+   cards, rows, and chips. Colours come only from theme tokens,
+   so dark and light stay in lockstep. No !important — page-local
+   rules may refine any of these where a section needs its own
+   accent or layout.
+   ============================================================ */
+
+/* Floating page panels (header + scrolling content live inside) */
 body :is(
   .history-panel,
   .memory-panel,
   .projects-panel,
   .skills-panel,
   .space-panel,
+  .devices-panel,
   .permissions-card,
-  .settings-page,
-  .autonomy-page,
-  .panel-card
+  .settings-panel,
+  .goals-panel,
+  .autonomy-card
 ) {
   border-color: var(--card-border);
   background:
+    radial-gradient(circle at 24% 0%, color-mix(in srgb, var(--accent-soft) 42%, transparent), transparent 27rem),
     linear-gradient(135deg, var(--glass-overlay), transparent 24rem),
     var(--panel-shell);
-  box-shadow: var(--shadow-chat);
+  box-shadow:
+    inset 0 1px 0 var(--card-top-edge),
+    var(--shadow-chat);
 }
 
+/* Panel headers */
 body :is(
   .history-header,
   .memory-header,
   .projects-header,
   .skills-header,
   .space-header,
+  .devices-header,
   .permissions-header,
   .settings-header,
+  .goals-header,
   .autonomy-header,
   .page-header,
   .panel-heading
 ) {
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 62%, transparent), transparent 72%),
-    var(--panel-header);
   border-bottom-color: var(--card-border);
+  background:
+    linear-gradient(180deg, var(--card-top-light), rgba(255, 255, 255, 0.018) 34%, transparent 68%),
+    linear-gradient(135deg, color-mix(in srgb, var(--page-soft, var(--accent-soft)) 72%, transparent), transparent 72%),
+    var(--header-bg);
+  box-shadow: inset 0 1px 0 var(--card-top-edge);
 }
 
+/* Cards / nested surfaces */
 body :is(
   .chat-card,
   .theme-card,
   .animation-card,
   .diagnostic-card,
+  .coming-card,
+  .teaser-card,
+  .signal-card,
+  .hero-stat,
   .goal-card,
+  .evolution-card,
+  .intention-card,
+  .journal-card,
+  .dream-card,
+  .activity-card,
+  .episode-card,
+  .file-card,
+  .doc-card,
   .memory-card,
   .project-card,
-  .skill-card
+  .skill-card,
+  .collapsible-panel,
+  .context-panel,
+  .add-project-form,
+  .detail-header,
+  .detail-body,
+  .doc-detail,
+  .skill-detail,
+  .project-detail,
+  .memory-detail,
+  .layer-guide,
+  .empty-state,
+  .loading-state,
+  .no-selection,
+  .center-state,
+  .detail-loading
 ) {
   border-color: var(--card-border);
   background: var(--card-bg);
-  box-shadow: none;
+  box-shadow:
+    inset 0 1px 0 var(--card-inner-line),
+    var(--card-shadow);
 }
 
+/* Lists */
+body :is(
+  .settings-list,
+  .goal-list,
+  .memory-list,
+  .project-list,
+  .skill-list,
+  .doc-list,
+  .activity-list,
+  .mini-list,
+  .evolution-list,
+  .journal-list
+) {
+  border-color: color-mix(in srgb, var(--bg-soft) 52%, var(--border));
+}
+
+/* Inline rows */
+body :is(
+  .settings-row,
+  .field-row,
+  .toggle-row,
+  .status-row,
+  .mini-row,
+  .doc-row,
+  .skill-row,
+  .project-row,
+  .memory-row,
+  .activity-row
+) {
+  border-color: color-mix(in srgb, var(--bg-soft) 46%, var(--border));
+  background:
+    linear-gradient(180deg, var(--card-top-light), transparent 42%),
+    color-mix(in srgb, var(--surface-card) 74%, transparent);
+  box-shadow: inset 0 1px 0 var(--card-inner-line);
+}
+
+/* Chips / badges */
 body :is(.badge, .chip, .mode-badge, .status, .file-status, .auto-note) {
   border-color: var(--chip-border);
   background: var(--chip-bg);
+  box-shadow: none;
+}
+
+/* Action buttons */
+body :is(
+  .primary-action,
+  .secondary-action,
+  .form-actions button,
+  .goal-actions button,
+  .context-actions button,
+  .cancel-button,
+  .submit-button,
+  .ghost-button,
+  .add-goal-toggle,
+  .add-project-button,
+  .mem-action-btn,
+  .edit-save,
+  .edit-cancel,
+  .layer-chip
+) {
+  border-radius: var(--radius-control);
+}
+
+body :is(.primary-action) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  color: #f5f9ff;
+  box-shadow: none;
+}
+
+body :is(.secondary-action) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--surface-glass) 88%, transparent);
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
+/* Icon marks (page header glyphs, card icons) */
+body :is(.title-mark, .card-icon, .project-icon, .empty-icon, .file-glyph) {
+  border-color: var(--card-border);
+  background:
+    linear-gradient(180deg, var(--card-top-light), transparent 42%),
+    color-mix(in srgb, var(--accent-soft) 58%, var(--card-bg));
+  color: var(--accent-strong);
+  box-shadow: inset 0 1px 0 var(--card-inner-line);
+}
+
+/* Form controls */
+body :is(input, select, textarea):not(.chat-body textarea) {
+  border-color: color-mix(in srgb, var(--bg-soft) 55%, var(--border));
+  background: color-mix(in srgb, var(--surface-inset) 82%, #000);
+}
+
+:root.light body :is(input, select, textarea):not(.chat-body textarea) {
+  background: color-mix(in srgb, var(--surface-inset) 88%, white 12%);
+}
+
+/* Chat-style hardening over page-local legacy surface rules. */
+body :is(
+  .chat-card.chat-card,
+  .theme-card.theme-card,
+  .animation-card.animation-card,
+  .diagnostic-card.diagnostic-card,
+  .coming-card.coming-card,
+  .teaser-card.teaser-card,
+  .signal-card.signal-card,
+  .hero-stat.hero-stat,
+  .goal-card.goal-card,
+  .evolution-card.evolution-card,
+  .intention-card.intention-card,
+  .journal-card.journal-card,
+  .dream-card.dream-card,
+  .activity-card.activity-card,
+  .episode-card.episode-card,
+  .file-card.file-card,
+  .doc-card.doc-card,
+  .memory-card.memory-card,
+  .project-card.project-card,
+  .skill-card.skill-card,
+  .collapsible-panel.collapsible-panel,
+  .context-panel.context-panel,
+  .add-project-form.add-project-form,
+  .detail-header.detail-header,
+  .detail-body.detail-body,
+  .doc-detail.doc-detail,
+  .skill-detail.skill-detail,
+  .project-detail.project-detail,
+  .memory-detail.memory-detail,
+  .layer-guide.layer-guide,
+  .empty-state.empty-state,
+  .loading-state.loading-state,
+  .no-selection.no-selection,
+  .center-state.center-state,
+  .detail-loading.detail-loading
+) {
+  border-color: var(--card-border);
+  background: var(--card-bg);
+  box-shadow:
+    inset 0 1px 0 var(--card-inner-line),
+    var(--card-shadow);
+}
+
+body :is(
+  .history-header.history-header,
+  .memory-header.memory-header,
+  .projects-header.projects-header,
+  .skills-header.skills-header,
+  .space-header.space-header,
+  .devices-header.devices-header,
+  .permissions-header.permissions-header,
+  .settings-header.settings-header,
+  .goals-header.goals-header,
+  .autonomy-header.autonomy-header,
+  .page-header.page-header,
+  .panel-heading.panel-heading
+) {
+  border-bottom-color: var(--card-border);
+  background:
+    linear-gradient(180deg, var(--card-top-light), rgba(255, 255, 255, 0.018) 34%, transparent 68%),
+    linear-gradient(135deg, color-mix(in srgb, var(--page-soft, var(--accent-soft)) 62%, transparent), transparent 72%),
+    var(--header-bg);
+  box-shadow: inset 0 1px 0 var(--card-inner-line);
+}
+
+body :is(
+  .settings-row.settings-row,
+  .field-row.field-row,
+  .toggle-row.toggle-row,
+  .status-row.status-row,
+  .mini-row.mini-row,
+  .doc-row.doc-row,
+  .skill-row.skill-row,
+  .project-row.project-row,
+  .memory-row.memory-row,
+  .activity-row.activity-row
+) {
+  border-color: color-mix(in srgb, var(--bg-soft) 46%, var(--border));
+  background:
+    linear-gradient(180deg, var(--card-top-light), transparent 42%),
+    color-mix(in srgb, var(--surface-card) 74%, transparent);
+  box-shadow: inset 0 1px 0 var(--card-inner-line);
+}
+
+body :is(
+  .primary-action.primary-action,
+  .submit-button.submit-button,
+  .edit-save.edit-save,
+  .add-project-button.add-project-button
+) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  color: color-mix(in srgb, var(--accent-strong) 78%, var(--text));
+  box-shadow: none;
+}
+
+body :is(
+  .secondary-action.secondary-action,
+  .cancel-button.cancel-button,
+  .ghost-button.ghost-button,
+  .edit-cancel.edit-cancel,
+  .mem-action-btn.mem-action-btn
+) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--surface-glass) 88%, transparent);
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
+:root.light body :is(
+  .primary-action.primary-action,
+  .submit-button.submit-button,
+  .edit-save.edit-save,
+  .add-project-button.add-project-button
+) {
+  color: var(--accent-strong);
+}
+
+/* Non-chat pages should read as one strong outlined shell with an internal header band. */
+body :is(
+  .history-panel.history-panel,
+  .memory-panel.memory-panel,
+  .projects-panel.projects-panel,
+  .skills-panel.skills-panel,
+  .space-panel.space-panel,
+  .devices-panel.devices-panel,
+  .permissions-card.permissions-card,
+  .settings-panel.settings-panel,
+  .goals-panel.goals-panel,
+  .autonomy-card.autonomy-card
+) {
+  border-color: color-mix(in srgb, var(--page-accent, var(--accent)) 38%, var(--border-strong));
+  background:
+    radial-gradient(circle at 24% 0%, color-mix(in srgb, var(--page-soft, var(--accent-soft)) 58%, transparent), transparent 27rem),
+    linear-gradient(135deg, var(--glass-overlay), transparent 24rem),
+    var(--panel-shell);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--page-accent, var(--accent)) 14%, transparent),
+    inset 0 1px 0 var(--card-inner-line),
+    var(--shadow-chat);
+}
+
+body :is(
+  .history-header.history-header,
+  .memory-header.memory-header,
+  .projects-header.projects-header,
+  .skills-header.skills-header,
+  .space-header.space-header,
+  .devices-header.devices-header,
+  .permissions-header.permissions-header,
+  .settings-header.settings-header,
+  .goals-header.goals-header,
+  .autonomy-header.autonomy-header,
+  .page-header.page-header,
+  .panel-heading.panel-heading
+) {
+  border-bottom-color: color-mix(in srgb, var(--page-accent, var(--accent)) 24%, var(--card-border));
+  background:
+    linear-gradient(180deg, var(--card-top-light), rgba(255, 255, 255, 0.018) 34%, transparent 70%),
+    color-mix(in srgb, var(--page-soft, var(--accent-soft)) 36%, transparent);
+  box-shadow: inset 0 1px 0 var(--card-inner-line);
+}
+
+:root.light body :is(
+  .history-panel.history-panel,
+  .memory-panel.memory-panel,
+  .projects-panel.projects-panel,
+  .skills-panel.skills-panel,
+  .space-panel.space-panel,
+  .devices-panel.devices-panel,
+  .permissions-card.permissions-card,
+  .settings-panel.settings-panel,
+  .goals-panel.goals-panel,
+  .autonomy-card.autonomy-card
+) {
+  border-color: color-mix(in srgb, var(--page-accent, var(--accent)) 34%, rgba(73, 104, 145, 0.28));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--page-accent, var(--accent)) 12%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.76),
+    var(--shadow-chat);
+}
+
+/* Final page-shell treatment: one strong container, flush internal top band. */
+body :is(
+  .history-panel.history-panel,
+  .memory-panel.memory-panel,
+  .projects-panel.projects-panel,
+  .skills-panel.skills-panel,
+  .space-panel.space-panel,
+  .devices-panel.devices-panel,
+  .permissions-card.permissions-card,
+  .settings-panel.settings-panel,
+  .goals-panel.goals-panel,
+  .autonomy-card.autonomy-card
+) {
+  position: relative;
+  border: 2px solid color-mix(in srgb, var(--page-accent, var(--accent)) 46%, var(--border-strong));
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 24% 0%, color-mix(in srgb, var(--page-soft, var(--accent-soft)) 58%, transparent), transparent 27rem),
+    linear-gradient(135deg, var(--glass-overlay), transparent 24rem),
+    var(--panel-shell);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--page-accent, var(--accent)) 18%, transparent),
+    inset 0 1px 0 var(--card-inner-line),
+    var(--shadow-chat);
+}
+
+body :is(
+  .history-panel.history-panel,
+  .memory-panel.memory-panel,
+  .projects-panel.projects-panel,
+  .skills-panel.skills-panel,
+  .space-panel.space-panel,
+  .devices-panel.devices-panel,
+  .permissions-card.permissions-card,
+  .settings-panel.settings-panel,
+  .goals-panel.goals-panel,
+  .autonomy-card.autonomy-card
+)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-top: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+body :is(
+  .history-panel.history-panel,
+  .memory-panel.memory-panel,
+  .projects-panel.projects-panel,
+  .skills-panel.skills-panel,
+  .space-panel.space-panel,
+  .devices-panel.devices-panel,
+  .permissions-card.permissions-card,
+  .settings-panel.settings-panel,
+  .goals-panel.goals-panel,
+  .autonomy-card.autonomy-card
+) > :is(
+  .history-header,
+  .memory-header,
+  .projects-header,
+  .skills-header,
+  .space-header,
+  .devices-header,
+  .permissions-header,
+  .settings-header,
+  .goals-header,
+  .autonomy-header
+) {
+  /* Detach the top header into its own floating card (chat-style) instead of a
+     flush internal band — separated from the content below by a gap. */
+  position: relative;
+  z-index: 2;
+  margin: 0.7rem 0.7rem 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--page-accent, var(--accent)) 28%, var(--card-border));
+  border-bottom-width: 1px;
+  border-radius: 1.1rem;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--page-soft, var(--accent-soft)) 40%, transparent), transparent 72%),
+    var(--card-bg);
+  box-shadow:
+    inset 0 1px 0 var(--card-inner-line),
+    var(--card-shadow);
+}
+
+:root.light body :is(
+  .history-panel.history-panel,
+  .memory-panel.memory-panel,
+  .projects-panel.projects-panel,
+  .skills-panel.skills-panel,
+  .space-panel.space-panel,
+  .devices-panel.devices-panel,
+  .permissions-card.permissions-card,
+  .settings-panel.settings-panel,
+  .goals-panel.goals-panel,
+  .autonomy-card.autonomy-card
+) {
+  border-color: color-mix(in srgb, var(--page-accent, var(--accent)) 40%, rgba(73, 104, 145, 0.36));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--page-accent, var(--accent)) 14%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.76),
+    var(--shadow-chat);
+}
+
+:root.light body :is(
+  .history-panel.history-panel,
+  .memory-panel.memory-panel,
+  .projects-panel.projects-panel,
+  .skills-panel.skills-panel,
+  .space-panel.space-panel,
+  .devices-panel.devices-panel,
+  .permissions-card.permissions-card,
+  .settings-panel.settings-panel,
+  .goals-panel.goals-panel,
+  .autonomy-card.autonomy-card
+)::before {
+  border-top-color: rgba(255, 255, 255, 0.78);
+}
+
+/* Frameless pages — drop the heavy outlined shell so pages read open, like chat.
+   Keeps the panel surface as a quiet canvas; the floating header + inner cards
+   provide the definition. */
+body :is(
+  .history-panel.history-panel,
+  .memory-panel.memory-panel,
+  .projects-panel.projects-panel,
+  .skills-panel.skills-panel,
+  .space-panel.space-panel,
+  .devices-panel.devices-panel,
+  .permissions-card.permissions-card,
+  .settings-panel.settings-panel,
+  .goals-panel.goals-panel,
+  .autonomy-card.autonomy-card
+),
+:root.light body :is(
+  .history-panel.history-panel,
+  .memory-panel.memory-panel,
+  .projects-panel.projects-panel,
+  .skills-panel.skills-panel,
+  .space-panel.space-panel,
+  .devices-panel.devices-panel,
+  .permissions-card.permissions-card,
+  .settings-panel.settings-panel,
+  .goals-panel.goals-panel,
+  .autonomy-card.autonomy-card
+) {
+  border: 0;
+  background: none;
+  box-shadow: none;
+  overflow: visible;
+}
+
+body :is(
+  .history-panel.history-panel,
+  .memory-panel.memory-panel,
+  .projects-panel.projects-panel,
+  .skills-panel.skills-panel,
+  .space-panel.space-panel,
+  .devices-panel.devices-panel,
+  .permissions-card.permissions-card,
+  .settings-panel.settings-panel,
+  .goals-panel.goals-panel,
+  .autonomy-card.autonomy-card
+)::before {
+  display: none;
+}
+
+/* Split the page into two stacked cards (chat-style): the floating header above,
+   and everything beneath it framed as its own content card. Pages with a tab /
+   toolbar strip use that strip as the card's top, so the whole bottom half reads
+   as one card. */
+body :is(
+  .history-content.history-content,
+  .projects-content.projects-content,
+  .skills-content.skills-content,
+  .settings-content.settings-content,
+  .goals-content.goals-content,
+  .space-content.space-content,
+  .devices-content.devices-content
+) {
+  margin: 0 0.7rem 0.7rem;
+  border: 1px solid var(--card-border);
+  border-radius: 1.1rem;
+  background: var(--card-bg);
+  box-shadow:
+    inset 0 1px 0 var(--card-inner-line),
+    var(--card-shadow);
+}
+
+/* Tab / toolbar strip — top of the content card. */
+body :is(
+  .memory-tabs.memory-tabs,
+  .autonomy-tabs.autonomy-tabs,
+  .activity-toolbar.activity-toolbar
+) {
+  margin: 0 0.7rem 0;
+  border: 1px solid var(--card-border);
+  border-radius: 1.1rem 1.1rem 0 0;
+  background: var(--card-bg);
+  box-shadow: inset 0 1px 0 var(--card-inner-line);
+}
+
+/* Scroll area sitting under a strip — bottom of the content card. */
+body :is(
+  .memory-content.memory-content,
+  .card-content.card-content
+) {
+  margin: 0 0.7rem 0.7rem;
+  border: 1px solid var(--card-border);
+  border-top: 0;
+  border-radius: 0 0 1.1rem 1.1rem;
+  background: var(--card-bg);
+  box-shadow: var(--card-shadow);
+}
+
+/* Calendar and email pages — frameless like every other page (floating header + content card).
+   Self-contained so the page's own <style> only owns layout, not framing. */
+body :is(.calendar-panel.calendar-panel, .email-panel.email-panel) {
+  border: 0;
+  background: none;
+  box-shadow: none;
+  overflow: visible;
+}
+
+body :is(.calendar-panel.calendar-panel, .email-panel.email-panel) > :is(.calendar-header.calendar-header, .email-header.email-header) {
+  position: relative;
+  z-index: 2;
+  margin: 0.7rem 0.7rem 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--page-accent, var(--accent)) 28%, var(--card-border));
+  border-radius: 1.1rem;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--page-soft, var(--accent-soft)) 40%, transparent), transparent 72%),
+    var(--card-bg);
+  box-shadow:
+    inset 0 1px 0 var(--card-inner-line),
+    var(--card-shadow);
+}
+
+body :is(.calendar-panel.calendar-panel, .email-panel.email-panel) > :is(.calendar-content.calendar-content, .email-content.email-content) {
+  margin: 0 0.7rem 0.7rem;
+  border: 1px solid var(--card-border);
+  border-radius: 1.1rem;
+  background: var(--card-bg);
+  box-shadow:
+    inset 0 1px 0 var(--card-inner-line),
+    var(--card-shadow);
 }

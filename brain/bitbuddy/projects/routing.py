@@ -223,6 +223,7 @@ def clean_model_thinking_text(text: str, phase: str = "final") -> str:
     if not clean:
         return ""
 
+    clean = re.sub(r"(?is)<system-reminder\b[^>]*>.*?(?:</system-reminder>|$)", " ", clean).strip()
     clean = re.sub(r"</?think[^>]*>", "", clean, flags=re.IGNORECASE).strip()
 
     blocked_line_patterns = [

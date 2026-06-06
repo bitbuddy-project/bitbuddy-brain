@@ -162,10 +162,10 @@
 
 <style>
 	.skills-page {
-		--page-accent: #6ee7b7;
-		--page-soft: rgba(110, 231, 183, 0.12);
-		--page-border: rgba(110, 231, 183, 0.25);
-		--page-glow: rgba(110, 231, 183, 0.14);
+		--page-accent: var(--accent);
+		--page-soft: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+		--page-border: color-mix(in srgb, var(--accent) 20%, var(--border));
+		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
 
 		width: 100%;
 		max-width: 100%;

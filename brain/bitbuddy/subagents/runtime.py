@@ -13,7 +13,7 @@ from ..toolbox.base import ToolCall, ToolExecutor, ToolParseError, ToolRegistry,
 from ..utils import log_activity
 
 
-DEFAULT_SUBAGENT_TOOLS = {"glob_files", "list_directory", "search_text", "read_file", "read_file_range", "get_project_brief", "get_project_memory", "web_search"}
+DEFAULT_SUBAGENT_TOOLS = {"glob_files", "list_directory", "search_text", "read_file", "read_file_range", "get_project_brief", "get_project_memory", "web_search", "web_fetch", "calendar_view_events", "calendar_find_free_time"}
 
 
 @dataclass(frozen=True)

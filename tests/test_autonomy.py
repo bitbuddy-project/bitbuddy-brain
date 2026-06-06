@@ -21,7 +21,7 @@ from bitbuddy.autonomy.intentions import create_intention, dismiss_intention, en
 from bitbuddy.autonomy.memory import record_autonomy_self_memory  # noqa: E402
 from bitbuddy.autonomy.runner import STARTUP_IDLE_CHAT_ID, AutonomyJob, autonomy_job_is_stale, autonomy_status, cancel_idle_autonomy, idle_autonomy_delay, run_autonomy_cycle, schedule_idle_autonomy, schedule_next_idle_autonomy, schedule_startup_idle_autonomy  # noqa: E402
 from bitbuddy.autonomy.web_search import SearchResult, parse_searxng_results, safe_result_url, search_results_to_text  # noqa: E402
-from bitbuddy.autonomy.web_search_server import parse_duckduckgo_html_results, parse_duckduckgo_image_results, search_response, should_use_managed_server  # noqa: E402
+from bitbuddy.autonomy.web_search_server import SearchProviderBlocked, parse_duckduckgo_html_results, parse_duckduckgo_image_results, search_response, should_use_managed_server  # noqa: E402
 from bitbuddy.chats.repository import chat_activity_token, create_chat, ensure_chat_database  # noqa: E402
 from bitbuddy.config import load_config  # noqa: E402
 from bitbuddy.memory.store import create_memory, ensure_memory_database, search_memories  # noqa: E402
@@ -447,7 +447,7 @@ class AutonomyTest(unittest.TestCase):
     def test_managed_search_response_uses_searxng_shape(self) -> None:
         with patch(
             "bitbuddy.autonomy.web_search_server.search_duckduckgo_html",
-            return_value=[SearchResult(title="Result", url="https://example.com", snippet="Snippet")],
+            return_value=[SearchResult(title="Result", url="https://example.com", snippet="Snippet", source="duckduckgo")],
         ):
             response = search_response("  example query  ")
 
@@ -466,10 +466,26 @@ class AutonomyTest(unittest.TestCase):
             }
         ])
 
+    def test_managed_search_falls_back_to_mojeek_when_duckduckgo_blocked(self) -> None:
+        with patch(
+            "bitbuddy.autonomy.web_search_server.search_duckduckgo_html",
+            side_effect=SearchProviderBlocked("blocked"),
+        ), patch(
+            "bitbuddy.autonomy.web_search_server.search_duckduckgo_lite",
+            side_effect=SearchProviderBlocked("blocked"),
+        ), patch(
+            "bitbuddy.autonomy.web_search_server.search_mojeek_html",
+            return_value=[SearchResult(title="Mojeek Result", url="https://example.com", snippet="Snippet", source="mojeek")],
+        ):
+            response = search_response("example query")
+
+        self.assertEqual(response["results"][0]["title"], "Mojeek Result")
+        self.assertEqual(response["results"][0]["engine"], "mojeek")
+
     def test_managed_search_response_supports_images_category(self) -> None:
         with patch(
             "bitbuddy.autonomy.web_search_server.search_duckduckgo_images",
-            return_value=[SearchResult(title="Image", url="https://example.com/page", snippet="Snippet", category="images", image_url="https://example.com/image.jpg", thumbnail_url="https://example.com/thumb.jpg")],
+            return_value=[SearchResult(title="Image", url="https://example.com/page", snippet="Snippet", source="duckduckgo", category="images", image_url="https://example.com/image.jpg", thumbnail_url="https://example.com/thumb.jpg")],
         ):
             response = search_response("example image", category="images")
 

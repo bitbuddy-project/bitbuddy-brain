@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from .calendar.secrets import delete_credentials, get_credentials, put_credentials
 from .paths import CONFIG_PATH, PERSONALITY_PATH, ensure_app_dirs
 from .personality import (
     PersonalitySelection,
@@ -37,6 +38,21 @@ DEFAULT_AUTONOMY_BACKOFF_MULTIPLIER = 1.5
 DEFAULT_AUTONOMY_MAX_DELAY_SECONDS = 1800
 DEFAULT_DREAMING_BEDTIME = "23:00"
 DEFAULT_DREAMING_WAKE_TIME = "08:00"
+PROVIDER_TYPES = {"none", "ollama", "llama.cpp", "openai", "codex", "anthropic"}
+CLOUD_PROVIDER_TYPES = {"openai", "anthropic"}
+URL_PROVIDER_TYPES = {"ollama", "llama.cpp", "openai", "anthropic"}
+DEFAULT_PROVIDER_URLS = {
+    "ollama": "http://127.0.0.1:11434",
+    "llama.cpp": "http://127.0.0.1:8080",
+    "openai": "https://api.openai.com",
+    "codex": "codex://chatgpt",
+    "anthropic": "https://api.anthropic.com",
+}
+DEFAULT_PROVIDER_MODELS = {
+    "openai": "gpt-4.1",
+    "codex": "gpt-5.5",
+    "anthropic": "claude-sonnet-4-6",
+}
 
 
 @dataclass(frozen=True)
@@ -47,6 +63,10 @@ class ProviderConfig:
     embedding_model: str = "nomic-embed-text"
     embedding_url: str = ""
     native_tools: str = "auto"
+    key: str = ""
+    api_key: str = ""
+    api_key_ref: str = ""
+    has_api_key: bool = False
 
 
 @dataclass(frozen=True)
@@ -126,15 +146,54 @@ class DreamingConfig:
 
 
 @dataclass(frozen=True)
+class CalendarConfig:
+    enabled: bool = False
+    default_provider: str = "local"
+    reminder_upcoming_minutes: int = 60
+    reminder_starting_soon_minutes: int = 15
+    urgent_interrupts_enabled: bool = True
+    urgent_interrupt_persistent: bool = True
+    conflict_warnings_enabled: bool = True
+    free_day_summary_enabled: bool = True
+    chat_nudges_enabled: bool = True
+    scheduler_tick_seconds: int = 60
+    holidays_enabled: bool = True
+    holidays_country: str = ""
+
+
+@dataclass(frozen=True)
+class EmailConfig:
+    enabled: bool = False
+    provider: str = "imap"
+    account_label: str = ""
+    email_address: str = ""
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_security: str = "ssl"
+    username: str = ""
+    credentials_ref: str = ""
+    gmail_client_id: str = ""
+    gmail_credentials_ref: str = ""
+    gmail_token_ref: str = ""
+    gmail_redirect_uri: str = "http://localhost:8787/email/gmail/callback"
+    default_mailbox: str = "INBOX"
+    max_preview_messages: int = 50
+
+
+@dataclass(frozen=True)
 class BitBuddyConfig:
     name: str
     provider: ProviderConfig
+    providers: tuple[ProviderConfig, ...]
+    active_provider: str
     presentation: PresentationConfig
     personality: PersonalitySelection
     user_context: UserContextConfig
     chat: ChatConfig
     autonomy: AutonomyConfig
     dreaming: DreamingConfig
+    calendar: CalendarConfig
+    email: EmailConfig
     mcp: McpConfig
     mcp_servers: tuple[McpServerConfig, ...]
     project_scan_interval_seconds: int
@@ -166,6 +225,14 @@ def default_config(
             "url": url,
             "model": model,
         },
+        "providers": [
+            {
+                "type": provider,
+                "url": url,
+                "model": model,
+            }
+        ] if provider != "none" else [],
+        "active_provider": provider if provider != "none" else "none",
         "user_context": {
             "location_label": "",
             "timezone": "UTC",
@@ -207,6 +274,37 @@ def default_config(
                 "startup_command": "managed",
                 "max_results": 5,
             },
+        },
+        "calendar": {
+            "enabled": False,
+            "default_provider": "local",
+            "reminder_upcoming_minutes": 60,
+            "reminder_starting_soon_minutes": 15,
+            "urgent_interrupts_enabled": True,
+            "urgent_interrupt_persistent": True,
+            "conflict_warnings_enabled": True,
+            "free_day_summary_enabled": True,
+            "chat_nudges_enabled": True,
+            "scheduler_tick_seconds": 60,
+            "holidays_enabled": True,
+            "holidays_country": "",
+        },
+        "email": {
+            "enabled": False,
+            "provider": "imap",
+            "account_label": "",
+            "email_address": "",
+            "imap_host": "",
+            "imap_port": 993,
+            "imap_security": "ssl",
+            "username": "",
+            "credentials_ref": "",
+            "gmail_client_id": "",
+            "gmail_credentials_ref": "",
+            "gmail_token_ref": "",
+            "gmail_redirect_uri": "http://localhost:8787/email/gmail/callback",
+            "default_mailbox": "INBOX",
+            "max_preview_messages": 50,
         },
         "mcp": {
             "enabled": False,
@@ -263,6 +361,8 @@ def write_config(
             data = deep_merge(data, existing)
             data["name"] = name
             data["provider"] = {"type": provider, "url": url, "model": model}
+            data["providers"] = [{"type": provider, "url": url, "model": model}] if provider != "none" else []
+            data["active_provider"] = provider if provider != "none" else "none"
             memories = data.get("memories") if isinstance(data.get("memories"), dict) else {}
             memories["project_scan_interval_seconds"] = project_scan_interval_seconds
             data["memories"] = memories
@@ -297,6 +397,148 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return merged
 
 
+def normalize_provider_type(value: Any) -> str:
+    provider_type = str(value or "none").strip() or "none"
+    if provider_type not in PROVIDER_TYPES:
+        raise ValueError("Provider type must be none, ollama, llama.cpp, openai, codex, or anthropic.")
+    return provider_type
+
+
+def provider_default_url(provider_type: str) -> str:
+    return DEFAULT_PROVIDER_URLS.get(provider_type, "")
+
+
+def provider_default_model(provider_type: str) -> str:
+    return DEFAULT_PROVIDER_MODELS.get(provider_type, "")
+
+
+def provider_secret_ref(provider_type: str) -> str:
+    return f"provider:{provider_type}:api_key"
+
+
+def none_provider() -> ProviderConfig:
+    return ProviderConfig(type="none", url="", model="", key="none")
+
+
+def parse_provider_entry(raw: Any) -> ProviderConfig:
+    if not isinstance(raw, dict):
+        raw = {}
+    provider_type = normalize_provider_type(raw.get("type"))
+    if provider_type == "none":
+        return none_provider()
+
+    url = str(raw.get("url") or provider_default_url(provider_type)).strip()
+    model = str(raw.get("model") or provider_default_model(provider_type)).strip()
+    key = str(raw.get("key") or provider_type).strip() or provider_type
+    api_key_ref = str(raw.get("api_key_ref") or "").strip()
+    if provider_type in CLOUD_PROVIDER_TYPES and not api_key_ref:
+        api_key_ref = provider_secret_ref(provider_type)
+    credentials = get_credentials(api_key_ref) if api_key_ref else {}
+    api_key = str(raw.get("api_key") or credentials.get("api_key") or "").strip()
+    return ProviderConfig(
+        type=provider_type,
+        url=url,
+        model=model,
+        embedding_model=str(raw.get("embedding_model") or "nomic-embed-text"),
+        embedding_url=str(raw.get("embedding_url") or ""),
+        native_tools=str(raw.get("native_tools") or "auto").strip().lower(),
+        key=key,
+        api_key=api_key,
+        api_key_ref=api_key_ref,
+        has_api_key=bool(api_key),
+    )
+
+
+def parse_provider_registry(raw: dict[str, Any]) -> tuple[ProviderConfig, tuple[ProviderConfig, ...], str]:
+    raw_providers = raw.get("providers")
+    providers: list[ProviderConfig] = []
+    if isinstance(raw_providers, list):
+        for entry in raw_providers:
+            provider = parse_provider_entry(entry)
+            if provider.type != "none" and provider.key not in {existing.key for existing in providers}:
+                providers.append(provider)
+
+    if not providers:
+        legacy_provider = parse_provider_entry(raw.get("provider") if isinstance(raw.get("provider"), dict) else {})
+        if legacy_provider.type != "none":
+            providers.append(legacy_provider)
+
+    active_provider = str(raw.get("active_provider") or "").strip()
+    if not active_provider and isinstance(raw.get("provider"), dict):
+        active_provider = str(raw["provider"].get("key") or raw["provider"].get("type") or "").strip()
+    if not active_provider and providers:
+        active_provider = providers[0].key
+    active = next((provider for provider in providers if provider.key == active_provider), None)
+    if active is None:
+        active = providers[0] if providers else none_provider()
+        active_provider = active.key
+    return active, tuple(providers), active_provider or "none"
+
+
+def provider_to_raw(provider: ProviderConfig) -> dict[str, Any]:
+    raw: dict[str, Any] = {
+        "type": provider.type,
+        "url": provider.url,
+        "model": provider.model,
+    }
+    if provider.key and provider.key != provider.type:
+        raw["key"] = provider.key
+    if provider.embedding_model != "nomic-embed-text":
+        raw["embedding_model"] = provider.embedding_model
+    if provider.embedding_url:
+        raw["embedding_url"] = provider.embedding_url
+    if provider.native_tools != "auto":
+        raw["native_tools"] = provider.native_tools
+    if provider.api_key_ref:
+        raw["api_key_ref"] = provider.api_key_ref
+    return raw
+
+
+def existing_provider_raw(raw: dict[str, Any], provider_type: str) -> dict[str, Any]:
+    entries = raw.get("providers") if isinstance(raw.get("providers"), list) else []
+    for entry in entries:
+        if isinstance(entry, dict) and str(entry.get("type") or "") == provider_type:
+            return entry
+    legacy = raw.get("provider") if isinstance(raw.get("provider"), dict) else {}
+    if str(legacy.get("type") or "") == provider_type:
+        return legacy
+    return {}
+
+
+def provider_from_update(entry: dict[str, Any], existing_raw: dict[str, Any] | None = None) -> ProviderConfig:
+    existing_raw = existing_raw or {}
+    provider_type = normalize_provider_type(entry.get("type"))
+    if provider_type == "none":
+        return none_provider()
+    url = str(entry.get("url") or provider_default_url(provider_type)).strip()
+    model = str(entry.get("model") or provider_default_model(provider_type)).strip()
+    if provider_type in URL_PROVIDER_TYPES and not url:
+        raise ValueError("Provider URL is required unless provider type is none.")
+    key = str(entry.get("key") or provider_type).strip() or provider_type
+    api_key_ref = str(entry.get("api_key_ref") or existing_raw.get("api_key_ref") or "").strip()
+    if provider_type in CLOUD_PROVIDER_TYPES:
+        api_key_ref = api_key_ref or provider_secret_ref(provider_type)
+        api_key = str(entry.get("api_key") or "").strip()
+        existing_key = get_credentials(api_key_ref).get("api_key") if api_key_ref else ""
+        if api_key:
+            put_credentials(api_key_ref, {"api_key": api_key})
+        elif not existing_key and not entry.get("has_api_key"):
+            raise ValueError(f"{provider_type} API key is required.")
+    else:
+        api_key_ref = ""
+    raw = {
+        "type": provider_type,
+        "url": url,
+        "model": model,
+        "key": key,
+        "api_key_ref": api_key_ref,
+        "embedding_model": str(entry.get("embedding_model") or existing_raw.get("embedding_model") or "nomic-embed-text"),
+        "embedding_url": str(entry.get("embedding_url") or existing_raw.get("embedding_url") or ""),
+        "native_tools": str(entry.get("native_tools") or existing_raw.get("native_tools") or "auto"),
+    }
+    return parse_provider_entry(raw)
+
+
 def write_personality(name: str = "BitBuddy", personality: dict[str, Any] | None = None) -> None:
     # Legacy export helper retained for callers that explicitly ask for personality.yaml.
     write_legacy_personality_export(name, parse_personality_selection(personality))
@@ -307,30 +549,29 @@ def load_config() -> BitBuddyConfig:
         write_config("none", "", "")
     seed_builtin_personality_files()
     raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
-    provider = raw.get("provider") or {}
+    provider, providers, active_provider = parse_provider_registry(raw)
     memories = raw.get("memories") or {}
     chat = raw.get("chat") or {}
     autonomy = raw.get("autonomy") or {}
     dreaming = raw.get("dreaming") or {}
+    calendar = raw.get("calendar") or {}
+    email = raw.get("email") or {}
     mcp_servers = raw.get("mcp_servers") if "mcp_servers" in raw else {}
     if mcp_servers is None:
         mcp_servers = {}
     return BitBuddyConfig(
         name=str(raw.get("name") or "BitBuddy"),
-        provider=ProviderConfig(
-            type=str(provider.get("type") or "none"),
-            url=str(provider.get("url") or ""),
-            model=str(provider.get("model") or ""),
-            embedding_model=str(provider.get("embedding_model") or "nomic-embed-text"),
-            embedding_url=str(provider.get("embedding_url") or ""),
-            native_tools=str(provider.get("native_tools") or "auto").strip().lower(),
-        ),
+        provider=provider,
+        providers=providers,
+        active_provider=active_provider,
         presentation=parse_presentation(raw.get("presentation")),
         personality=parse_personality_selection(raw.get("personality")),
         user_context=parse_user_context(raw.get("user_context")),
         chat=parse_chat_config(chat),
         autonomy=parse_autonomy_config(autonomy),
         dreaming=parse_dreaming_config(dreaming),
+        calendar=parse_calendar_config(calendar),
+        email=parse_email_config(email),
         mcp=parse_mcp_config(raw.get("mcp")),
         mcp_servers=parse_mcp_servers(mcp_servers),
         project_scan_interval_seconds=int(memories.get("project_scan_interval_seconds", 60)),
@@ -464,6 +705,159 @@ def parse_autonomy_config(raw: Any) -> AutonomyConfig:
             max_results=max(1, min(10, max_results)),
         ),
     )
+
+
+def parse_calendar_config(raw: Any) -> CalendarConfig:
+    if not isinstance(raw, dict):
+        raw = {}
+    return CalendarConfig(
+        enabled=bool(raw.get("enabled", False)),
+        default_provider=str(raw.get("default_provider") or "local"),
+        reminder_upcoming_minutes=max(1, int(raw.get("reminder_upcoming_minutes", 60))),
+        reminder_starting_soon_minutes=max(1, int(raw.get("reminder_starting_soon_minutes", 15))),
+        urgent_interrupts_enabled=bool(raw.get("urgent_interrupts_enabled", True)),
+        urgent_interrupt_persistent=bool(raw.get("urgent_interrupt_persistent", True)),
+        conflict_warnings_enabled=bool(raw.get("conflict_warnings_enabled", True)),
+        free_day_summary_enabled=bool(raw.get("free_day_summary_enabled", True)),
+        chat_nudges_enabled=bool(raw.get("chat_nudges_enabled", True)),
+        scheduler_tick_seconds=max(15, int(raw.get("scheduler_tick_seconds", 60))),
+        holidays_enabled=bool(raw.get("holidays_enabled", True)),
+        holidays_country=str(raw.get("holidays_country") or "").strip().upper(),
+    )
+
+
+def parse_email_config(raw: Any) -> EmailConfig:
+    if not isinstance(raw, dict):
+        raw = {}
+    try:
+        port = int(raw.get("imap_port", 993))
+    except (TypeError, ValueError):
+        port = 993
+    try:
+        max_preview = int(raw.get("max_preview_messages", 50))
+    except (TypeError, ValueError):
+        max_preview = 50
+    security = str(raw.get("imap_security") or "ssl").strip().lower()
+    if security not in {"ssl", "starttls", "none"}:
+        security = "ssl"
+    provider = str(raw.get("provider") or "imap").strip().lower()
+    if provider not in {"imap", "gmail", "outlook"}:
+        provider = "imap"
+    return EmailConfig(
+        enabled=bool(raw.get("enabled", False)),
+        provider=provider,
+        account_label=str(raw.get("account_label") or "").strip(),
+        email_address=str(raw.get("email_address") or "").strip(),
+        imap_host=str(raw.get("imap_host") or "").strip(),
+        imap_port=max(1, min(65535, port)),
+        imap_security=security,
+        username=str(raw.get("username") or "").strip(),
+        credentials_ref=str(raw.get("credentials_ref") or "").strip(),
+        gmail_client_id=str(raw.get("gmail_client_id") or "").strip(),
+        gmail_credentials_ref=str(raw.get("gmail_credentials_ref") or "").strip(),
+        gmail_token_ref=str(raw.get("gmail_token_ref") or "").strip(),
+        gmail_redirect_uri=str(raw.get("gmail_redirect_uri") or "http://localhost:8787/email/gmail/callback").strip() or "http://localhost:8787/email/gmail/callback",
+        default_mailbox=str(raw.get("default_mailbox") or "INBOX").strip() or "INBOX",
+        max_preview_messages=max(1, min(200, max_preview)),
+    )
+
+
+def update_email_config(email: dict[str, Any]) -> BitBuddyConfig:
+    if not CONFIG_PATH.exists():
+        write_config("none", "", "")
+
+    raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    existing = raw.get("email") if isinstance(raw.get("email"), dict) else {}
+    next_raw = {**existing}
+    for key in (
+        "enabled",
+        "provider",
+        "account_label",
+        "email_address",
+        "imap_host",
+        "imap_port",
+        "imap_security",
+        "username",
+        "credentials_ref",
+        "gmail_client_id",
+        "gmail_credentials_ref",
+        "gmail_token_ref",
+        "gmail_redirect_uri",
+        "default_mailbox",
+        "max_preview_messages",
+    ):
+        if key in email:
+            next_raw[key] = email[key]
+
+    parsed = parse_email_config(next_raw)
+    raw["email"] = {
+        "enabled": parsed.enabled,
+        "provider": parsed.provider,
+        "account_label": parsed.account_label,
+        "email_address": parsed.email_address,
+        "imap_host": parsed.imap_host,
+        "imap_port": parsed.imap_port,
+        "imap_security": parsed.imap_security,
+        "username": parsed.username,
+        "credentials_ref": parsed.credentials_ref,
+        "gmail_client_id": parsed.gmail_client_id,
+        "gmail_credentials_ref": parsed.gmail_credentials_ref,
+        "gmail_token_ref": parsed.gmail_token_ref,
+        "gmail_redirect_uri": parsed.gmail_redirect_uri,
+        "default_mailbox": parsed.default_mailbox,
+        "max_preview_messages": parsed.max_preview_messages,
+    }
+    CONFIG_PATH.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    return load_config()
+
+
+def update_calendar_config(calendar: dict[str, Any]) -> BitBuddyConfig:
+    if not CONFIG_PATH.exists():
+        write_config("none", "", "")
+
+    raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    existing = raw.get("calendar") if isinstance(raw.get("calendar"), dict) else {}
+    next_raw = {**existing}
+    for key in (
+        "enabled",
+        "default_provider",
+        "reminder_upcoming_minutes",
+        "reminder_starting_soon_minutes",
+        "urgent_interrupts_enabled",
+        "urgent_interrupt_persistent",
+        "conflict_warnings_enabled",
+        "free_day_summary_enabled",
+        "chat_nudges_enabled",
+        "scheduler_tick_seconds",
+        "holidays_enabled",
+        "holidays_country",
+    ):
+        if key in calendar:
+            next_raw[key] = calendar[key]
+
+    parsed = parse_calendar_config(next_raw)
+    raw["calendar"] = {
+        "enabled": parsed.enabled,
+        "default_provider": parsed.default_provider,
+        "reminder_upcoming_minutes": parsed.reminder_upcoming_minutes,
+        "reminder_starting_soon_minutes": parsed.reminder_starting_soon_minutes,
+        "urgent_interrupts_enabled": parsed.urgent_interrupts_enabled,
+        "urgent_interrupt_persistent": parsed.urgent_interrupt_persistent,
+        "conflict_warnings_enabled": parsed.conflict_warnings_enabled,
+        "free_day_summary_enabled": parsed.free_day_summary_enabled,
+        "chat_nudges_enabled": parsed.chat_nudges_enabled,
+        "scheduler_tick_seconds": parsed.scheduler_tick_seconds,
+        "holidays_enabled": parsed.holidays_enabled,
+        "holidays_country": parsed.holidays_country,
+    }
+    CONFIG_PATH.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    return load_config()
 
 
 def normalize_reasoning_budget(value: Any) -> int:
@@ -635,27 +1029,85 @@ def update_model_runtime_config(update: dict[str, Any]) -> BitBuddyConfig:
     if not isinstance(raw, dict):
         raw = {}
 
-    provider = update.get("provider") if isinstance(update.get("provider"), dict) else {}
-    provider_type = str(provider.get("type") or "none").strip() or "none"
-    if provider_type not in {"none", "ollama", "llama.cpp"}:
-        raise ValueError("Provider type must be none, ollama, or llama.cpp.")
-
-    provider_url = str(provider.get("url") or "").strip()
-    provider_model = str(provider.get("model") or "").strip()
-    if provider_type != "none" and not provider_url:
-        raise ValueError("Provider URL is required unless provider type is none.")
-
-    raw["provider"] = {
-        "type": provider_type,
-        "url": provider_url,
-        "model": provider_model,
-    }
+    if isinstance(update.get("providers"), list):
+        old_provider_refs = {
+            str(entry.get("type")): str(entry.get("api_key_ref") or provider_secret_ref(str(entry.get("type"))))
+            for entry in (raw.get("providers") if isinstance(raw.get("providers"), list) else [])
+            if isinstance(entry, dict) and str(entry.get("type") or "") in CLOUD_PROVIDER_TYPES
+        }
+        providers: list[ProviderConfig] = []
+        seen: set[str] = set()
+        for entry in update["providers"]:
+            if not isinstance(entry, dict):
+                continue
+            provider_type = normalize_provider_type(entry.get("type"))
+            if provider_type == "none" or provider_type in seen:
+                continue
+            provider = provider_from_update(entry, existing_provider_raw(raw, provider_type))
+            providers.append(provider)
+            seen.add(provider_type)
+        active_provider = str(update.get("active_provider") or raw.get("active_provider") or "").strip()
+        if active_provider not in {provider.key for provider in providers}:
+            active_provider = providers[0].key if providers else "none"
+        active = next((provider for provider in providers if provider.key == active_provider), none_provider())
+        kept_cloud_types = {provider.type for provider in providers if provider.type in CLOUD_PROVIDER_TYPES}
+        for provider_type, ref in old_provider_refs.items():
+            if provider_type not in kept_cloud_types:
+                delete_credentials(ref)
+        raw["providers"] = [provider_to_raw(provider) for provider in providers]
+        raw["active_provider"] = active_provider
+        raw["provider"] = provider_to_raw(active) if active.type != "none" else {"type": "none", "url": "", "model": ""}
+    else:
+        provider = update.get("provider") if isinstance(update.get("provider"), dict) else {}
+        next_provider = provider_from_update(provider, existing_provider_raw(raw, str(provider.get("type") or "none")))
+        providers = [] if next_provider.type == "none" else [next_provider]
+        raw["providers"] = [provider_to_raw(provider) for provider in providers]
+        raw["active_provider"] = next_provider.key
+        raw["provider"] = provider_to_raw(next_provider) if next_provider.type != "none" else {"type": "none", "url": "", "model": ""}
 
     memories = raw.get("memories") if isinstance(raw.get("memories"), dict) else {}
     if "project_scan_interval_seconds" in update:
         memories["project_scan_interval_seconds"] = max(0, int(update.get("project_scan_interval_seconds") or 0))
     raw["memories"] = memories
 
+    CONFIG_PATH.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    return load_config()
+
+
+def update_personality_config(personality: dict[str, Any]) -> BitBuddyConfig:
+    if not CONFIG_PATH.exists():
+        write_config("none", "", "")
+
+    raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    existing = raw.get("personality") if isinstance(raw.get("personality"), dict) else {}
+    next_raw = {**existing}
+    for key in (
+        "source",
+        "id",
+        "path",
+        "expressiveness",
+        "proactivity",
+        "quirk_frequency",
+        "bitbuddy_likes",
+        "bitbuddy_dislikes",
+    ):
+        if key in personality:
+            next_raw[key] = personality[key]
+
+    parsed = parse_personality_selection(next_raw)
+    raw["personality"] = {
+        "source": parsed.source,
+        "id": parsed.id,
+        "path": parsed.path,
+        "expressiveness": parsed.expressiveness,
+        "proactivity": parsed.proactivity,
+        "quirk_frequency": parsed.quirk_frequency,
+        "bitbuddy_likes": list(parsed.bitbuddy_likes),
+        "bitbuddy_dislikes": list(parsed.bitbuddy_dislikes),
+    }
     CONFIG_PATH.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     return load_config()
 

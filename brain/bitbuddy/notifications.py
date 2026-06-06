@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import queue
 import sys
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,6 +25,31 @@ class Notification:
     created_at: str
     read_at: str | None
     dismissed_at: str | None
+
+
+_SUBSCRIBERS: list[queue.Queue[dict[str, Any]]] = []
+_SUBSCRIBERS_LOCK = threading.Lock()
+
+
+def subscribe_notifications() -> queue.Queue[dict[str, Any]]:
+    subscriber: queue.Queue[dict[str, Any]] = queue.Queue()
+    with _SUBSCRIBERS_LOCK:
+        _SUBSCRIBERS.append(subscriber)
+    return subscriber
+
+
+def unsubscribe_notifications(subscriber: queue.Queue[dict[str, Any]]) -> None:
+    with _SUBSCRIBERS_LOCK:
+        if subscriber in _SUBSCRIBERS:
+            _SUBSCRIBERS.remove(subscriber)
+
+
+def broadcast_notification(notification: Notification) -> None:
+    event = {"kind": "notification", "notification": notification_to_json(notification)}
+    with _SUBSCRIBERS_LOCK:
+        subscribers = list(_SUBSCRIBERS)
+    for subscriber in subscribers:
+        subscriber.put(event)
 
 
 def ensure_notification_database() -> None:
@@ -80,7 +107,9 @@ def create_notification(
             ),
         )
         notification_id = int(cursor.lastrowid)
-    return get_notification(notification_id)
+    notification = get_notification(notification_id)
+    broadcast_notification(notification)
+    return notification
 
 
 def notify_user(**kwargs: Any) -> Notification | None:

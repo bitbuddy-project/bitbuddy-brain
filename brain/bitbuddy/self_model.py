@@ -293,6 +293,87 @@ def record_conversation_signal(signal: str, chat_id: str = "") -> None:
         pass
 
 
+def record_personality_quirks(personality_id: str, likes: list[str], dislikes: list[str]) -> None:
+    clean_likes = clean_quirk_list(likes)
+    clean_dislikes = clean_quirk_list(dislikes)
+    metadata = {"source": "personality_onboarding", "personality_id": personality_id}
+    retire_stale_personality_quirks(personality_id, clean_likes, clean_dislikes)
+    for like in clean_likes:
+        try:
+            upsert_personality_evolution(
+                "interest",
+                like,
+                f"BitBuddy has a user-selected personality like/curiosity around {like}.",
+                intensity=0.45,
+                confidence_delta=0.35,
+                evidence="User selected this as a BitBuddy like during personality setup.",
+                metadata=metadata,
+            )
+        except Exception:
+            pass
+    for dislike in clean_dislikes:
+        try:
+            upsert_personality_evolution(
+                "working_style",
+                f"avoids {dislike}",
+                f"BitBuddy should treat {dislike} as a light user-selected aversion for personality flavor and quality control.",
+                intensity=0.35,
+                confidence_delta=0.28,
+                evidence="User selected this as a BitBuddy dislike during personality setup.",
+                metadata=metadata,
+            )
+        except Exception:
+            pass
+    if clean_likes or clean_dislikes:
+        try:
+            add_self_journal(
+                "personality_onboarding",
+                "User-selected BitBuddy quirks",
+                f"Likes: {', '.join(clean_likes) or 'none'}\nDislikes: {', '.join(clean_dislikes) or 'none'}",
+                metadata,
+            )
+        except Exception:
+            pass
+
+
+def clean_quirk_list(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = " ".join(str(value or "").strip().split())[:80]
+        key = clean.lower()
+        if clean and key not in seen:
+            result.append(clean)
+            seen.add(key)
+    return result
+
+
+def retire_stale_personality_quirks(personality_id: str, likes: list[str], dislikes: list[str]) -> None:
+    active_labels = {item.lower() for item in likes}
+    active_labels.update(f"avoids {item}".lower() for item in dislikes)
+    ensure_self_model_database()
+    with db_connection(GLOBAL_DB_PATH) as connection:
+        rows = connection.execute(
+            """
+            select id, kind, label, summary, intensity, confidence, evidence_count, status, project_id, created_at, updated_at, last_seen_at, metadata
+            from personality_evolution
+            where kind in ('interest', 'working_style') and status != 'retired'
+            """
+        ).fetchall()
+        for row in rows:
+            evolution = evolution_from_row(row)
+            if evolution.metadata.get("source") != "personality_onboarding":
+                continue
+            if str(evolution.metadata.get("personality_id") or "") != personality_id:
+                continue
+            if evolution.label.lower() in active_labels:
+                continue
+            connection.execute(
+                "update personality_evolution set status = 'retired', updated_at = current_timestamp where id = ?",
+                (evolution.id,),
+            )
+
+
 def get_recent_conversation_signals(limit: int = 12) -> list[str]:
     """Return recent conversation_signal journal entries for use in self-reflection."""
     ensure_self_model_database()

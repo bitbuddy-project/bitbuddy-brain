@@ -6,14 +6,16 @@
 	import FileIcon from 'phosphor-svelte/lib/FileIcon';
 	import PencilSimpleIcon from 'phosphor-svelte/lib/PencilSimpleIcon';
 	import TrashIcon from 'phosphor-svelte/lib/TrashIcon';
+	import ChecksIcon from 'phosphor-svelte/lib/ChecksIcon';
 	import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte';
 	import MarkdownMessage from './MarkdownMessage.svelte';
 	import BitBuddyFace from './BitBuddyFace.svelte';
 
-	let { role, content, attachments = [], buddyName, isTyping = false, showFace = false, autonomyIntroKey = '', typingStorageKey = '', createdAt = '', canManage = false, onDelete, onEdit } = $props<{
+	let { role, content, attachments = [], mode = 'Chat', buddyName, isTyping = false, showFace = false, autonomyIntroKey = '', typingStorageKey = '', createdAt = '', canManage = false, onDelete, onEdit } = $props<{
 		role: 'user' | 'assistant';
 		content: string;
 		attachments?: ChatAttachment[];
+		mode?: string;
 		buddyName: string;
 		isTyping?: boolean;
 		showFace?: boolean;
@@ -38,10 +40,11 @@
 	let activeAutonomyIntroKey = $state('');
 	let shouldType = $derived(role === 'assistant' && isTyping && chatBehavior.replyAnimation !== 'Off');
 	let typingConfig = $derived(replyAnimationConfig(chatBehavior.replyAnimation));
+	let safeContent = $derived(role === 'assistant' ? stripSystemReminders(content) : content);
 	let shouldDelayAutonomyIntro = $derived(
 		role === 'assistant' &&
 		Boolean(autonomyIntroKey) &&
-		Boolean(content) &&
+		Boolean(safeContent) &&
 		chatBehavior.replyAnimation !== 'Off' &&
 		!typingWasCompleted(typingStorageKey) &&
 		messageIsRecent(createdAt) &&
@@ -65,16 +68,16 @@
 		typeTimer = setTimeout(() => {
 			typeTimer = undefined;
 			if (role !== 'assistant' || (!shouldType && !lastTyping)) {
-				visibleContent = content;
+				visibleContent = safeContent;
 				lastTyping = false;
 				return;
 			}
-			if (!content.startsWith(visibleContent) || visibleContent.length > content.length) {
-				visibleContent = content;
+			if (!safeContent.startsWith(visibleContent) || visibleContent.length > safeContent.length) {
+				visibleContent = safeContent;
 				lastTyping = false;
 				return;
 			}
-			const remaining = content.length - visibleContent.length;
+			const remaining = safeContent.length - visibleContent.length;
 			if (remaining <= 0) {
 				if (!shouldType) {
 					lastTyping = false;
@@ -83,8 +86,8 @@
 				return;
 			}
 			const batch = remaining > 80 ? typingConfig.largeBatch : remaining > 32 ? typingConfig.mediumBatch : typingConfig.smallBatch;
-			visibleContent += content.slice(visibleContent.length, visibleContent.length + batch);
-			if (visibleContent.length < content.length || shouldType) queueTypeStep();
+			visibleContent += safeContent.slice(visibleContent.length, visibleContent.length + batch);
+			if (visibleContent.length < safeContent.length || shouldType) queueTypeStep();
 			else {
 				lastTyping = false;
 				markTypingCompleted(typingStorageKey);
@@ -124,7 +127,7 @@
 		if (role === 'assistant' && chatBehavior.replyAnimation === 'Off') {
 			clearTypeTimer();
 			clearIntroTimer();
-			visibleContent = content;
+			visibleContent = safeContent;
 			hasVisibleContent = true;
 			lastTyping = false;
 			showingAutonomyIntro = false;
@@ -135,21 +138,21 @@
 		if (role === 'assistant' && typingWasCompleted(typingStorageKey)) {
 			clearTypeTimer();
 			clearIntroTimer();
-			visibleContent = content;
+			visibleContent = safeContent;
 			hasVisibleContent = true;
 			lastTyping = false;
 			showingAutonomyIntro = false;
 			return;
 		}
 
-		if (role === 'assistant' && !shouldType && lastTyping && content.startsWith(visibleContent) && visibleContent.length < content.length) {
+		if (role === 'assistant' && !shouldType && lastTyping && safeContent.startsWith(visibleContent) && visibleContent.length < safeContent.length) {
 			queueTypeStep();
 			return;
 		}
 
-		if (role !== 'assistant' || !shouldType || content.length === 0) {
+		if (role !== 'assistant' || !shouldType || safeContent.length === 0) {
 			clearTypeTimer();
-			if (!lastTyping) visibleContent = content;
+			if (!lastTyping) visibleContent = safeContent;
 			hasVisibleContent = true;
 			return;
 		}
@@ -170,13 +173,13 @@
 			return;
 		}
 
-		if (!content.startsWith(visibleContent) || visibleContent.length > content.length) {
-			visibleContent = content;
+		if (!safeContent.startsWith(visibleContent) || visibleContent.length > safeContent.length) {
+			visibleContent = safeContent;
 			hasVisibleContent = true;
 			return;
 		}
 
-		if (visibleContent.length < content.length) queueTypeStep();
+		if (visibleContent.length < safeContent.length) queueTypeStep();
 	});
 
 	onDestroy(() => {
@@ -185,11 +188,15 @@
 	});
 
 	let displayedContent = $derived.by(() => {
-		let text = hasVisibleContent ? visibleContent : content;
-		if (role === 'assistant' && (shouldType || lastTyping) && content.length > 0) text += ' %%BITBUDDY_CARET%%';
+		let text = hasVisibleContent ? visibleContent : safeContent;
+		if (role === 'assistant' && (shouldType || lastTyping) && safeContent.length > 0) text += ' %%BITBUDDY_CARET%%';
 		return text;
 	});
 	let renderedPlainText = $derived(renderPlainText(displayedContent));
+	let timeLabel = $derived(formatTime(createdAt));
+	let showMeta = $derived(
+		!isEditing && !showingAutonomyIntro && !(role === 'assistant' && showFace && !safeContent)
+	);
 
 	function imageSrc(attachment: ChatAttachment) {
 		return attachment.data ? `data:${attachment.mime_type};base64,${attachment.data}` : '';
@@ -209,6 +216,18 @@
 
 	function randomIntroDelayMs() {
 		return 10_000 + Math.floor(Math.random() * 20_001);
+	}
+
+	function formatTime(value: string) {
+		if (!value) return '';
+		const normalized = value.includes('T') ? value : value.replace(' ', 'T') + 'Z';
+		const parsed = Date.parse(normalized);
+		if (!Number.isFinite(parsed)) return '';
+		return new Date(parsed).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+	}
+
+	function stripSystemReminders(value: string) {
+		return value.replace(/<system-reminder\b[^>]*>[\s\S]*?(?:<\/system-reminder>|$)/gi, '').trim();
 	}
 
 	function messageIsRecent(value: string) {
@@ -317,13 +336,22 @@
 					{@html renderedPlainText}
 				{/if}
 			</div>
+			{#if showMeta}
+				<div class="meta">
+					<span class="mode-tag" title={`${mode} mode`}><i class="mode-dot"></i>{mode}</span>
+					{#if timeLabel}<span class="time">{timeLabel}</span>{/if}
+					{#if role === 'user'}
+						<ChecksIcon class="receipt" size={14} weight="bold" />
+					{/if}
+				</div>
+			{/if}
 		</div>
 		{#if role === 'user' && canManage}
 			{#if isEditing}
 				<div class="message-actions editing-actions">
 					<span>Editing will remove later messages and rerun from here.</span>
 					<button type="button" onclick={() => { isEditing = false; editContent = content; }} disabled={actionBusy}>Cancel</button>
-					<button class="primary-action" type="button" onclick={submitEdit} disabled={actionBusy || (!editContent.trim() && attachments.length === 0)}>
+					<button class="save-rerun-action" type="button" onclick={submitEdit} disabled={actionBusy || (!editContent.trim() && attachments.length === 0)}>
 						{actionBusy ? 'Saving...' : 'Save & rerun'}
 					</button>
 				</div>
@@ -367,6 +395,7 @@
 	.message-row.user {
 		align-self: flex-end;
 		grid-template-columns: minmax(0, 1fr) 2.8rem;
+		max-width: min(31rem, 82%);
 	}
 
 	.message-row.user .avatar {
@@ -379,15 +408,14 @@
 		height: 2.2rem;
 		display: grid;
 		place-items: center;
-		border: 1px solid var(--mode-border, var(--border));
-		border-radius: 0.85rem;
+		border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+		border-radius: 999px;
 		background:
-			radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.22), transparent 44%),
-			var(--mode-soft);
-		color: var(--mode-color);
+			radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.18), transparent 46%),
+			color-mix(in srgb, var(--accent) 22%, var(--panel-raised));
+		color: var(--accent-strong);
 		font-size: 0.85rem;
 		font-weight: 900;
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 	}
 
 	.avatar-dim {
@@ -408,34 +436,130 @@
 	.sender {
 		display: block;
 		padding: 0 0.25rem;
-		color: var(--mode-color);
-		font-size: 0.78rem;
-		font-weight: 800;
+		color: var(--text-soft);
+		font-size: 0.74rem;
+		font-weight: 750;
 		letter-spacing: 0.02em;
-		opacity: 0.9;
+		opacity: 0.85;
 	}
 
 	.message {
-		padding: 1.12rem 1.05rem;
-		border: 1px solid var(--card-border, var(--border-strong));
-		border-radius: 1.15rem;
+		--bubble-bg: var(--panel-raised);
+		--bubble-border: var(--border-strong);
+		position: relative;
+		padding: 0.85rem 1rem;
+		border: 1px solid var(--bubble-border);
+		border-radius: var(--radius-bubble);
+		background: var(--bubble-bg);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), var(--shadow-chat);
+		backdrop-filter: blur(14px) saturate(1.12);
+	}
+
+	/* Tails removed; the asymmetric top-corner notch still hints at the sender side. */
+	.message-row.assistant .message {
+		--bubble-bg: color-mix(in srgb, #0d1a2c 78%, transparent);
+		--bubble-border: rgba(73, 111, 158, 0.38);
+		border-top-left-radius: 0.2rem;
 		background:
-			linear-gradient(180deg, var(--glass-overlay, rgba(255, 255, 255, 0.035)), rgba(255, 255, 255, 0.008)),
-			var(--card-bg, var(--panel-raised));
-		box-shadow: var(--shadow-soft);
+			linear-gradient(145deg, rgba(255, 255, 255, 0.045), transparent 60%),
+			var(--bubble-bg);
 	}
 
 	.message-row.user .message {
-		border-color: var(--mode-border, var(--border));
+		--bubble-bg: #183b6e;
+		--bubble-border: rgba(91, 145, 226, 0.68);
+		border-top-right-radius: 0.2rem;
 		background:
-			linear-gradient(180deg, var(--glass-overlay, rgba(255, 255, 255, 0.045)), rgba(255, 255, 255, 0.008)),
-			var(--mode-soft);
+			linear-gradient(145deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.02)),
+			var(--bubble-bg);
+		box-shadow:
+			inset 0 1px 0 rgba(255, 255, 255, 0.08),
+			0 10px 26px rgba(24, 59, 110, 0.22);
+	}
+
+	:global(:root.light) .message-row.assistant .message {
+		--bubble-bg: rgba(241, 247, 253, 0.74);
+		--bubble-border: rgba(73, 104, 145, 0.24);
+		box-shadow:
+			inset 0 1px 0 rgba(255, 255, 255, 0.74),
+			0 10px 24px rgba(50, 80, 118, 0.08);
+	}
+
+	:global(:root.light) .message-row.user .message {
+		--bubble-bg: #2e6fd0;
+		--bubble-border: rgba(37, 99, 235, 0.46);
+	}
+
+	:global(:root.light) .message-row.user .meta {
+		color: rgba(255, 255, 255, 0.7);
+	}
+
+	:global(:root.light) .message-row.user .mode-tag {
+		color: #7fb3ff;
+		opacity: 1;
+	}
+
+	:global(:root.light) .message-row.user .meta :global(.receipt) {
+		color: #75e0a7;
+	}
+
+	:global(:root.light) .message-row.user .mode-dot {
+		background: #7fb3ff;
+		box-shadow: 0 0 6px rgba(127, 179, 255, 0.5);
+	}
+
+	.meta {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+		margin-top: 0.4rem;
+		color: var(--text-soft);
+		font-size: 0.68rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+	}
+
+	.message-row.user .meta {
+		justify-content: flex-end;
+		color: color-mix(in srgb, var(--mode-color, var(--accent)) 60%, var(--text-soft));
+	}
+
+	.mode-tag {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.28rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		font-size: 0.62rem;
+		font-weight: 800;
+		color: var(--mode-color, var(--accent));
+		opacity: 0.85;
+	}
+
+	.mode-dot {
+		width: 0.4rem;
+		height: 0.4rem;
+		border-radius: 999px;
+		background: var(--mode-color, var(--accent));
+		box-shadow: 0 0 6px color-mix(in srgb, var(--mode-color, var(--accent)) 55%, transparent);
+	}
+
+	.meta :global(.receipt) {
+		color: var(--mode-color, var(--accent));
+	}
+
+	.message-row.user .meta :global(.receipt) {
+		color: #75e0a7;
 	}
 
 	.content {
 		color: var(--text);
-		font-size: 0.96rem;
+		font-size: 0.95rem;
 		line-height: 1.65;
+	}
+
+	.message-row.user .content {
+		color: #f5f9ff;
 	}
 
 	.typing-dots {
@@ -661,6 +785,17 @@
 		padding: 0.85rem;
 	}
 
+	.message-row.user .content textarea {
+		color: #fff;
+		caret-color: #fff;
+	}
+
+	:global(:root.light) .message-row.user .content textarea {
+		border-color: rgba(255, 255, 255, 0.34);
+		background: color-mix(in srgb, var(--bubble-bg) 68%, #0f3c78);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+	}
+
 	.content textarea:focus {
 		outline: none;
 		border-color: var(--mode-color);
@@ -688,7 +823,7 @@
 		gap: 0.3rem;
 		padding: 0.36rem 0.55rem;
 		border: 1px solid var(--border);
-		border-radius: 999px;
+		border-radius: var(--radius-sm);
 		background: var(--panel);
 		color: var(--text-soft);
 		font-size: 0.72rem;
@@ -707,10 +842,14 @@
 		color: var(--danger);
 	}
 
-	.message-actions .primary-action {
+	.message-actions .save-rerun-action {
 		border-color: var(--mode-color);
 		background: var(--mode-color);
-		color: var(--on-accent);
+		color: #fff;
+	}
+
+	.message-actions .save-rerun-action:hover:not(:disabled) {
+		color: #fff;
 	}
 
 	.message-actions button:disabled {

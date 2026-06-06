@@ -7,10 +7,10 @@
 	import ToolEventCard from './ToolEventCard.svelte';
 	import PermissionRequestCard from './PermissionRequestCard.svelte';
 
-	let { messages, thinking, thinkEnabled, error, isStreaming, buddyName, onUserMessageDelete, onUserMessageEdit } = $props<{
+	let { messages, thinking, activeThinkEnabled, error, isStreaming, buddyName, onUserMessageDelete, onUserMessageEdit } = $props<{
 		messages: ChatMessage[];
 		thinking: string;
-		thinkEnabled: boolean;
+		activeThinkEnabled: boolean;
 		error: string;
 		isStreaming: boolean;
 		buddyName: string;
@@ -223,7 +223,7 @@
 		if (message.role !== 'assistant') return false;
 		if (thinkingFor(message, index)) return true;
 		if (!isLatestAssistantMessage(message, index)) return false;
-		return Boolean(error || (isStreaming && thinkEnabled));
+		return Boolean(error || (isStreaming && activeThinkEnabled));
 	}
 </script>
 
@@ -263,6 +263,7 @@
 						role={message.role === 'user' ? 'user' : 'assistant'}
 						content={message.content}
 						attachments={message.attachments ?? []}
+						mode={message.mode || 'Chat'}
 						{buddyName}
 						isTyping={isLatestAssistantMessage(message, index) && isStreaming && Boolean(message.content)}
 						showFace={message.role === 'assistant' && isLatestAssistantMessage(message, index)}
@@ -278,15 +279,17 @@
 		</div>
 	{/each}
 
-	{#if !hasAssistantMessage() && (thinking || error || (isStreaming && thinkEnabled))}
+	{#if !hasAssistantMessage() && (thinking || error || (isStreaming && activeThinkEnabled))}
 		<ThinkingStream content={thinking} {error} {isStreaming} storageKey={activeThinkingStorageKey()} />
 	{/if}
 </div>
 
 <style>
 	.message-area {
+		--chat-canvas: var(--bg-soft);
 		min-height: 0;
 		min-width: 0;
+		background: var(--chat-canvas-bg, var(--bg-soft));
 		padding: clamp(1rem, 2.4vw, 2rem);
 		display: flex;
 		flex-direction: column;
@@ -320,7 +323,7 @@
 		margin: auto;
 		padding: 0.7rem 1rem;
 		border: 1px solid var(--border);
-		border-radius: 999px;
+		border-radius: var(--radius-control);
 		background: var(--surface-card);
 		color: var(--text-soft);
 		font-size: 0.9rem;

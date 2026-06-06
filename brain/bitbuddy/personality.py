@@ -34,6 +34,8 @@ class PersonalitySelection:
     expressiveness: str = "balanced"
     proactivity: str = "helpful_nudges"
     quirk_frequency: str = "occasional"
+    bitbuddy_likes: tuple[str, ...] = ()
+    bitbuddy_dislikes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -283,7 +285,7 @@ def default_presentation_config() -> dict[str, str]:
     return {"style": DEFAULT_PRESENTATION.style, "pronouns": DEFAULT_PRESENTATION.pronouns}
 
 
-def default_personality_selection_config() -> dict[str, str | None]:
+def default_personality_selection_config() -> dict[str, Any]:
     return {
         "source": DEFAULT_SELECTION.source,
         "id": DEFAULT_SELECTION.id,
@@ -291,6 +293,8 @@ def default_personality_selection_config() -> dict[str, str | None]:
         "expressiveness": DEFAULT_SELECTION.expressiveness,
         "proactivity": DEFAULT_SELECTION.proactivity,
         "quirk_frequency": DEFAULT_SELECTION.quirk_frequency,
+        "bitbuddy_likes": [],
+        "bitbuddy_dislikes": [],
     }
 
 
@@ -311,12 +315,27 @@ def parse_personality_selection(raw: Any) -> PersonalitySelection:
         expressiveness=clean_choice(data.get("expressiveness"), EXPRESSIVENESS_LEVELS, DEFAULT_SELECTION.expressiveness),
         proactivity=clean_choice(data.get("proactivity"), PROACTIVITY_LEVELS, DEFAULT_SELECTION.proactivity),
         quirk_frequency=clean_choice(data.get("quirk_frequency"), QUIRK_FREQUENCIES, DEFAULT_SELECTION.quirk_frequency),
+        bitbuddy_likes=clean_quirks(data.get("bitbuddy_likes")),
+        bitbuddy_dislikes=clean_quirks(data.get("bitbuddy_dislikes")),
     )
 
 
 def clean_choice(value: Any, allowed: set[str], fallback: str) -> str:
     clean = str(value or "").strip()
     return clean if clean in allowed else fallback
+
+
+def clean_quirks(raw: Any) -> tuple[str, ...]:
+    items = raw if isinstance(raw, list) else []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        clean = " ".join(str(item or "").strip().split())[:80]
+        key = clean.lower()
+        if clean and key not in seen:
+            result.append(clean)
+            seen.add(key)
+    return tuple(result)
 
 
 def load_selected_personality(selection: PersonalitySelection) -> PersonalityProfile:
@@ -523,6 +542,13 @@ def build_personality_prompt(
         lines.append("Interests and quirks: " + format_interests(profile.interests))
     if profile.dislikes:
         lines.append("Dislikes and aversions: " + format_dislikes(profile.dislikes))
+    if selection.bitbuddy_likes or selection.bitbuddy_dislikes:
+        quirk_parts = []
+        if selection.bitbuddy_likes:
+            quirk_parts.append("likes=" + "; ".join(selection.bitbuddy_likes))
+        if selection.bitbuddy_dislikes:
+            quirk_parts.append("dislikes=" + "; ".join(selection.bitbuddy_dislikes))
+        lines.append("User-selected BitBuddy quirks: " + " | ".join(quirk_parts))
     if profile.autonomy:
         lines.append("Autonomy boundaries: " + format_key_values(profile.autonomy))
     if profile.emotional_behavior:

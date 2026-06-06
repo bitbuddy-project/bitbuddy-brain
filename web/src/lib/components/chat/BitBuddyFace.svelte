@@ -30,89 +30,53 @@
 <div class="face-wrap" class:typing={isTyping} class:thinking={isThinking} style={`--face-size: ${size}`} aria-label="BitBuddy">
 	<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" class="face-svg">
 		<defs>
-			<radialGradient id="headGrad" cx="35%" cy="30%" r="65%">
-				<stop offset="0%" stop-color="#8ec9ff" />
-				<stop offset="40%" stop-color="#4a9eff" />
-				<stop offset="100%" stop-color="#1a5fcf" />
-			</radialGradient>
-			<radialGradient id="headGradLight" cx="30%" cy="25%" r="55%">
-				<stop offset="0%" stop-color="#a8d8ff" />
-				<stop offset="50%" stop-color="#5aadff" />
-				<stop offset="100%" stop-color="#2a7ae0" />
-			</radialGradient>
-			<linearGradient id="metalGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-				<stop offset="0%" stop-color="rgba(255,255,255,0.35)" />
-				<stop offset="50%" stop-color="rgba(255,255,255,0.08)" />
-				<stop offset="100%" stop-color="rgba(255,255,255,0.02)" />
+			<linearGradient id="bodyGold" x1="15%" y1="0%" x2="90%" y2="100%">
+				<stop offset="0%" stop-color="#fff1bf" />
+				<stop offset="46%" stop-color="#ffd98a" />
+				<stop offset="100%" stop-color="#c78a32" />
+			</linearGradient>
+			<linearGradient id="bodyEdge" x1="0%" y1="0%" x2="100%" y2="100%">
+				<stop offset="0%" stop-color="#fff7d7" />
+				<stop offset="100%" stop-color="#7b531f" />
+			</linearGradient>
+			<linearGradient id="eyeFill" x1="0%" y1="0%" x2="0%" y2="100%">
+				<stop offset="0%" stop-color="#d4fbff" />
+				<stop offset="46%" stop-color="#5be8ff" />
+				<stop offset="100%" stop-color="#1397e8" />
 			</linearGradient>
 			<radialGradient id="eyeGlow" cx="50%" cy="50%" r="50%">
 				<stop offset="0%" stop-color="#ffffff" />
-				<stop offset="70%" stop-color="#e8f4ff" />
-				<stop offset="100%" stop-color="#b8d8ff" />
+				<stop offset="58%" stop-color="#cdf8ff" />
+				<stop offset="100%" stop-color="#52e3ff" />
 			</radialGradient>
 			<filter id="dropShadow" x="-20%" y="-20%" width="140%" height="140%">
-				<feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity="0.25" />
-			</filter>
-			<filter id="innerShadow">
-				<feOffset dx="0" dy="2" />
-				<feGaussianBlur stdDeviation="2" result="offset-blur" />
-				<feComposite operator="out" in="SourceGraphic" in2="offset-blur" result="inverse" />
-				<feFlood flood-color="black" flood-opacity="0.2" result="color" />
-				<feComposite operator="in" in="color" in2="inverse" result="shadow" />
-				<feComposite operator="over" in="shadow" in2="SourceGraphic" />
+				<feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000" flood-opacity="0.3" />
 			</filter>
 		</defs>
 
-		<!-- Ear/communication nodes -->
-		<circle cx="18" cy="60" r="8" fill="#2563eb" opacity="0.8">
-			<animate attributeName="opacity" values="0.8;0.4;0.8" dur="2s" repeatCount="indefinite" />
-		</circle>
-		<circle cx="102" cy="60" r="8" fill="#2563eb" opacity="0.8">
-			<animate attributeName="opacity" values="0.8;0.4;0.8" dur="2s" begin="1s" repeatCount="indefinite" />
-		</circle>
-		<line x1="26" y1="60" x2="32" y2="60" stroke="#2563eb" stroke-width="2" opacity="0.5" />
-		<line x1="88" y1="60" x2="94" y2="60" stroke="#2563eb" stroke-width="2" opacity="0.5" />
+		<rect x="11" y="10" width="98" height="100" rx="15" fill="url(#bodyEdge)" filter="url(#dropShadow)" />
+		<rect x="14" y="13" width="92" height="94" rx="13" fill="url(#bodyGold)" />
+		<rect x="20" y="28" width="80" height="70" rx="6" fill="#020617" opacity="0.98" />
+		<rect x="23" y="31" width="74" height="64" rx="4" fill="rgba(0, 0, 0, 0.7)" stroke="rgba(255, 255, 255, 0.08)" />
 
-		<!-- Main head sphere -->
-		<circle cx="60" cy="60" r="44" fill="url(#headGrad)" filter="url(#dropShadow)" />
-		<circle cx="60" cy="60" r="44" fill="url(#metalGrad)" opacity="0.6" />
+		<rect x="27" y="19" width="6" height="6" rx="1" fill="#00a7ff" opacity="0.9" />
+		<rect x="72" y="18" width="5" height="10" rx="1" fill="#1f1406" opacity="0.82" />
+		<rect x="82" y="18" width="5" height="10" rx="1" fill="#1f1406" opacity="0.82" />
+		<rect x="92" y="18" width="5" height="10" rx="1" fill="#1f1406" opacity="0.82" />
 
-		<!-- 3D highlight sheen -->
-		<ellipse cx="46" cy="38" rx="20" ry="14" fill="rgba(255,255,255,0.18)" transform="rotate(-25, 46, 38)" />
-		<ellipse cx="72" cy="82" rx="16" ry="10" fill="rgba(0,0,0,0.1)" transform="rotate(-25, 72, 82)" />
-
-		<!-- Face plate / visor area -->
-		<rect x="28" y="40" width="64" height="42" rx="16" ry="16" fill="rgba(5,15,35,0.55)" filter="url(#innerShadow)" />
-		<rect x="30" y="42" width="60" height="38" rx="14" ry="14" fill="rgba(10,25,50,0.4)" />
-
-		<!-- Eyes -->
 		<g transform={`translate(${eyeOffsetX}, ${eyeOffsetY})`}>
-			<!-- Left eye -->
-			<ellipse cx="45" cy="56" rx="6" ry="10" fill="white" class="eye" class:blink={blinkState} />
-			<ellipse cx="45" cy="56" rx="6" ry="10" fill="url(#eyeGlow)" opacity="0.3" class="eye" class:blink={blinkState} />
-			<!-- Right eye -->
-			<ellipse cx="75" cy="56" rx="6" ry="10" fill="white" class="eye" class:blink={blinkState} />
-			<ellipse cx="75" cy="56" rx="6" ry="10" fill="url(#eyeGlow)" opacity="0.3" class="eye" class:blink={blinkState} />
+			<rect x="34" y="43" width="15" height="32" rx="7" fill="#0b6fc8" class="eye" class:blink={blinkState} />
+			<rect x="37" y="46" width="9" height="25" rx="5" fill="url(#eyeFill)" class="eye" class:blink={blinkState} />
+			<ellipse cx="41" cy="50" rx="4" ry="4" fill="url(#eyeGlow)" opacity="0.92" />
+
+			<rect x="71" y="43" width="15" height="32" rx="7" fill="#0b6fc8" class="eye" class:blink={blinkState} />
+			<rect x="74" y="46" width="9" height="25" rx="5" fill="url(#eyeFill)" class="eye" class:blink={blinkState} />
+			<ellipse cx="78" cy="50" rx="4" ry="4" fill="url(#eyeGlow)" opacity="0.92" />
 		</g>
 
-		<!-- Mouth -->
-		<path d="M 50 76 Q 60 82 70 76" stroke="#79b8ff" stroke-width="2.5" fill="none" stroke-linecap="round" opacity="0.9" />
-
-		<!-- Antenna -->
-		<line class="antenna" x1="60" y1="16" x2="60" y2="8" stroke="#4a9eff" stroke-width="2.5" stroke-linecap="round" />
-		<circle class="antenna-tip" cx="60" cy="6" r="4" fill="#79b8ff">
-			<animate attributeName="opacity" values="1;0.5;1" dur="1.5s" repeatCount="indefinite" />
-		</circle>
-
-		<!-- Circuit detail lines -->
-		<path d="M 32 88 L 32 94 L 40 94" stroke="rgba(121,184,255,0.3)" stroke-width="1.2" fill="none" stroke-linecap="round" />
-		<path d="M 88 88 L 88 94 L 80 94" stroke="rgba(121,184,255,0.3)" stroke-width="1.2" fill="none" stroke-linecap="round" />
-		<circle cx="40" cy="94" r="1.5" fill="rgba(121,184,255,0.5)">
-			<animate attributeName="opacity" values="0.5;1;0.5" dur="3s" repeatCount="indefinite" />
-		</circle>
-		<circle cx="80" cy="94" r="1.5" fill="rgba(121,184,255,0.5)">
-			<animate attributeName="opacity" values="0.5;1;0.5" dur="3s" begin="1.5s" repeatCount="indefinite" />
-		</circle>
+		<path d="M 49 79 Q 60 88 71 79" stroke="#075fae" stroke-width="5" fill="none" stroke-linecap="round" opacity="0.95" />
+		<rect x="31" y="101" width="17" height="8" rx="2" fill="#b98231" opacity="0.9" />
+		<rect x="72" y="101" width="17" height="8" rx="2" fill="#b98231" opacity="0.9" />
 	</svg>
 	{#if isThinking}
 		<div class="thought-bubbles" aria-hidden="true">
@@ -159,10 +123,6 @@
 
 	.face-wrap.thinking .eye {
 		animation: thinking-squint 1.8s ease-in-out infinite;
-	}
-
-	.face-wrap.thinking .antenna-tip {
-		filter: drop-shadow(0 0 6px rgba(121, 184, 255, 0.85));
 	}
 
 	.thought-bubbles {

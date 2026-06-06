@@ -3,12 +3,15 @@
 	import { onMount } from 'svelte';
 	import { getAutonomyStatus, getLifecycleStatus, type AutonomyStatus, type LifecycleState } from '$lib/api/bitbuddy';
 	import { chatSession } from '$lib/stores/chat.svelte';
+	import ProviderSwitcher from './ProviderSwitcher.svelte';
 	import BookOpenIcon from 'phosphor-svelte/lib/BookOpenIcon';
 	import BrainIcon from 'phosphor-svelte/lib/BrainIcon';
 	import BlueprintIcon from 'phosphor-svelte/lib/BlueprintIcon';
+	import CalendarBlankIcon from 'phosphor-svelte/lib/CalendarBlankIcon';
 	import ChatCircleTextIcon from 'phosphor-svelte/lib/ChatCircleTextIcon';
 	import ClockCounterClockwiseIcon from 'phosphor-svelte/lib/ClockCounterClockwiseIcon';
 	import DevicesIcon from 'phosphor-svelte/lib/DevicesIcon';
+	import EnvelopeSimpleIcon from 'phosphor-svelte/lib/EnvelopeSimpleIcon';
 	import HouseLineIcon from 'phosphor-svelte/lib/HouseLineIcon';
 	import GearSixIcon from 'phosphor-svelte/lib/GearSixIcon';
 	import ShieldCheckIcon from 'phosphor-svelte/lib/ShieldCheckIcon';
@@ -32,6 +35,8 @@
 				{ label: 'Chat', href: '/', icon: ChatCircleTextIcon, hint: 'Talk' },
 				{ label: 'History', href: '/history', icon: ClockCounterClockwiseIcon, hint: 'Past chats' },
 				{ label: 'Goals', href: '/goals', icon: TargetIcon, hint: 'Self direction' },
+				{ label: 'Calendar', href: '/calendar', icon: CalendarBlankIcon, hint: 'Schedule' },
+				{ label: 'Email', href: '/email', icon: EnvelopeSimpleIcon, hint: 'Inbox' },
 				{ label: 'Autonomy', href: '/autonomy', icon: SparkleIcon, hint: 'Background life' }
 			]
 		},
@@ -48,7 +53,8 @@
 			label: 'Control',
 			items: [
 				{ label: 'Permissions', href: '/permissions', icon: ShieldCheckIcon, hint: 'Trust gates' },
-				{ label: 'Devices', href: '/devices', icon: DevicesIcon, hint: 'Coming soon' }
+				{ label: 'Devices', href: '/devices', icon: DevicesIcon, hint: 'Coming soon' },
+				{ label: 'Settings', href: '/settings', icon: GearSixIcon, hint: 'Model + trust' }
 			]
 		}
 	];
@@ -133,7 +139,7 @@
 	<div class="sidebar-top">
 		<a class="brand" href="/" aria-label="BitBuddy home" onclick={onNavigate}>
 			<div class="brand-mark">
-				<BrainIcon size={24} weight="duotone" />
+				<img src="/bitbuddy-app.png" alt="" aria-hidden="true" />
 				<span class="pulse-ring"></span>
 			</div>
 			<span class="brand-copy">
@@ -164,7 +170,7 @@
 								onclick={onNavigate}
 							>
 								<span class="active-rail"></span>
-								<span class="icon-shell"><item.icon size={21} weight={isActive(item.href) ? 'fill' : 'regular'} /></span>
+								<span class="icon-shell"><item.icon size={19} weight={isActive(item.href) ? 'fill' : 'regular'} /></span>
 								<span class="nav-copy">
 									<span class="nav-label">{item.label}</span>
 									<small>{item.hint}</small>
@@ -178,39 +184,63 @@
 	</div>
 
 	<div class="sidebar-bottom">
-		<a
-			class="nav-link settings-link compact-settings"
-			class:active={page.url.pathname === '/settings'}
-			href="/settings"
-			title={collapsed ? 'Settings' : undefined}
-			onclick={onNavigate}
-		>
-			<span class="active-rail"></span>
-			<span class="icon-shell"><GearSixIcon size={21} weight={page.url.pathname === '/settings' ? 'fill' : 'regular'} /></span>
-			<span class="nav-copy">
-				<span class="nav-label">Settings</span>
-				<small>Model + trust</small>
-			</span>
-		</a>
+		<ProviderSwitcher {collapsed} {onNavigate} />
 	</div>
 </aside>
 
 <style>
 	.sidebar {
 		position: sticky;
-		top: 0;
-		height: 100vh;
+		top: 1rem;
+		width: calc(var(--sidebar-width) - 1rem);
+		height: calc(100vh - 2rem);
+		margin: 1rem 0 1rem 1rem;
 		padding: 1rem;
 		display: grid;
 		grid-template-rows: minmax(0, 1fr) auto;
 		gap: 1.35rem;
-		border-right: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+		border: 1px solid color-mix(in srgb, var(--bg-soft) 60%, var(--border-strong));
+		border-radius: 1.35rem;
 		background:
-			linear-gradient(180deg, color-mix(in srgb, var(--bg-soft) 94%, transparent), color-mix(in srgb, var(--panel) 92%, transparent)),
-			radial-gradient(circle at 20% 0%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 18rem);
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--panel-raised) 76%, #10233d) 0%,
+				color-mix(in srgb, var(--panel) 92%, #01050d) 28%,
+				color-mix(in srgb, var(--bg-soft) 96%, #01050d) 100%
+			);
+		box-shadow:
+			0 20px 48px rgba(0, 0, 0, 0.26),
+			inset 0 1px 0 rgba(255, 255, 255, 0.075);
 		backdrop-filter: blur(22px) saturate(1.15);
 		overflow: hidden;
 		transition: padding 180ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	.sidebar::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		border-top: 1px solid rgba(255, 255, 255, 0.22);
+		border-radius: inherit;
+		pointer-events: none;
+	}
+
+	:global(:root.light) .sidebar {
+		border-color: rgba(73, 104, 145, 0.2);
+		background:
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, #d8e6f4 82%, var(--panel) 18%) 0%,
+				#d3e1ef 34%,
+				#cbdbea 100%
+			);
+		box-shadow:
+			0 18px 42px rgba(50, 80, 118, 0.13),
+			inset 0 1px 0 rgba(255, 255, 255, 0.78);
+	}
+
+	:global(:root.light) .sidebar::before {
+		border-top-color: rgba(255, 255, 255, 0.84);
 	}
 
 	.sidebar {
@@ -224,6 +254,7 @@
 	}
 
 	.ambient-orb {
+		display: none;
 		position: fixed;
 		border-radius: 999px;
 		filter: blur(28px);
@@ -297,21 +328,24 @@
 		flex: 0 0 auto;
 		display: grid;
 		place-items: center;
-		border: 1px solid color-mix(in srgb, var(--accent) 46%, transparent);
-		border-radius: 1rem;
-		background:
-			linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--success) 82%, var(--accent))),
-			var(--panel-raised);
+		border: 0;
+		border-radius: 0;
+		background: transparent;
 		color: var(--on-accent);
-		box-shadow: 0 12px 34px color-mix(in srgb, var(--accent) 24%, transparent);
+		box-shadow: none;
+		overflow: visible;
+	}
+
+	.brand-mark img {
+		position: relative;
+		z-index: 1;
+		width: 100%;
+		height: 100%;
+		object-fit: contain;
 	}
 
 	.pulse-ring {
-		position: absolute;
-		inset: -4px;
-		border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
-		border-radius: 1.2rem;
-		opacity: 0.65;
+		display: none;
 	}
 
 	.brand strong,
@@ -337,10 +371,13 @@
 	}
 
 	.status-card {
+		margin-top: 1.15rem;
 		padding: 0.85rem;
-		border: 1px solid var(--border);
-		border-radius: 1rem;
-		background: color-mix(in srgb, var(--surface-glass) 78%, transparent);
+		border: 1px solid color-mix(in srgb, var(--bg-soft) 54%, var(--border));
+		border-radius: 0.92rem;
+		background:
+			linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent 64%),
+			color-mix(in srgb, var(--surface-glass) 62%, transparent);
 		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 	}
 
@@ -384,12 +421,12 @@
 
 	.nav-list {
 		display: grid;
-		gap: 1rem;
+		gap: 0.7rem;
 	}
 
 	.nav-group {
 		display: grid;
-		gap: 0.4rem;
+		gap: 0.3rem;
 	}
 
 	.group-label {
@@ -403,18 +440,18 @@
 
 	.group-links {
 		display: grid;
-		gap: 0.28rem;
+		gap: 0.2rem;
 	}
 
 	.nav-link {
 		position: relative;
-		min-height: 3.2rem;
-		padding: 0.58rem 0.68rem;
+		min-height: 2.65rem;
+		padding: 0.42rem 0.62rem;
 		display: flex;
 		align-items: center;
-		gap: 0.72rem;
+		gap: 0.62rem;
 		border: 1px solid transparent;
-		border-radius: 1rem;
+		border-radius: 0.92rem;
 		color: var(--text-muted);
 		font-weight: 650;
 		transition:
@@ -426,23 +463,26 @@
 
 	.nav-link:hover {
 		transform: translateX(2px);
-		border-color: var(--border);
-		background: color-mix(in srgb, var(--surface-glass) 90%, transparent);
+		border-color: color-mix(in srgb, var(--bg-soft) 52%, var(--border));
+		background: color-mix(in srgb, var(--surface-glass) 66%, transparent);
 		color: var(--text);
 	}
 
 	.nav-link.active {
-		border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+		border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
+		/* The accent rail is the sole left-edge indicator — drop the border's
+		   left side so it doesn't double up into a heavier left outline. */
+		border-left-color: transparent;
 		background:
-			linear-gradient(90deg, color-mix(in srgb, var(--accent) 17%, transparent), transparent),
-			color-mix(in srgb, var(--surface-glass) 85%, transparent);
+			linear-gradient(90deg, rgba(79, 156, 255, 0.16), transparent),
+			color-mix(in srgb, var(--surface-glass) 70%, transparent);
 		color: var(--accent-strong);
 		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 	}
 
 	.active-rail {
 		position: absolute;
-		left: -1px;
+		left: 0;
 		width: 3px;
 		height: 1.35rem;
 		border-radius: 999px;
@@ -458,33 +498,17 @@
 	}
 
 	.icon-shell {
-		width: 2rem;
-		height: 2rem;
+		width: 1.78rem;
+		height: 1.78rem;
 		flex: 0 0 auto;
 		display: grid;
 		place-items: center;
-		border-radius: 0.78rem;
-		background: color-mix(in srgb, var(--surface-card) 80%, transparent);
+		border-radius: 0.65rem;
+		background: color-mix(in srgb, var(--surface-card) 64%, transparent);
 	}
 
 	.nav-link.active .icon-shell {
 		background: color-mix(in srgb, var(--accent-soft) 80%, transparent);
-	}
-
-	.compact-settings {
-		min-height: 2.7rem;
-		padding-block: 0.42rem;
-		border-radius: 0.9rem;
-	}
-
-	.compact-settings .icon-shell {
-		width: 2rem;
-		height: 2rem;
-		border-radius: 0.78rem;
-	}
-
-	.compact-settings .nav-copy small {
-		display: block;
 	}
 
 	.nav-copy,
@@ -500,11 +524,13 @@
 
 	.nav-copy {
 		display: grid;
-		gap: 0.05rem;
+		gap: 0;
+		line-height: 1.15;
 	}
 
 	.nav-label {
 		white-space: nowrap;
+		font-size: 0.92rem;
 	}
 
 	.sidebar.collapsed .brand-copy,
@@ -527,7 +553,7 @@
 		padding: 0;
 		display: grid;
 		place-items: center;
-		border-radius: 1rem;
+		border-radius: 0.92rem;
 	}
 
 	.sidebar.collapsed .status-copy {
@@ -591,23 +617,18 @@
 		justify-content: center;
 		gap: 0;
 		padding: 0;
-		border-radius: 1rem;
+		border-radius: 0.92rem;
 	}
 
 	.sidebar.collapsed .brand-mark,
-	.sidebar.collapsed .icon-shell,
-	.sidebar.collapsed .compact-settings .icon-shell {
+	.sidebar.collapsed .icon-shell {
 		width: 2.1rem;
 		height: 2.1rem;
 		border-radius: 0.8rem;
 	}
 
 	.sidebar.collapsed .brand-mark {
-		box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 20%, transparent);
-	}
-
-	.sidebar.collapsed .settings-link {
-		margin-top: 0;
+		box-shadow: none;
 	}
 
 	.sidebar.collapsed .nav-link:hover {
@@ -621,19 +642,25 @@
 	@media (max-width: 1100px) {
 		.sidebar {
 			position: fixed;
-			inset: 0 auto 0 0;
+			inset: 1rem auto 1rem 1rem;
 			z-index: 40;
 			width: min(21rem, calc(100vw - 2.4rem));
-			height: 100dvh;
+			height: calc(100dvh - 2rem);
+			margin: 0;
 			padding: 1rem;
 			gap: 1.5rem;
-			border-right: 1px solid var(--border-strong);
+			border: 1px solid color-mix(in srgb, var(--bg-soft) 60%, var(--border-strong));
+			border-radius: 1.35rem;
 			background:
-				linear-gradient(180deg, color-mix(in srgb, var(--panel-raised) 96%, transparent), color-mix(in srgb, var(--panel) 94%, transparent)),
-				var(--panel);
+				linear-gradient(
+					180deg,
+					color-mix(in srgb, var(--panel-raised) 76%, #10233d) 0%,
+					color-mix(in srgb, var(--panel) 92%, #01050d) 28%,
+					color-mix(in srgb, var(--bg-soft) 96%, #01050d) 100%
+				);
 			box-shadow: 18px 0 52px rgba(0, 0, 0, 0.42);
 			justify-content: flex-start;
-			transform: translateX(-105%);
+			transform: translateX(calc(-100% - 1.2rem));
 			transition:
 				transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
 				padding 180ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -641,6 +668,18 @@
 
 		.sidebar.mobile-open {
 			transform: translateX(0);
+		}
+
+		:global(:root.light) .sidebar {
+			border-color: rgba(73, 104, 145, 0.2);
+			background:
+				linear-gradient(
+					180deg,
+					color-mix(in srgb, #d8e6f4 82%, var(--panel) 18%) 0%,
+					#d3e1ef 34%,
+					#cbdbea 100%
+				);
+			box-shadow: 18px 0 52px rgba(50, 80, 118, 0.24);
 		}
 
 		.sidebar.collapsed .brand-copy,

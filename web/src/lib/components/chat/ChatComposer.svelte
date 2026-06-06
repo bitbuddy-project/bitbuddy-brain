@@ -52,12 +52,12 @@
 	const MAX_TEXT_BYTES = 10 * 1024 * 1024;
 	const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
-	// These match the CSS widths below. The measurement is always based on the
-	// single-line layout so the component cannot flicker between one-line and
-	// multi-line just because the buttons moved underneath the input.
-	const INLINE_PLUS_REM = 2.3;
-	const INLINE_ACTIONS_REM = 12;
-	const INPUT_WRAP_HORIZONTAL_PADDING_REM = 0.5;
+	// These match the CSS widths below. Measurement is based on the single-line
+	// layout so the component cannot flicker between one-line and multi-line.
+	const INLINE_PLUS_REM = 4.35;
+	const INLINE_THINK_REM = 5.45;
+	const INLINE_ACTIONS_REM = 7.35;
+	const INPUT_WRAP_HORIZONTAL_PADDING_REM = 2.9;
 	const MIN_MEASURE_WIDTH = 120;
 
 	function queueLayout() {
@@ -108,7 +108,7 @@
 		const barStyle = getComputedStyle(composerBar);
 		const barPadding = parseFloat(barStyle.paddingLeft) + parseFloat(barStyle.paddingRight);
 		const contentWidth = composerBar.clientWidth - barPadding;
-		const inlineControlsWidth = remToPx(INLINE_PLUS_REM + INLINE_ACTIONS_REM + INPUT_WRAP_HORIZONTAL_PADDING_REM);
+		const inlineControlsWidth = remToPx(INLINE_PLUS_REM + INLINE_THINK_REM + INLINE_ACTIONS_REM + INPUT_WRAP_HORIZONTAL_PADDING_REM);
 		return Math.max(MIN_MEASURE_WIDTH, Math.floor(contentWidth - inlineControlsWidth));
 	}
 
@@ -456,18 +456,21 @@
 </script>
 
 {#snippet PlusButton()}
-	<button class="composer-icon" type="button" aria-label="Attach files or images" onclick={openFilePicker}>
+	<button class="composer-icon plus-button" type="button" aria-label="Attach files or images" onclick={openFilePicker}>
 		<PlusIcon size={20} />
 	</button>
 {/snippet}
 
-{#snippet ActionButtons()}
-	<div class="actions-group">
-		<button class="think-button" class:active={thinkEnabled} type="button" aria-label={thinkEnabled ? 'Turn thinking off' : 'Turn thinking on'} aria-pressed={thinkEnabled} onclick={onThinkToggle}>
-			<LightbulbIcon size={18} />
-			<span>Think</span>
-		</button>
-		<button class="composer-icon" type="button" aria-label="Start voice input">
+{#snippet ThinkButton()}
+	<button class="think-button" class:active={thinkEnabled} type="button" aria-label={thinkEnabled ? 'Turn thinking off' : 'Turn thinking on'} aria-pressed={thinkEnabled} onclick={onThinkToggle}>
+		<LightbulbIcon size={21} />
+		<span>Think</span>
+	</button>
+{/snippet}
+
+{#snippet RightButtons()}
+	<div class="right-actions-group">
+		<button class="composer-icon mic-button" type="button" aria-label="Start voice input">
 			<MicrophoneIcon size={20} />
 		</button>
 		{#if isStreaming && !hasOutgoingDraft}
@@ -479,7 +482,7 @@
 				{/if}
 			</button>
 		{:else}
-			<button class="send-button" class:steering-send={isStreaming} disabled={disabled || !hasOutgoingDraft} type="submit" aria-label={isStreaming ? 'Queue steering message' : 'Send message'}>
+			<button class="send-button" disabled={disabled || !hasOutgoingDraft} type="submit" aria-label={isStreaming ? 'Queue steering message' : 'Send message'}>
 				<ArrowUpIcon size={18} weight="bold" />
 			</button>
 		{/if}
@@ -495,6 +498,7 @@
 		accept="image/*,text/html,.txt,.md,.markdown,.json,.jsonl,.csv,.log,.yaml,.yml,.toml,.xml,.html,.htm,.xhtml,.css,.js,.mjs,.cjs,.ts,.tsx,.jsx,.svelte,.rs,.py,.go"
 		onchange={handleFileSelection}
 	/>
+
 	{#if attachments.length > 0}
 		<div class="attachment-strip" aria-label="Attached files">
 			{#each attachments as attachment (attachment.id)}
@@ -521,7 +525,6 @@
 	{/if}
 
 	<div bind:this={composerBar} class="composer-bar" class:multi-line={isMultiLine}>
-
 		<div class="top-row">
 			<div class="inline-plus-wrap" aria-hidden={isMultiLine}>
 				{@render PlusButton()}
@@ -532,15 +535,19 @@
 					bind:this={textarea}
 					bind:value={chatSession.draft}
 					aria-label={`Message ${buddyName}`}
-					placeholder={`Message ${buddyName} in ${mode.toLowerCase()} mode...`}
+					placeholder={`${mode} with ${buddyName}...`}
 					rows="1"
 					oninput={handleDraftInput}
 					onkeydown={handleKeydown}
 				></textarea>
+
+				<div class="inline-think-wrap" aria-hidden={isMultiLine}>
+					{@render ThinkButton()}
+				</div>
 			</div>
 
 			<div class="inline-actions-wrap" aria-hidden={isMultiLine}>
-				{@render ActionButtons()}
+				{@render RightButtons()}
 			</div>
 		</div>
 
@@ -550,7 +557,8 @@
 					{@render PlusButton()}
 				</div>
 				<div class="controls-right">
-					{@render ActionButtons()}
+					{@render ThinkButton()}
+					{@render RightButtons()}
 				</div>
 			</div>
 		</div>
@@ -571,33 +579,10 @@
 
 <style>
 	.composer {
-		padding: 0.75rem 1.25rem 1rem;
-		border-top: 1px solid var(--border);
-		background: linear-gradient(180deg, transparent, var(--composer-gradient, rgba(0, 0, 0, 0.1)));
+		padding: 0.85rem 1.6rem 1.05rem;
+		border-top: 0;
+		background: transparent;
 		min-width: 0;
-	}
-
-	.composer-bar {
-		width: 100%;
-		max-width: 60rem;
-		margin: 0 auto;
-		padding: 0.35rem 0.5rem;
-		position: relative;
-		display: flex;
-		flex-direction: column;
-		border: 1px solid var(--border-strong);
-		border-radius: 1.6rem;
-		background: var(--bg-soft);
-		box-shadow: var(--shadow-panel);
-		overflow: hidden;
-		transition:
-			border-radius 180ms cubic-bezier(0.22, 1, 0.36, 1),
-			padding 180ms cubic-bezier(0.22, 1, 0.36, 1);
-	}
-
-	.composer-bar.multi-line {
-		padding: 0.55rem 0.6rem 0.35rem;
-		border-radius: 1.25rem;
 	}
 
 	.file-input {
@@ -731,22 +716,151 @@
 		font-size: 0.76rem;
 	}
 
-	.top-row {
+	.composer-bar {
+		--composer-edge-bg: color-mix(in srgb, var(--mode-color) 9%, #07101d);
+		--composer-mid-bg: color-mix(in srgb, var(--mode-color) 9%, #081322);
+		--composer-left-width: 4.35rem;
+		--composer-right-width: 7.35rem;
+		--composer-stroke: color-mix(in srgb, var(--mode-color) 34%, rgba(148, 163, 184, 0.48));
+
+		width: 100%;
+		max-width: 72rem;
+		margin: 0 auto;
+		padding: 0;
+		position: relative;
 		display: flex;
-		align-items: center;
+		flex-direction: column;
+
+		border: 1px solid transparent;
+		border-radius: 1.42rem;
+
+		background:
+			linear-gradient(180deg, rgba(12, 26, 46, 0.98), rgba(6, 15, 28, 0.98)),
+			var(--composer-edge-bg);
+
+		box-shadow:
+			0 0 18px color-mix(in srgb, var(--mode-color) 7%, transparent),
+			0 18px 42px rgba(0, 0, 0, 0.32),
+			inset 0 1px 0 rgba(255, 255, 255, 0.07);
+
+		overflow: hidden;
+
+		transition:
+			border-color 160ms ease,
+			box-shadow 160ms ease,
+			border-radius 180ms cubic-bezier(0.22, 1, 0.36, 1),
+			padding 180ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	.composer-bar::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		z-index: 2;
+		box-sizing: border-box;
+		border: 2px solid var(--composer-stroke);
+		border-radius: inherit;
+		pointer-events: none;
+	}
+
+	.composer-bar:focus-within {
+		--composer-stroke: color-mix(in srgb, var(--mode-color) 62%, rgba(226, 232, 240, 0.5));
+		box-shadow:
+			0 0 22px color-mix(in srgb, var(--mode-color) 13%, transparent),
+			0 18px 42px rgba(0, 0, 0, 0.36),
+			inset 0 1px 0 rgba(255, 255, 255, 0.08);
+	}
+
+	:global(:root.light) .composer-bar {
+		--composer-mid-bg: #d3e1ef;
+		--composer-edge-bg: #cbdbea;
+		--composer-stroke: color-mix(in srgb, var(--mode-color) 28%, #8ca1b8 72%);
+
+		border-color: transparent;
+		background:
+			linear-gradient(180deg, #d8e6f4 0%, #d3e1ef 42%, #cbdbea 100%);
+
+		box-shadow:
+			0 16px 34px rgba(50, 80, 118, 0.12),
+			inset 0 1px 0 rgba(255, 255, 255, 0.92);
+	}
+
+	.composer-bar.multi-line {
+		--composer-left-width: 0rem;
+		--composer-right-width: 0rem;
+
+		padding: 0;
+		border-radius: 1.42rem;
+	}
+
+	.top-row {
+		display: grid;
+		grid-template-columns: var(--composer-left-width) minmax(0, 1fr) var(--composer-right-width);
+		align-items: stretch;
 		width: 100%;
 		min-width: 0;
+		min-height: 4.05rem;
+		transition: grid-template-columns 180ms cubic-bezier(0.22, 1, 0.36, 1);
 	}
 
 	.inline-plus-wrap {
-		width: 2.3rem;
+		box-sizing: border-box;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 0;
+		padding: 0;
+
+		background: var(--composer-edge-bg);
+
+		border-radius: 0;
+		opacity: 1;
+		overflow: hidden;
+		transform: translateX(0) scale(1);
+
+		transition:
+			opacity 120ms ease,
+			transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	.composer-input-wrap {
+		box-sizing: border-box;
+		min-width: 0;
+		position: relative;
+		display: flex;
+		align-items: center;
+		gap: 0.68rem;
+
+		padding: 0.35rem 0.8rem 0.35rem 1.2rem;
+
+		background: var(--composer-mid-bg);
+
+		border-left: 0;
+		border-right: 0;
+
+		box-shadow:
+			inset 0 1px 0 rgba(255, 255, 255, 0.055),
+			inset 0 -1px 0 rgba(0, 0, 0, 0.08);
+	}
+
+	:global(:root.light) .composer-input-wrap {
+		background: var(--composer-mid-bg);
+		box-shadow:
+			inset 0 1px 0 rgba(255, 255, 255, 0.95),
+			inset 0 -1px 0 rgba(31, 72, 125, 0.08);
+	}
+
+	.inline-think-wrap {
+		width: 5.45rem;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		flex-shrink: 0;
+		min-width: 0;
 		opacity: 1;
-		transform: translateX(0) scale(1);
 		overflow: hidden;
+		transform: translateX(0) scale(1);
+
 		transition:
 			width 180ms cubic-bezier(0.22, 1, 0.36, 1),
 			opacity 120ms ease,
@@ -754,49 +868,53 @@
 	}
 
 	.inline-actions-wrap {
-		width: 12rem;
+		box-sizing: border-box;
 		display: flex;
 		align-items: center;
 		justify-content: flex-end;
-		flex-shrink: 0;
+		min-width: 0;
+		padding: 0.35rem 0.9rem 0.35rem 0.25rem;
+
+		background: var(--composer-edge-bg);
+
+		border-radius: 0 1.12rem 1.12rem 0;
+
 		opacity: 1;
-		transform: translateX(0) scale(1);
 		overflow: hidden;
+		transform: translateX(0) scale(1);
+
 		transition:
-			width 180ms cubic-bezier(0.22, 1, 0.36, 1),
 			opacity 120ms ease,
 			transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
 	}
 
 	.multi-line .inline-plus-wrap {
+		opacity: 0;
+		transform: translateX(-0.45rem) scale(0.82);
+		pointer-events: none;
+	}
+
+	.multi-line .inline-think-wrap {
 		width: 0;
 		opacity: 0;
-		transform: translateX(-0.4rem) scale(0.82);
+		transform: translateX(0.35rem) scale(0.82);
 		pointer-events: none;
 	}
 
 	.multi-line .inline-actions-wrap {
-		width: 0;
 		opacity: 0;
-		transform: translateX(0.5rem) scale(0.82);
+		transform: translateX(0.55rem) scale(0.82);
 		pointer-events: none;
-	}
-
-	.composer-input-wrap {
-		flex: 1;
-		min-width: 0;
-		padding: 0 0.25rem;
-		position: relative;
 	}
 
 	textarea,
 	.textarea-measure {
 		box-sizing: border-box;
 		width: 100%;
-		padding: 0.45rem 0.5rem;
+		padding: 0.5rem 0.15rem;
 		border: 0;
 		font: inherit;
-		font-size: 0.95rem;
+		font-size: 0.96rem;
 		line-height: 1.5;
 		letter-spacing: inherit;
 		white-space: pre-wrap;
@@ -809,12 +927,28 @@
 		height: auto;
 		max-height: 12rem;
 		background: transparent;
-		color: inherit;
+		color: var(--text);
 		resize: none;
 		display: block;
 		overflow-y: auto;
 		outline: none;
 		transition: height 120ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	textarea:focus-visible {
+		box-shadow: none;
+	}
+
+	textarea::placeholder {
+		color: color-mix(in srgb, var(--text-soft) 78%, transparent);
+	}
+
+	:global(:root.light) textarea {
+		color: #0d1b2e;
+	}
+
+	:global(:root.light) textarea::placeholder {
+		color: rgba(75, 96, 122, 0.72);
 	}
 
 	.textarea-measure {
@@ -844,8 +978,8 @@
 	}
 
 	.multi-line .bottom-row {
-		max-height: 3.2rem;
-		padding-top: 0.2rem;
+		max-height: 5rem;
+		padding-top: 0;
 		opacity: 1;
 		transform: translateY(0);
 		pointer-events: auto;
@@ -855,7 +989,18 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 0.2rem 0.3rem 0.35rem;
+		gap: 0.75rem;
+		min-height: 3.45rem;
+		padding: 0.45rem 0.9rem 0.85rem;
+		border-top: 1px solid rgba(255, 255, 255, 0.055);
+		border-radius: 0;
+		background: var(--composer-edge-bg);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+	}
+
+	:global(:root.light) .bottom-controls {
+		border-top-color: rgba(31, 72, 125, 0.06);
+		box-shadow: none;
 	}
 
 	.bottom-controls .controls-left,
@@ -875,63 +1020,197 @@
 
 	.controls-left,
 	.controls-right,
-	.actions-group {
+	.right-actions-group {
 		display: flex;
 		align-items: center;
-		gap: 0.35rem;
+		gap: 0.54rem;
+	}
+
+	.controls-right {
+		gap: 0.62rem;
+		flex: 0 0 auto;
+		min-width: 0;
+	}
+
+	.bottom-controls .think-button {
+		width: 2.55rem;
+		padding: 0;
+	}
+
+	.bottom-controls .think-button span {
+		display: none;
+	}
+
+	.right-actions-group {
+		gap: 0.54rem;
+		flex: 0 0 auto;
 	}
 
 	.composer-icon,
 	.send-button,
 	.think-button {
-		height: 2.1rem;
+		height: 2.55rem;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		border-radius: 999px;
-		transition: background 120ms ease, color 120ms ease, border-color 120ms ease, filter 120ms ease, transform 120ms ease;
 		flex-shrink: 0;
+		border: 1px solid transparent;
+		transition:
+			background 120ms ease,
+			color 120ms ease,
+			border-color 120ms ease,
+			filter 120ms ease,
+			transform 120ms ease,
+			box-shadow 120ms ease;
 	}
 
 	.composer-icon {
-		width: 2.1rem;
-		color: var(--text-soft);
+		width: 2.55rem;
+		border-radius: 0.82rem;
+		background: rgba(255, 255, 255, 0.055);
+		color: color-mix(in srgb, var(--text-soft) 82%, white 8%);
+		box-shadow:
+			inset 0 1px 0 rgba(255, 255, 255, 0.055),
+			0 8px 18px rgba(0, 0, 0, 0.14);
+	}
+
+	.plus-button {
+		background: rgba(255, 255, 255, 0.035);
+		border-color: transparent;
+		color: rgba(255, 255, 255, 0.9);
+		box-shadow: none;
+		margin-left: 0.32rem;
+	}
+
+	.bottom-controls .plus-button {
+		margin-left: 0;
+	}
+
+	.plus-button :global(svg) {
+		display: block;
+	}
+
+	.mic-button {
+		background: rgba(255, 255, 255, 0.035);
+		color: rgba(255, 255, 255, 0.9);
+		box-shadow: none;
+	}
+
+	:global(:root.light) .composer-icon {
+		background: rgba(255, 255, 255, 0.56);
+		color: #43546a;
+		box-shadow:
+			inset 0 1px 0 rgba(255, 255, 255, 0.84),
+			0 8px 18px rgba(50, 80, 118, 0.1);
+	}
+
+	:global(:root.light) .plus-button {
+		background: rgba(15, 23, 42, 0.1);
+		color: #24364d;
+		box-shadow: none;
+	}
+
+	:global(:root.light) .mic-button {
+		background: rgba(15, 23, 42, 0.1);
+		color: #24364d;
+		box-shadow: none;
 	}
 
 	.composer-icon:hover {
-		background: var(--accent-soft);
-		color: var(--accent);
+		background: color-mix(in srgb, var(--mode-color) 18%, rgba(255, 255, 255, 0.105));
+		color: var(--mode-color);
+		transform: translateY(-1px);
+	}
+
+	:global(:root.light) .composer-icon:hover {
+		background: color-mix(in srgb, var(--mode-color) 13%, rgba(255, 255, 255, 0.88));
+		color: var(--mode-color);
 	}
 
 	.think-button {
-		flex-shrink: 0;
+		width: 100%;
 		white-space: nowrap;
-		padding: 0 0.75rem;
-		gap: 0.35rem;
-		border: 1px solid var(--border);
-		background: var(--surface-card);
-		color: var(--text-muted);
-		font-size: 0.82rem;
-		font-weight: 500;
+		padding: 0 0.95rem;
+		gap: 0.42rem;
+		height: 2.42rem;
+		border-radius: 0.62rem;
+
+		background: rgba(255, 255, 255, 0.035);
+		border-color: transparent;
+		color: rgba(255, 255, 255, 0.86);
+
+		font-size: 0.88rem;
+		font-weight: 650;
+
+		box-shadow: none;
+	}
+
+	.think-button :global(svg) {
+		width: 1.2rem;
+		height: 1.2rem;
+		min-width: 1.2rem;
+		flex-shrink: 0;
+	}
+
+	.think-button span {
+		transform: translateY(0.06rem);
 	}
 
 	.think-button:hover {
-		border-color: var(--warning);
-		color: var(--warning);
-		background: rgba(245, 158, 11, 0.05);
+		background: rgba(251, 188, 4, 0.18);
+		border-color: transparent;
+		color: #ffd666;
 	}
 
 	.think-button.active {
-		border-color: color-mix(in srgb, var(--warning) 72%, var(--border));
-		background: rgba(245, 158, 11, 0.14);
-		color: var(--warning);
-		box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.08);
+		background: rgba(202, 124, 0, 0.32);
+		border-color: transparent;
+		color: #ffb72e;
+		box-shadow: none;
+	}
+
+	:global(:root.light) .think-button {
+		background: rgba(15, 23, 42, 0.1);
+		border-color: transparent;
+		color: #24364d;
+		box-shadow: none;
+	}
+
+	:global(:root.light) .think-button:hover,
+	:global(:root.light) .think-button.active {
+		background: rgba(202, 124, 0, 0.22);
+		border-color: transparent;
+		color: #6d3f00;
 	}
 
 	.send-button {
-		width: 2.1rem;
-		background: var(--mode-color);
-		color: var(--on-accent);
+		width: 2.55rem;
+		height: 2.55rem;
+		border-radius: 0.82rem;
+		background: color-mix(in srgb, var(--mode-color) 18%, transparent);
+		color: color-mix(in srgb, var(--mode-color) 86%, white 10%);
+		border-color: transparent;
+		box-shadow: none;
+	}
+
+	.send-button:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--mode-color) 26%, transparent);
+		color: color-mix(in srgb, var(--mode-color) 92%, white 16%);
+		filter: none;
+	}
+
+	.send-button:disabled {
+		background: rgba(255, 255, 255, 0.035);
+		color: rgba(255, 255, 255, 0.42);
+		opacity: 1;
+		filter: none;
+		cursor: not-allowed;
+		box-shadow: none;
+	}
+
+	:global(:root.light) .send-button:disabled {
+		background: rgba(15, 23, 42, 0.12);
+		color: rgba(15, 23, 42, 0.42);
 	}
 
 	.stop-button {
@@ -945,14 +1224,6 @@
 		color: var(--on-accent);
 	}
 
-	.steering-send {
-		background: color-mix(in srgb, var(--mode-color) 82%, var(--warning));
-	}
-
-	.stop-button:hover {
-		filter: brightness(1.04);
-	}
-
 	.stop-square {
 		width: 0.72rem;
 		height: 0.72rem;
@@ -960,20 +1231,15 @@
 		background: currentColor;
 	}
 
-	.send-button:disabled {
-		opacity: 0.4;
-		filter: grayscale(0.5);
-		cursor: not-allowed;
-	}
-
 	.composer-footer {
 		display: flex;
 		justify-content: space-between;
-		max-width: 60rem;
+		max-width: 72rem;
 		margin: 0 auto;
-		padding: 0.5rem 0.75rem 0;
+		padding: 0.42rem 0.75rem 0;
+		background: transparent;
 		color: var(--text-soft);
-		font-size: 0.72rem;
+		font-size: 0.68rem;
 		letter-spacing: 0.01em;
 	}
 
@@ -982,13 +1248,48 @@
 		gap: 1rem;
 	}
 
+	.stats span,
 	.context-info {
-		opacity: 0.8;
+		background: transparent;
+		box-shadow: none;
+	}
+
+	.context-info {
+		opacity: 0.68;
+	}
+
+	@media (max-width: 760px) {
+		.composer {
+			padding-inline: 0.8rem;
+		}
+
+		.composer-bar {
+			--composer-right-width: 6.2rem;
+		}
+
+		.think-button span {
+			display: none;
+		}
+
+		.inline-think-wrap {
+			width: 2.42rem;
+		}
+
+		.think-button {
+			width: 2.42rem;
+			padding: 0;
+		}
+
+		.composer-footer {
+			font-size: 0.62rem;
+		}
 	}
 
 	@media (prefers-reduced-motion: reduce) {
 		.composer-bar,
+		.top-row,
 		.inline-plus-wrap,
+		.inline-think-wrap,
 		.inline-actions-wrap,
 		textarea,
 		.bottom-row,

@@ -1,8 +1,7 @@
 <script lang="ts">
-	import WrenchIcon from 'phosphor-svelte/lib/WrenchIcon';
-	import BrainIcon from 'phosphor-svelte/lib/BrainIcon';
-	import BlueprintIcon from 'phosphor-svelte/lib/BlueprintIcon';
-	import CaretRightIcon from 'phosphor-svelte/lib/CaretRightIcon';
+import WrenchIcon from 'phosphor-svelte/lib/WrenchIcon';
+import BrainIcon from 'phosphor-svelte/lib/BrainIcon';
+import CaretRightIcon from 'phosphor-svelte/lib/CaretRightIcon';
 	import type { ChatMessage } from '$lib/api/bitbuddy';
 	import DiffEventCard from './DiffEventCard.svelte';
 	import MarkdownMessage from './MarkdownMessage.svelte';
@@ -73,19 +72,14 @@
 
 {#if !isHiddenTool}
 {#if showMemoryCard}
-	<div class="memory-row">
-		<div class="memory-spacer" aria-hidden="true"></div>
-		<div class="memory-card" class:project={toolName === 'record_project_memory' || memoryLayer === 'project'}>
-			<div class="memory-header">
-				<span class="memory-label">
-					{#if toolName === 'record_episode' || toolName === 'update_episode' || toolName === 'forget_episode' || toolName === 'record_memory' || toolName === 'write_memory' || toolName === 'update_memory' || toolName === 'archive_memory' || toolName === 'move_memory' || toolName === 'merge_memory'}
-						<BrainIcon size={14} weight="duotone" />
-						<strong>{toolName === 'forget_episode' || toolName === 'archive_memory' ? 'Memory archived' : toolName === 'update_episode' || toolName === 'update_memory' ? 'Memory updated' : toolName === 'move_memory' ? 'Memory moved' : toolName === 'merge_memory' ? 'Memory merged' : memoryLayer ? `${memoryLayer} memory` : 'Memory'}</strong>
-					{:else}
-						<BlueprintIcon size={14} weight="duotone" />
-						<strong>Project memory</strong>
-					{/if}
-					<span class="memory-title">{memoryTitle}</span>
+	<div class="chat-memory-row">
+		<div class="chat-memory-spacer" aria-hidden="true"></div>
+		<div class="chat-memory-card" class:project={toolName === 'record_project_memory' || memoryLayer === 'project'}>
+			<div class="chat-memory-header">
+				<span class="chat-memory-label">
+					<BrainIcon size={14} weight="duotone" />
+					<strong>Memory</strong>
+					<span class="chat-memory-title">{memoryTitle}</span>
 				</span>
 				<button class="toggle-btn" type="button" onclick={toggleCollapsed}>
 					<div class="caret" class:collapsed>
@@ -95,13 +89,13 @@
 				</button>
 			</div>
 			{#if !collapsed}
-				<div transition:slide={{ duration: 200 }} class="memory-body">
-					<div class="memory-summary"><MarkdownMessage content={summary} compact /></div>
+				<div transition:slide={{ duration: 200 }} class="chat-memory-body">
+					<div class="chat-memory-summary"><MarkdownMessage content={summary} compact /></div>
 					{#if projectId}
-						<div class="memory-meta">project: {projectId}</div>
+						<div class="chat-memory-meta">project: {projectId}</div>
 					{/if}
 					{#if memoryLayer}
-						<div class="memory-meta">layer: {memoryLayer}</div>
+						<div class="chat-memory-meta">layer: {memoryLayer}</div>
 					{/if}
 				</div>
 				{/if}
@@ -233,7 +227,7 @@
 		color: var(--accent-strong);
 	}
 
-	.memory-row {
+	.chat-memory-row {
 		max-width: min(64rem, 98%);
 		display: grid;
 		grid-template-columns: 2.8rem minmax(0, 1fr);
@@ -241,58 +235,54 @@
 		gap: 0.85rem;
 	}
 
-	.memory-spacer {
+	.chat-memory-spacer {
 		width: 2.8rem;
 		height: 2.8rem;
 	}
 
-	.memory-card {
+	.chat-memory-card {
 		max-width: min(48rem, 100%);
 		padding: 0.7rem 0.9rem;
 		border: 1px dashed rgba(129, 140, 248, 0.3);
 		border-radius: 1.1rem;
-		background:
-			linear-gradient(180deg, rgba(129, 140, 248, 0.04), rgba(129, 140, 248, 0.02)),
-			var(--surface-inset);
+		background: var(--surface-inset);
 		color: var(--text-muted);
 		font-size: 0.85rem;
 		transition: all 0.2s ease;
 	}
 
-	.memory-card.project {
+	.chat-memory-card.project {
 		border-color: rgba(110, 231, 183, 0.25);
-		background:
-			linear-gradient(180deg, rgba(110, 231, 183, 0.03), rgba(110, 231, 183, 0.015)),
-			rgba(0, 0, 0, 0.08);
+		background: var(--surface-inset);
 	}
 
-	.memory-header {
+	.chat-memory-header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: 0.75rem;
 	}
 
-	.memory-label {
+	.chat-memory-label {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.45rem;
 		color: #818cf8;
 	}
 
-	.memory-label :global(svg) {
+	.chat-memory-label :global(svg) {
 		color: #818cf8;
 	}
 
-	.memory-card.project .memory-label {
+	.chat-memory-card.project .chat-memory-label {
 		color: #6ee7b7;
 	}
 
-	.memory-card.project .memory-label :global(svg) {
+	.chat-memory-card.project .chat-memory-label :global(svg) {
 		color: #6ee7b7;
 	}
 
-	.memory-label strong {
+	.chat-memory-label strong {
 		color: currentColor;
 		font-size: 0.72rem;
 		font-weight: 800;
@@ -300,24 +290,24 @@
 		text-transform: uppercase;
 	}
 
-	.memory-title {
+	.chat-memory-title {
 		color: var(--text-soft);
 		font-size: 0.82rem;
 		font-weight: 600;
 		margin-left: 0.3rem;
 	}
 
-	.memory-body {
+	.chat-memory-body {
 		margin-top: 0.6rem;
 	}
 
-	.memory-summary {
+	.chat-memory-summary {
 		font-size: 0.82rem;
 		line-height: 1.5;
 		color: var(--text-muted);
 	}
 
-	.memory-meta {
+	.chat-memory-meta {
 		margin-top: 0.4rem;
 		font-size: 0.75rem;
 		color: var(--text-soft);
@@ -346,13 +336,13 @@
 		border-color: rgba(129, 140, 248, 0.25);
 	}
 
-	.memory-card.project .toggle-btn {
+	.chat-memory-card.project .toggle-btn {
 		background: rgba(110, 231, 183, 0.08);
 		border-color: rgba(110, 231, 183, 0.15);
 		color: #6ee7b7;
 	}
 
-	.memory-card.project .toggle-btn:hover {
+	.chat-memory-card.project .toggle-btn:hover {
 		background: rgba(110, 231, 183, 0.14);
 		border-color: rgba(110, 231, 183, 0.25);
 	}
@@ -373,7 +363,7 @@
 			margin-left: 0;
 		}
 
-		.memory-row {
+		.chat-memory-row {
 			max-width: 100%;
 		}
 	}

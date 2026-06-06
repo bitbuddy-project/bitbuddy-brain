@@ -17,6 +17,7 @@
 	let initialized = $state(false);
 	let lastAutoCollapse = $state(false);
 	let lastStorageKey = $state('');
+	let safeContent = $derived(stripSystemReminders(content));
 
 	$effect.pre(() => {
 		if (initialized) return;
@@ -63,9 +64,13 @@
 		if (!key || typeof window === 'undefined') return;
 		window.localStorage.setItem(`bitbuddy:thinking-collapsed:${key}`, String(value));
 	}
+
+	function stripSystemReminders(value: string) {
+		return value.replace(/<system-reminder\b[^>]*>[\s\S]*?(?:<\/system-reminder>|$)/gi, '').trim();
+	}
 </script>
 
-{#if content || error || isStreaming}
+{#if safeContent || error || isStreaming}
 	<div class="thinking-row">
 		{#if showFace && !autoCollapse}
 			<BitBuddyFace isThinking={isStreaming && !error} />
@@ -89,7 +94,7 @@
 			</div>
 			{#if !collapsed}
 				<div transition:slide={{ duration: 250 }}>
-					<p>{error || content || 'Waiting for model reasoning...'}</p>
+					<p>{error || safeContent || 'Waiting for model reasoning...'}</p>
 				</div>
 			{/if}
 		</div>

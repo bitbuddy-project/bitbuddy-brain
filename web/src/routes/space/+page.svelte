@@ -223,10 +223,10 @@
 
 <style>
 	.space-page {
-		--page-accent: #79b8ff;
-		--page-soft: rgba(121, 184, 255, 0.12);
-		--page-border: rgba(121, 184, 255, 0.25);
-		--page-glow: rgba(121, 184, 255, 0.14);
+		--page-accent: var(--accent);
+		--page-soft: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+		--page-border: color-mix(in srgb, var(--accent) 20%, var(--border));
+		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
 
 		width: 100%;
 		max-width: 100%;
@@ -255,7 +255,7 @@
 		background:
 			linear-gradient(135deg, var(--glass-overlay), transparent 22rem),
 			radial-gradient(circle at top right, var(--page-glow), transparent 30rem),
-			radial-gradient(circle at bottom left, rgba(110, 231, 183, 0.055), transparent 34rem),
+			radial-gradient(circle at bottom left, color-mix(in srgb, var(--success) 5.5%, transparent), transparent 34rem),
 			var(--panel);
 		box-shadow: var(--shadow-chat);
 		overflow: hidden;

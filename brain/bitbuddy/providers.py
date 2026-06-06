@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import json
+import base64
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from collections.abc import Callable
 from typing import Any, Iterable, Literal
 
 from .config import ProviderConfig
+from .calendar.secrets import get_credentials
 
 
 StreamKind = Literal["thinking", "response", "tool_call"]
 STREAM_READ_TIMEOUT_SECONDS = 900
 NATIVE_TOOL_PROBE_TIMEOUT_SECONDS = 30
+CODEX_SECRET_REF = "provider:codex:oauth"
+CODEX_BACKEND_URL = "https://chatgpt.com/backend-api/codex/responses"
+CODEX_DEFAULT_MODEL = "gpt-5.5"
+CODEX_CHATGPT_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
 NO_THINKING_SYSTEM_MESSAGE = (
     "Thinking/reasoning mode is disabled for this request. "
     "Do not emit hidden reasoning, reasoning_content, or <think> blocks; answer directly."
@@ -110,10 +117,14 @@ class ProviderClient:
     def health(self) -> tuple[bool, str]:
         if self.config.type == "none":
             return False, "No provider configured."
+        if self.config.type in {"openai", "anthropic"} and not self.config.api_key:
+            return False, f"{self.config.type} API key is not configured."
+        if self.config.type == "codex":
+            return codex_health()
         last_error = ""
         for endpoint in provider_health_endpoints(self.config):
             try:
-                request = urllib.request.Request(endpoint, headers={"Accept": "application/json"})
+                request = urllib.request.Request(endpoint, headers=provider_headers(self.config, accept="application/json"))
                 with urllib.request.urlopen(request, timeout=2) as response:
                     if response.status < 400:
                         return True, f"{self.config.type} reachable at {self.config.url}"
@@ -137,6 +148,15 @@ class ProviderClient:
         if self.config.type == "llama.cpp":
             yield from self._stream_llama_cpp(messages, model or self.config.model, should_cancel, thinking_enabled, tools, tool_choice)
             return
+        if self.config.type == "openai":
+            yield from self._stream_openai(messages, model or self.config.model, should_cancel, thinking_enabled, tools, tool_choice)
+            return
+        if self.config.type == "anthropic":
+            yield from self._stream_anthropic(messages, model or self.config.model, should_cancel, thinking_enabled, tools)
+            return
+        if self.config.type == "codex":
+            yield from self._stream_codex(messages, model or self.config.model, should_cancel)
+            return
         raise ValueError("No model provider configured.")
 
     def supports_native_tools(self, model: str | None = None) -> bool:
@@ -147,8 +167,10 @@ class ProviderClient:
         failure it returns False so callers fall back to the text tool protocol.
         """
         setting = str(getattr(self.config, "native_tools", "auto") or "auto").lower()
-        if setting == "off" or self.config.type not in ("llama.cpp", "ollama"):
+        if setting == "off" or self.config.type not in ("llama.cpp", "ollama", "openai", "anthropic"):
             return False
+        if self.config.type in {"openai", "anthropic"}:
+            return True
         if setting == "on":
             return True
         selected = model or self.config.model
@@ -196,10 +218,21 @@ class ProviderClient:
         if self.config.type == "llama.cpp":
             data = get_json(f"{self.config.url.rstrip('/')}/v1/models")
             return sorted(str(model.get("id")) for model in data.get("data", []) if model.get("id"))
+        if self.config.type == "openai":
+            data = get_json(f"{self.config.url.rstrip('/')}/v1/models", headers=provider_headers(self.config))
+            return sorted(str(model.get("id")) for model in data.get("data", []) if model.get("id"))
+        if self.config.type == "anthropic":
+            data = get_json(f"{self.config.url.rstrip('/')}/v1/models", headers=provider_headers(self.config))
+            rows = data.get("data") or data.get("models") or []
+            return sorted(str(model.get("id")) for model in rows if isinstance(model, dict) and model.get("id"))
+        if self.config.type == "codex":
+            return CODEX_CHATGPT_MODELS
         raise ValueError("No model provider configured.")
 
     def context_window(self, model: str | None = None) -> dict[str, object]:
         selected_model = model or self.config.model
+        if self.config.type == "codex":
+            selected_model = codex_model(selected_model)
         result: dict[str, object] = {
             "provider": self.config.type,
             "model": selected_model,
@@ -236,6 +269,18 @@ class ProviderClient:
             result["context_window_tokens"] = tokens
             result["source"] = "llama.cpp /props" if tokens else "llama.cpp /props unavailable"
             return result
+        if self.config.type == "codex":
+            result["context_window_tokens"] = codex_context_window(codex_model(self.config.model))
+            result["source"] = "Codex model metadata"
+            return result
+        if self.config.type == "openai":
+            result["context_window_tokens"] = openai_context_window(self.config.model)
+            result["source"] = "OpenAI model metadata" if result["context_window_tokens"] else "OpenAI context metadata unavailable"
+            return result
+        if self.config.type == "anthropic":
+            result["context_window_tokens"] = 200000
+            result["source"] = "Anthropic model metadata"
+            return result
         return result
 
     def count_tokens(self, messages: list[dict[str, str]], model: str | None = None) -> dict[str, object]:
@@ -266,6 +311,9 @@ class ProviderClient:
             tokens = data.get("tokens")
             result["used_tokens"] = len(tokens) if isinstance(tokens, list) else first_int(data.get("count"), data.get("token_count"))
             result["source"] = "llama.cpp /tokenize" if result["used_tokens"] is not None else "llama.cpp token count unavailable"
+            return result
+        if self.config.type in {"openai", "codex", "anthropic"}:
+            result["source"] = f"{self.config.type} token count unavailable"
             return result
         return result
 
@@ -360,7 +408,7 @@ class ProviderClient:
                 if content:
                     yield from splitter.feed(str(content))
         except urllib.error.HTTPError as error:
-            if error.code == 400 and messages_have_image_attachments(messages):
+            if provider_image_error(error, messages):
                 yield StreamChunk("response", image_rejected_message(self.config.type, model, error))
                 return
             raise
@@ -418,13 +466,174 @@ class ProviderClient:
                 if content:
                     yield from splitter.feed(str(content))
         except urllib.error.HTTPError as error:
-            if error.code == 400 and messages_have_image_attachments(messages):
+            if provider_image_error(error, messages):
                 yield StreamChunk("response", image_rejected_message(self.config.type, model, error))
                 return
             raise
         if not should_cancel or not should_cancel():
             yield from splitter.flush()
             yield from emit_accumulated_tool_calls(tool_accumulator)
+
+    def _stream_openai(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        should_cancel: Callable[[], bool] | None = None,
+        thinking_enabled: bool = True,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+    ) -> Iterable[StreamChunk]:
+        if not model:
+            raise ValueError("OpenAI requires a model name.")
+        if not self.config.api_key:
+            raise ValueError("OpenAI API key is not configured.")
+        payload: dict[str, object] = {
+            "model": model,
+            "messages": openai_messages(provider_messages(messages, thinking_enabled=thinking_enabled)),
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
+        splitter = ThinkingSplitter(emit_thinking=thinking_enabled)
+        tool_accumulator: dict[int, dict[str, str]] = {}
+        try:
+            for data in post_sse_json(f"{self.config.url.rstrip('/')}/v1/chat/completions", payload, headers=provider_headers(self.config, accept="text/event-stream")):
+                if should_cancel and should_cancel():
+                    break
+                choices = data.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                if reasoning and thinking_enabled:
+                    yield StreamChunk("thinking", str(reasoning))
+                for fragment in delta.get("tool_calls") or []:
+                    accumulate_tool_call_fragment(tool_accumulator, fragment)
+                content = delta.get("content") or ""
+                if content:
+                    yield from splitter.feed(str(content))
+        except urllib.error.HTTPError as error:
+            if provider_image_error(error, messages):
+                yield StreamChunk("response", image_rejected_message(self.config.type, model, error))
+                return
+            raise
+        if not should_cancel or not should_cancel():
+            yield from splitter.flush()
+            yield from emit_accumulated_tool_calls(tool_accumulator)
+
+    def _stream_anthropic(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        should_cancel: Callable[[], bool] | None = None,
+        thinking_enabled: bool = True,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Iterable[StreamChunk]:
+        if not model:
+            raise ValueError("Anthropic requires a model name.")
+        if not self.config.api_key:
+            raise ValueError("Anthropic API key is not configured.")
+        system, anthropic_turns = anthropic_messages(provider_messages(messages, thinking_enabled=thinking_enabled))
+        payload: dict[str, object] = {
+            "model": model,
+            "max_tokens": 4096,
+            "stream": True,
+            "messages": anthropic_turns,
+        }
+        if system:
+            payload["system"] = system
+        anthropic_tools = anthropic_tool_schema(tools or [])
+        if anthropic_tools:
+            payload["tools"] = anthropic_tools
+            payload["tool_choice"] = {"type": "auto"}
+        splitter = ThinkingSplitter(emit_thinking=thinking_enabled)
+        tool_blocks: dict[int, dict[str, str]] = {}
+        active_block_index = -1
+        try:
+            for event in post_anthropic_sse(f"{self.config.url.rstrip('/')}/v1/messages", payload, headers=provider_headers(self.config, accept="text/event-stream")):
+                if should_cancel and should_cancel():
+                    break
+                kind = str(event.get("type") or "")
+                if kind == "content_block_start":
+                    index = int(event.get("index") or 0)
+                    block = event.get("content_block") if isinstance(event.get("content_block"), dict) else {}
+                    if block.get("type") == "tool_use":
+                        active_block_index = index
+                        tool_blocks[index] = {
+                            "id": str(block.get("id") or ""),
+                            "name": str(block.get("name") or ""),
+                            "arguments": "",
+                        }
+                    continue
+                if kind == "content_block_delta":
+                    delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
+                    delta_type = str(delta.get("type") or "")
+                    if delta_type == "text_delta" and delta.get("text"):
+                        yield from splitter.feed(str(delta.get("text")))
+                    elif delta_type == "thinking_delta" and thinking_enabled and delta.get("thinking"):
+                        yield StreamChunk("thinking", str(delta.get("thinking")))
+                    elif delta_type == "input_json_delta":
+                        index = int(event.get("index") if isinstance(event.get("index"), int) else active_block_index)
+                        if index in tool_blocks:
+                            tool_blocks[index]["arguments"] += str(delta.get("partial_json") or "")
+                    continue
+                if kind == "message_stop":
+                    break
+        except urllib.error.HTTPError as error:
+            if provider_image_error(error, messages):
+                yield StreamChunk("response", image_rejected_message(self.config.type, model, error))
+                return
+            raise
+        if not should_cancel or not should_cancel():
+            yield from splitter.flush()
+            for index in sorted(tool_blocks):
+                block = tool_blocks[index]
+                if block.get("name"):
+                    yield StreamChunk("tool_call", "", StreamToolCall(name=block["name"], arguments=block.get("arguments", ""), call_id=block.get("id", "")))
+
+    def _stream_codex(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> Iterable[StreamChunk]:
+        ok, message = codex_health()
+        if not ok:
+            raise ValueError(message)
+        credentials = get_credentials(CODEX_SECRET_REF)
+        access_token = credentials.get("access_token", "")
+        account_id = credentials.get("account_id") or "ChatGPT"
+        instructions, input_items = codex_response_payload(messages)
+        payload = {
+            "model": codex_model(model),
+            "store": False,
+            "stream": True,
+            "instructions": instructions,
+            "input": input_items,
+            "text": {"verbosity": "medium"},
+            "include": ["reasoning.encrypted_content"],
+            "prompt_cache_key": str(uuid.uuid4()),
+        }
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "chatgpt-account-id": account_id,
+            "originator": "bitbuddy",
+            "OpenAI-Beta": "responses=experimental",
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+            "session_id": str(uuid.uuid4()),
+            "User-Agent": "BitBuddy/0.1",
+        }
+        try:
+            for event in post_sse_json(CODEX_BACKEND_URL, payload, headers=headers):
+                if should_cancel and should_cancel():
+                    break
+                text = codex_event_text(event)
+                if text:
+                    yield StreamChunk("response", text)
+        except urllib.error.HTTPError as error:
+            raise ValueError(codex_http_error_message(error)) from error
 
 
 def accumulate_tool_call_fragment(accumulator: dict[int, dict[str, str]], fragment: dict[str, Any]) -> None:
@@ -474,14 +683,26 @@ def provider_health_endpoints(config: ProviderConfig) -> list[str]:
         return [f"{config.url.rstrip('/')}/api/tags"]
     if config.type == "llama.cpp":
         return [f"{config.url.rstrip('/')}/health", f"{config.url.rstrip('/')}/v1/models"]
+    if config.type in {"openai", "anthropic"}:
+        return [f"{config.url.rstrip('/')}/v1/models"]
     return [config.url]
 
 
-def post_json_lines(url: str, payload: dict[str, object]) -> Iterable[dict[str, object]]:
+def provider_headers(config: ProviderConfig, *, accept: str = "application/json") -> dict[str, str]:
+    headers = {"Content-Type": "application/json", "Accept": accept}
+    if config.type == "openai" and config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+    elif config.type == "anthropic" and config.api_key:
+        headers["x-api-key"] = config.api_key
+        headers["anthropic-version"] = "2023-06-01"
+    return headers
+
+
+def post_json_lines(url: str, payload: dict[str, object], headers: dict[str, str] | None = None) -> Iterable[dict[str, object]]:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers=headers or {"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=STREAM_READ_TIMEOUT_SECONDS) as response:
@@ -491,19 +712,19 @@ def post_json_lines(url: str, payload: dict[str, object]) -> Iterable[dict[str, 
                 yield json.loads(line)
 
 
-def post_json(url: str, payload: dict[str, object], timeout: int = 10) -> dict[str, object]:
+def post_json(url: str, payload: dict[str, object], timeout: int = 10, headers: dict[str, str] | None = None) -> dict[str, object]:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers=headers or {"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8") or "{}")
 
 
-def get_json(url: str) -> dict[str, object]:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+def get_json(url: str, headers: dict[str, str] | None = None) -> dict[str, object]:
+    request = urllib.request.Request(url, headers=headers or {"Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=10) as response:
         return json.loads(response.read().decode("utf-8") or "{}")
 
@@ -532,11 +753,11 @@ def first_int(*values: object) -> int | None:
     return None
 
 
-def post_sse_json(url: str, payload: dict[str, object]) -> Iterable[dict[str, object]]:
+def post_sse_json(url: str, payload: dict[str, object], headers: dict[str, str] | None = None) -> Iterable[dict[str, object]]:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+        headers=headers or {"Content-Type": "application/json", "Accept": "text/event-stream"},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=STREAM_READ_TIMEOUT_SECONDS) as response:
@@ -548,6 +769,38 @@ def post_sse_json(url: str, payload: dict[str, object]) -> Iterable[dict[str, ob
             if data == "[DONE]":
                 break
             yield json.loads(data)
+
+
+def post_anthropic_sse(url: str, payload: dict[str, object], headers: dict[str, str]) -> Iterable[dict[str, object]]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=STREAM_READ_TIMEOUT_SECONDS) as response:
+        event_name = ""
+        data_lines: list[str] = []
+        for raw_line in response:
+            line = raw_line.decode("utf-8").strip()
+            if not line:
+                if data_lines:
+                    try:
+                        event = json.loads("\n".join(data_lines))
+                    except json.JSONDecodeError:
+                        event = {}
+                    if event_name and isinstance(event, dict) and "type" not in event:
+                        event["type"] = event_name
+                    yield event
+                event_name = ""
+                data_lines = []
+                continue
+            if line.startswith("event:"):
+                event_name = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                data = line.removeprefix("data:").strip()
+                if data and data != "[DONE]":
+                    data_lines.append(data)
 
 
 def ollama_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -586,6 +839,183 @@ def openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    system_parts: list[str] = []
+    turns: list[dict[str, Any]] = []
+    for message in messages:
+        role = str(message.get("role") or "user")
+        content = str(message.get("content") or "")
+        if role == "system":
+            if content.strip():
+                system_parts.append(content.strip())
+            continue
+        if role not in {"user", "assistant"}:
+            role = "user"
+        parts: list[dict[str, Any]] = []
+        if content.strip():
+            parts.append({"type": "text", "text": content})
+        for image in image_attachments(message):
+            data = str(image.get("data") or "")
+            if not data:
+                continue
+            parts.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": str(image.get("mime_type") or "image/png"),
+                        "data": data,
+                    },
+                }
+            )
+        if not parts:
+            continue
+        turns.append({"role": role, "content": parts})
+    if not turns:
+        turns.append({"role": "user", "content": [{"type": "text", "text": "Hello."}]})
+    return "\n\n".join(system_parts), merge_anthropic_turns(turns)
+
+
+def merge_anthropic_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    for turn in turns:
+        if merged and merged[-1].get("role") == turn.get("role"):
+            previous = merged[-1].get("content")
+            current = turn.get("content")
+            if isinstance(previous, list) and isinstance(current, list):
+                previous.extend(current)
+                continue
+        merged.append(turn)
+    return merged
+
+
+def anthropic_tool_schema(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        schema = function.get("parameters") if isinstance(function.get("parameters"), dict) else {"type": "object", "properties": {}}
+        result.append(
+            {
+                "name": name,
+                "description": str(function.get("description") or ""),
+                "input_schema": schema,
+            }
+        )
+    return result
+
+
+def codex_health() -> tuple[bool, str]:
+    credentials = get_credentials(CODEX_SECRET_REF)
+    if credentials.get("access_token") and credentials.get("refresh_token"):
+        account = credentials.get("account_id") or "ChatGPT"
+        return True, f"Codex authorized for BitBuddy as {account}."
+    return False, "Codex is not authorized for BitBuddy. Use Settings to connect Codex."
+
+
+def codex_response_payload(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    instructions: list[str] = [
+        "You are BitBuddy's Codex-backed model provider.",
+        "Answer directly unless the user asks for code changes.",
+    ]
+    input_items: list[dict[str, Any]] = []
+    message_index = 0
+    for message in messages:
+        role = str(message.get("role") or "user")
+        content = str(message.get("content") or "")
+        if role == "system":
+            if content.strip():
+                instructions.append(content.strip())
+            continue
+        if role not in {"user", "assistant"}:
+            role = "user"
+        parts: list[dict[str, Any]] = []
+        if content.strip():
+            parts.append({"type": "input_text" if role == "user" else "output_text", "text": content, **({"annotations": []} if role == "assistant" else {})})
+        for image in image_attachments(message):
+            data = str(image.get("data") or "")
+            if not data or role != "user":
+                continue
+            mime_type = str(image.get("mime_type") or "image/png")
+            parts.append({"type": "input_image", "detail": "auto", "image_url": f"data:{mime_type};base64,{data}"})
+        if parts:
+            if role == "assistant":
+                input_items.append({"type": "message", "role": "assistant", "status": "completed", "id": f"msg_{message_index}", "content": parts})
+            else:
+                input_items.append({"role": "user", "content": parts})
+            message_index += 1
+    if not input_items:
+        input_items.append({"role": "user", "content": [{"type": "input_text", "text": "Hello."}]})
+    return "\n\n".join(instructions), input_items
+
+
+def codex_event_text(event: dict[str, Any]) -> str:
+    event_type = str(event.get("type") or "")
+    if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+        return str(event.get("delta") or "")
+    if event_type in {"response.failed", "error"}:
+        error = event.get("error") if isinstance(event.get("error"), dict) else event
+        message = error.get("message") if isinstance(error, dict) else ""
+        raise ValueError(str(message or "Codex response failed."))
+    if event_type in {"response.completed", "response.done", "response.incomplete"}:
+        return ""
+    return ""
+
+
+def codex_http_error_message(error: urllib.error.HTTPError) -> str:
+    detail = http_error_detail(error)
+    suffix = f": {detail}" if detail else ""
+    return f"Codex request failed ({error.code}){suffix}"
+
+
+def codex_model(model: str) -> str:
+    clean = (model or "").strip()
+    if clean in CODEX_CHATGPT_MODELS:
+        return clean
+    if clean.endswith("-mini"):
+        return "gpt-5.4-mini"
+    if "gpt-5.5" in clean:
+        return "gpt-5.5"
+    if "gpt-5" in clean:
+        return CODEX_DEFAULT_MODEL
+    return CODEX_DEFAULT_MODEL
+
+
+def codex_context_window(model: str) -> int:
+    if codex_model(model) in CODEX_CHATGPT_MODELS:
+        return 272000
+    return 272000
+
+
+def openai_context_window(model: str) -> int | None:
+    name = (model or "").lower()
+    if "gpt-4.1" in name or "gpt-5" in name:
+        return 1000000
+    if "gpt-4o" in name or "o3" in name or "o4" in name:
+        return 128000
+    return None
+
+
+def text_from_response_output(output: Any) -> str:
+    if not isinstance(output, list):
+        return ""
+    parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+    return "".join(parts)
+
+
 def image_attachments(message: dict[str, Any]) -> list[dict[str, Any]]:
     attachments = message.get("attachments") if isinstance(message.get("attachments"), list) else []
     return [attachment for attachment in attachments if isinstance(attachment, dict)]
@@ -593,6 +1023,10 @@ def image_attachments(message: dict[str, Any]) -> list[dict[str, Any]]:
 
 def messages_have_image_attachments(messages: list[dict[str, Any]]) -> bool:
     return any(image_attachments(message) for message in messages)
+
+
+def provider_image_error(error: urllib.error.HTTPError, messages: list[dict[str, Any]]) -> bool:
+    return error.code in {400, 413, 415, 422, 500, 501} and messages_have_image_attachments(messages)
 
 
 def image_rejected_message(provider: str, model: str, error: urllib.error.HTTPError) -> str:

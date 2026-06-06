@@ -54,6 +54,14 @@ def build_autonomy_context(chat_id: str, consolidation_result: dict[str, object]
             for note in notes:
                 lines.append(f"- {note.kind} priority={note.priority}: {note.text}")
             lines.append("")
+    if config.personality.bitbuddy_likes or config.personality.bitbuddy_dislikes:
+        lines.extend(["[User-Selected BitBuddy Quirks]"])
+        if config.personality.bitbuddy_likes:
+            lines.append("Likes/curiosity seeds: " + "; ".join(config.personality.bitbuddy_likes))
+        if config.personality.bitbuddy_dislikes:
+            lines.append("Dislikes/aversions: " + "; ".join(config.personality.bitbuddy_dislikes))
+        lines.append("Use these lightly for flavor or web curiosity only when they add signal; never force them into unrelated work.")
+        lines.append("")
     projects = list_projects()
     lines.append("[Registered Projects]")
     if not projects:

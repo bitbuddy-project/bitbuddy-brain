@@ -397,10 +397,10 @@
 	}
 
 	.autonomy-card {
-		--page-accent: #fb7185;
-		--page-soft: rgba(251, 113, 133, 0.12);
-		--page-border: rgba(251, 113, 133, 0.25);
-		--page-glow: rgba(251, 113, 133, 0.14);
+		--page-accent: var(--accent);
+		--page-soft: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+		--page-border: color-mix(in srgb, var(--accent) 20%, var(--border));
+		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
 
 		width: 100%;
 		height: 100%;
@@ -413,7 +413,7 @@
 		background:
 			linear-gradient(135deg, var(--glass-overlay), transparent 22rem),
 			radial-gradient(circle at top right, var(--page-glow), transparent 30rem),
-			radial-gradient(circle at bottom left, rgba(110, 231, 183, 0.055), transparent 34rem),
+			radial-gradient(circle at bottom left, color-mix(in srgb, var(--success) 5.5%, transparent), transparent 34rem),
 			var(--panel);
 		box-shadow: var(--shadow-chat);
 		overflow: hidden;
@@ -643,15 +643,15 @@
 	}
 
 	.lifecycle-chip.quiet {
-		border-color: rgba(251, 191, 36, 0.35);
-		background: rgba(251, 191, 36, 0.08);
+		border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+		background: color-mix(in srgb, var(--warning) 8%, transparent);
 	}
 
 	.timeline-error {
 		padding: 0.8rem 1rem;
-		border: 1px solid rgba(248, 113, 113, 0.35);
+		border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
 		border-radius: 1rem;
-		background: rgba(248, 113, 113, 0.1);
+		background: color-mix(in srgb, var(--danger) 10%, transparent);
 		color: var(--danger);
 	}
 
@@ -818,7 +818,7 @@
 		border: 1px solid var(--border);
 		border-radius: 1.2rem;
 		background:
-			linear-gradient(135deg, rgba(110, 231, 183, 0.06), transparent 60%),
+			linear-gradient(135deg, color-mix(in srgb, var(--success) 6%, transparent), transparent 60%),
 			var(--surface-card);
 		box-shadow: var(--shadow-panel);
 	}
@@ -849,18 +849,18 @@
 	}
 
 	.delivery-card.active {
-		border-color: rgba(245, 158, 11, 0.35);
-		background: rgba(245, 158, 11, 0.08);
+		border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+		background: color-mix(in srgb, var(--warning) 8%, transparent);
 	}
 
 	.delivery-card.completed {
-		border-color: rgba(110, 231, 183, 0.28);
-		background: rgba(110, 231, 183, 0.07);
+		border-color: color-mix(in srgb, var(--success) 28%, transparent);
+		background: color-mix(in srgb, var(--success) 7%, transparent);
 	}
 
 	.delivery-card.failed {
-		border-color: rgba(255, 107, 122, 0.32);
-		background: rgba(255, 107, 122, 0.06);
+		border-color: color-mix(in srgb, var(--danger) 32%, transparent);
+		background: color-mix(in srgb, var(--danger) 6%, transparent);
 	}
 
 	.delivery-status-row {
@@ -883,17 +883,17 @@
 	}
 
 	.delivery-card.active .delivery-status {
-		border-color: rgba(245, 158, 11, 0.42);
+		border-color: color-mix(in srgb, var(--warning) 42%, transparent);
 		color: var(--warning);
 	}
 
 	.delivery-card.completed .delivery-status {
-		border-color: rgba(110, 231, 183, 0.34);
+		border-color: color-mix(in srgb, var(--success) 34%, transparent);
 		color: var(--success);
 	}
 
 	.delivery-card.failed .delivery-status {
-		border-color: rgba(255, 107, 122, 0.38);
+		border-color: color-mix(in srgb, var(--danger) 38%, transparent);
 		color: var(--danger);
 	}
 
@@ -1175,8 +1175,8 @@
 		overflow: hidden;
 	}
 
-	.subagent-card.completed { border-color: rgba(110, 231, 183, 0.22); }
-	.subagent-card.failed { border-color: rgba(255, 107, 122, 0.28); }
+	.subagent-card.completed { border-color: color-mix(in srgb, var(--success) 22%, transparent); }
+	.subagent-card.failed { border-color: color-mix(in srgb, var(--danger) 28%, transparent); }
 	.subagent-card.running { border-color: var(--page-border); }
 
 	.subagent-header {
@@ -1210,8 +1210,8 @@
 		color: var(--text-soft);
 	}
 
-	.run-status-completed { border-color: rgba(110,231,183,0.34); color: var(--success); }
-	.run-status-failed { border-color: rgba(255,107,122,0.38); color: var(--danger); }
+	.run-status-completed { border-color: color-mix(in srgb, var(--success) 34%, transparent); color: var(--success); }
+	.run-status-failed { border-color: color-mix(in srgb, var(--danger) 38%, transparent); color: var(--danger); }
 	.run-status-running { border-color: var(--page-border); color: var(--page-accent); }
 
 	.subagent-task {
@@ -1299,9 +1299,9 @@
 
 	.subagent-error {
 		padding: 0.6rem 0.8rem;
-		border: 1px solid rgba(255, 107, 122, 0.32);
+		border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
 		border-radius: 0.8rem;
-		background: rgba(255, 107, 122, 0.07);
+		background: color-mix(in srgb, var(--danger) 7%, transparent);
 		color: var(--danger);
 		font-size: 0.85rem;
 	}

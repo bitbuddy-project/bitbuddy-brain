@@ -12,7 +12,9 @@ sys.path.insert(0, str(REPO_ROOT / "brain"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-artifacts-test-")
 
 from bitbuddy.paths import ARTIFACTS_DIR  # noqa: E402
-from bitbuddy.chats.runtime import should_repair_unbacked_artifact_response  # noqa: E402
+from bitbuddy.chats.runtime import grant_approved_tool_permission, should_repair_unbacked_artifact_response, tool_effect_key  # noqa: E402
+from bitbuddy.calendar.permissions import permission_state, set_permission  # noqa: E402
+from bitbuddy.calendar.store import ensure_default_calendar  # noqa: E402
 from bitbuddy.tools import ToolCall, ToolExecutor, ToolResult, default_tool_registry, needs_permission  # noqa: E402
 
 
@@ -70,6 +72,81 @@ class ArtifactToolTest(unittest.TestCase):
 
         self.assertTrue(required)
         self.assertIn("outside BitBuddy's managed artifacts workspace", reason)
+
+    def test_calendar_create_event_requires_confirmation_when_scope_is_ask(self) -> None:
+        account, _calendar = ensure_default_calendar("UTC")
+        set_permission(account.id, "create", "ask")
+        call = ToolCall("calendar_create_event", {"title": "Doctor", "start": "2026-06-08T09:00", "end": "2026-06-08T10:00"})
+
+        required, reason = needs_permission(call, default_tool_registry().definition(call.tool))
+
+        self.assertTrue(required)
+        self.assertIn("create calendar events", reason)
+
+    def test_calendar_permission_approval_grants_scope(self) -> None:
+        account, _calendar = ensure_default_calendar("UTC")
+        set_permission(account.id, "create", "ask")
+
+        grant_approved_tool_permission("calendar_create_event")
+
+        self.assertEqual(permission_state(account.id, "create"), "granted")
+
+    def test_calendar_create_effect_key_ignores_non_identifying_fields(self) -> None:
+        first = ToolCall(
+            "calendar_create_event",
+            {
+                "title": "Doctor Appointment - Dr. Bailey",
+                "start": "2026-06-08T14:00:00-03:00",
+                "end": "2026-06-08T15:00:00-03:00",
+                "location": "Regency Park Family Practice",
+                "description": "Reminder set for 1 hour before appointment.",
+            },
+        )
+        second = ToolCall(
+            "calendar_create_event",
+            {
+                "title": " doctor appointment   dr bailey ",
+                "start": "2026-06-08T17:00:00+00:00",
+                "end": "2026-06-08T18:00:00+00:00",
+                "location": "Regency Park Family Practice",
+                "description": "Duplicate attempt with different wording.",
+            },
+        )
+
+        self.assertEqual(tool_effect_key(first), tool_effect_key(second))
+
+    def test_calendar_create_event_is_idempotent_for_same_slot(self) -> None:
+        account, _calendar = ensure_default_calendar("UTC")
+        set_permission(account.id, "create", "granted")
+        first = self.executor.execute(
+            ToolCall(
+                "calendar_create_event",
+                {
+                    "title": "Unique Dentist Appointment",
+                    "start": "2026-07-10T09:00:00",
+                    "end": "2026-07-10T10:00:00",
+                    "location": "Clinic A",
+                    "description": "First attempt.",
+                },
+            )
+        )
+        second = self.executor.execute(
+            ToolCall(
+                "calendar_create_event",
+                {
+                    "title": "Unique Dentist Appointment",
+                    "start": "2026-07-10T09:00:00",
+                    "end": "2026-07-10T10:00:00",
+                    "location": "Clinic A",
+                    "description": "Second attempt.",
+                },
+            )
+        )
+
+        self.assertTrue(first.ok, first.error)
+        self.assertTrue(second.ok, second.error)
+        self.assertEqual(first.arguments_summary["event_id"], second.arguments_summary["event_id"])
+        self.assertIn("already exists", second.summary)
 
     def test_home_file_write_requires_permission_but_resolves_home_path(self) -> None:
         home_file = Path.home() / "smiley.svg"

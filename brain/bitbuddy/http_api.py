@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import queue
+import secrets as py_secrets
 import subprocess
+import threading
+import time
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
+import urllib.error
+import urllib.request
 
 from .chats.repository import (
     chat_summary_to_json,
@@ -34,7 +41,15 @@ from .chats.state import (
     active_chat_run,
     register_chat_run,
 )
-from .config import BitBuddyConfig, load_config, load_personality, update_autonomy_config, update_chat_config, update_dreaming_config, update_mcp_config, update_model_runtime_config, update_user_context, upsert_mcp_server
+from .config import BitBuddyConfig, ProviderConfig, load_config, load_personality, update_autonomy_config, update_calendar_config, update_chat_config, update_dreaming_config, update_email_config, update_mcp_config, update_model_runtime_config, update_personality_config, update_user_context, upsert_mcp_server
+from .calendar.permissions import CALENDAR_SCOPES, CalendarPermissionRequired, all_permissions as calendar_permissions, set_permission as set_calendar_permission
+from .calendar.providers import EventDraft, EventPatch
+from .calendar.secrets import get_credentials, put_credentials, delete_credentials
+from .calendar.service import calendar_overview, create_event as calendar_create_event, delete_event as calendar_delete_event, modify_event as calendar_modify_event, user_timezone, view_events as calendar_view_events
+from .calendar.store import calendar_to_json, ensure_default_calendar, event_to_json, list_calendars as list_calendars_store
+from .email.models import mailbox_to_json, message_to_json, rule_to_json
+from .email.permissions import EMAIL_SCOPES, EmailPermissionRequired, all_permissions as email_permissions, set_permission as set_email_permission
+from .email.service import create_sender_trash_rule as email_create_sender_trash_rule, delete_rule as email_delete_rule, email_account_id, email_overview, list_mailboxes as email_list_mailboxes, list_messages as email_list_messages, list_rules as email_list_rules, read_message as email_read_message, search_messages as email_search_messages, trash_message as email_trash_message
 from .continuity import record_continuity_event
 from .personality import load_selected_personality, selected_personality_to_legacy_dict
 from .paths import APP_DIR, CONFIG_PATH, PERSONALITIES_DIR, PERSONALITY_PATH
@@ -48,8 +63,8 @@ from .memory.project import (
     register_project,
     unregister_project,
 )
-from .notifications import dismiss_notification, list_notifications, mark_all_notifications_read, mark_notification_read, notification_to_json, unread_notification_count
-from .self_model import add_self_journal, create_goal, get_self_state, list_goals, record_conversation_signal, update_goal, update_self_state
+from .notifications import dismiss_notification, list_notifications, mark_all_notifications_read, mark_notification_read, notification_to_json, subscribe_notifications, unread_notification_count, unsubscribe_notifications
+from .self_model import add_self_journal, create_goal, get_self_state, list_goals, record_conversation_signal, record_personality_quirks, update_goal, update_self_state
 from .prompt_builder import build_chat_messages, chat_context_usage, latest_user_message, title_from_text
 from .providers import ProviderClient
 from .utils import autonomy_activity, log_activity, permission_activity, project_to_json
@@ -63,6 +78,19 @@ from .managed_tools import computer_use_linux_status, install_computer_use_linux
 
 
 STREAM_HEARTBEAT_SECONDS = 15
+CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+CODEX_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
+CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
+CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback"
+CODEX_SCOPE = "openid profile email offline_access"
+CODEX_SECRET_REF = "provider:codex:oauth"
+CODEX_AUTH_FLOWS: dict[str, dict[str, str]] = {}
+GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+GMAIL_AUTH_FLOWS: dict[str, dict[str, str]] = {}
+GMAIL_OAUTH_DIAGNOSTICS: dict[str, str] = {}
+GMAIL_OAUTH_FLOW_TTL_SECONDS = 900
 
 
 class BitBuddyRequestHandler(BaseHTTPRequestHandler):
@@ -72,6 +100,30 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_common_headers()
         self.end_headers()
+
+    def handle_codex_callback(self) -> None:
+        params = parse_qs(urlparse(self.path).query)
+        code = (params.get("code") or [""])[0]
+        state = (params.get("state") or [""])[0]
+        try:
+            exchange_codex_code(code, state)
+        except ValueError as error:
+            self.send_html(codex_callback_html("Codex authorization failed", str(error), ok=False), status=HTTPStatus.BAD_REQUEST)
+            return
+        self.send_html(codex_callback_html("Codex connected", "BitBuddy is authorized for Codex. You can close this tab and return to Settings.", ok=True))
+
+    def handle_gmail_callback(self) -> None:
+        params = parse_qs(urlparse(self.path).query)
+        code = (params.get("code") or [""])[0]
+        state = (params.get("state") or [""])[0]
+        error = (params.get("error") or [""])[0]
+        error_description = (params.get("error_description") or [""])[0]
+        try:
+            complete_gmail_callback(code=code, state=state, google_error=error, google_error_description=error_description, callback_source="web")
+        except ValueError as error:
+            self.send_html(codex_callback_html("Gmail authorization failed", str(error), ok=False), status=HTTPStatus.BAD_REQUEST)
+            return
+        self.send_html(codex_callback_html("Gmail connected", "BitBuddy is authorized for Gmail read/search and Trash access. You can close this tab and return to Settings.", ok=True))
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
@@ -112,6 +164,18 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
             if path == "/provider/context":
                 self.send_json(ProviderClient(load_config().provider).context_window())
+                return
+
+            if path == "/provider/codex/status":
+                self.send_json(codex_oauth_status())
+                return
+
+            if path == "/provider/codex/callback":
+                self.handle_codex_callback()
+                return
+
+            if path == "/email/gmail/callback":
+                self.handle_gmail_callback()
                 return
 
             if path == "/projects":
@@ -162,6 +226,99 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
             if path == "/lifecycle/status":
                 self.send_json({"lifecycle": lifecycle_status()})
+                return
+
+            if path == "/calendar/overview":
+                self.send_json(calendar_overview())
+                return
+
+            if path == "/calendar/events":
+                params = parse_qs(urlparse(self.path).query)
+                range_str = params.get("range", [""])[0]
+                start = params.get("start", [""])[0]
+                end = params.get("end", [""])[0]
+                tz = user_timezone()
+                events = calendar_view_events(range_str=range_str, start=start, end=end, enforce=False)
+                self.send_json({"timezone": tz, "events": [event_to_json(event) for event in events]})
+                return
+
+            if path == "/calendar/calendars":
+                account, _calendar = ensure_default_calendar(user_timezone())
+                self.send_json({"calendars": [calendar_to_json(c) for c in list_calendars_store(account.id)]})
+                return
+
+            if path == "/calendar/permissions":
+                account, _calendar = ensure_default_calendar(user_timezone())
+                self.send_json({"scopes": list(CALENDAR_SCOPES), "permissions": calendar_permissions(account.id)})
+                return
+
+            if path == "/email/overview":
+                self.send_json(email_overview())
+                return
+
+            if path == "/email/gmail/status":
+                self.send_json(gmail_oauth_status())
+                return
+
+            if path == "/email/permissions":
+                account = email_account_id()
+                self.send_json({"scopes": list(EMAIL_SCOPES), "permissions": email_permissions(account)})
+                return
+
+            if path == "/email/rules":
+                self.send_json({"rules": [rule_to_json(rule) for rule in email_list_rules()]})
+                return
+
+            if path == "/email/mailboxes":
+                try:
+                    mailboxes = email_list_mailboxes(enforce=False)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"mailboxes": [mailbox_to_json(mailbox) for mailbox in mailboxes]})
+                return
+
+            if path == "/email/messages":
+                params = parse_qs(urlparse(self.path).query)
+                mailbox = params.get("mailbox", [""])[0]
+                try:
+                    limit = int(params.get("limit", ["25"])[0])
+                except ValueError:
+                    limit = 25
+                try:
+                    messages = email_list_messages(mailbox=mailbox, limit=limit, enforce=False)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"messages": [message_to_json(message) for message in messages]})
+                return
+
+            if path == "/email/search":
+                params = parse_qs(urlparse(self.path).query)
+                query = params.get("q", [""])[0]
+                mailbox = params.get("mailbox", [""])[0]
+                try:
+                    limit = int(params.get("limit", ["25"])[0])
+                except ValueError:
+                    limit = 25
+                try:
+                    messages = email_search_messages(query=query, mailbox=mailbox, limit=limit, enforce=False)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"messages": [message_to_json(message) for message in messages]})
+                return
+
+            if path == "/email/message":
+                params = parse_qs(urlparse(self.path).query)
+                message_id = params.get("id", [""])[0]
+                mailbox = params.get("mailbox", [""])[0]
+                try:
+                    message = email_read_message(message_id=message_id, mailbox=mailbox, enforce=False)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"message": message_to_json(message, include_body=True)})
                 return
 
             if path == "/dreams":
@@ -256,6 +413,10 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if path == "/notifications/stream":
+                self.stream_notifications()
+                return
+
             if path == "/chats":
                 params = parse_qs(urlparse(self.path).query)
                 try:
@@ -331,6 +492,35 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                     return
 
                 self.send_json({"project": project_to_json(project)}, status=HTTPStatus.CREATED)
+                return
+
+            if path == "/calendar/events":
+                body = self.read_json()
+                title = str(body.get("title") or "").strip()
+                start = str(body.get("start") or "").strip()
+                end = str(body.get("end") or "").strip()
+                if not title or not start or not end:
+                    self.send_json({"error": "title, start, and end are required."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                draft = EventDraft(
+                    title=title,
+                    start_at=start,
+                    end_at=end,
+                    description=str(body.get("description") or ""),
+                    location=str(body.get("location") or ""),
+                    all_day=bool(body.get("all_day", False)),
+                    attendees=[str(a) for a in body.get("attendees", []) if isinstance(a, str)],
+                    source="user",
+                )
+                try:
+                    event, conflicts = calendar_create_event(draft, enforce=False)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json(
+                    {"event": event_to_json(event), "conflicts": [event_to_json(c) for c in conflicts]},
+                    status=HTTPStatus.CREATED,
+                )
                 return
 
             if path == "/skills":
@@ -459,6 +649,31 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 self.permission(self.read_json())
                 return
 
+            if path == "/email/message/trash":
+                body = self.read_json()
+                message_id = str(body.get("message_id") or body.get("id") or "").strip()
+                mailbox = str(body.get("mailbox") or "").strip()
+                try:
+                    message = email_trash_message(message_id=message_id, mailbox=mailbox, enforce=True)
+                except (EmailPermissionRequired, ValueError) as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"message": message_to_json(message), "trashed": True})
+                return
+
+            if path == "/email/rules/sender-trash":
+                body = self.read_json()
+                sender = str(body.get("sender") or "").strip()
+                mailbox = str(body.get("mailbox") or "INBOX").strip()
+                apply_existing = bool(body.get("apply_existing", False))
+                try:
+                    rule, applied = email_create_sender_trash_rule(sender=sender, apply_existing=apply_existing, mailbox=mailbox)
+                except (EmailPermissionRequired, ValueError) as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"rule": rule_to_json(rule), "applied": applied}, status=HTTPStatus.CREATED)
+                return
+
             if path == "/chat/active":
                 body = self.read_json()
                 chat_id = body.get("chat_id") if isinstance(body.get("chat_id"), str) else ""
@@ -528,6 +743,13 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
             if path == "/chat/stream":
                 self.stream_chat(self.read_json())
+                return
+
+            if path == "/provider/models":
+                try:
+                    self.send_json({"models": draft_provider_client(self.read_json()).models()})
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
                 return
 
             if path == "/memory/episodes":
@@ -601,6 +823,54 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if path == "/provider/codex/login":
+                body = self.read_json()
+                self.send_json(start_codex_login(force=bool(body.get("force", False))))
+                return
+
+            if path == "/provider/codex/complete":
+                body = self.read_json()
+                try:
+                    code, state = parse_codex_authorization_input(str(body.get("input") or ""))
+                    exchange_codex_code(code, state)
+                except ValueError as error:
+                    self.send_json({"ok": False, "connected": False, "message": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json(codex_oauth_status())
+                return
+
+            if path == "/provider/codex/logout":
+                delete_credentials(CODEX_SECRET_REF)
+                self.send_json({"ok": True, "message": "Codex authorization removed from BitBuddy."})
+                return
+
+            if path == "/email/gmail/login":
+                body = self.read_json()
+                self.send_json(start_gmail_login(force=bool(body.get("force", False))))
+                return
+
+            if path == "/email/gmail/open-clean-firefox":
+                body = self.read_json()
+                self.send_json(open_gmail_clean_firefox(force=bool(body.get("force", False))))
+                return
+
+            if path == "/email/gmail/complete":
+                body = self.read_json()
+                try:
+                    code, state = parse_gmail_authorization_input(str(body.get("input") or ""))
+                    complete_gmail_callback(code=code, state=state, callback_source="manual")
+                except ValueError as error:
+                    self.send_json({"ok": False, "connected": False, "message": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json(gmail_oauth_status())
+                return
+
+            if path == "/email/gmail/logout":
+                config = load_config().email
+                delete_credentials(config.gmail_token_ref)
+                self.send_json({"ok": True, "connected": False, "message": "Gmail authorization removed from BitBuddy."})
+                return
+
             self.send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
         except ClientDisconnected:
             return
@@ -625,6 +895,20 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(config_to_json(config))
                 return
 
+            if path == "/config/personality":
+                body = self.read_json()
+                config = update_personality_config(body)
+                try:
+                    record_personality_quirks(
+                        config.personality.id,
+                        list(config.personality.bitbuddy_likes),
+                        list(config.personality.bitbuddy_dislikes),
+                    )
+                except Exception:
+                    pass
+                self.send_json(config_to_json(config))
+                return
+
             if path == "/config/dreaming":
                 body = self.read_json()
                 config = update_dreaming_config(body)
@@ -641,6 +925,86 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 config = update_autonomy_config(body)
                 self.send_json(config_to_json(config))
+                return
+
+            if path == "/config/calendar":
+                body = self.read_json()
+                config = update_calendar_config(body)
+                self.send_json(config_to_json(config))
+                return
+
+            if path == "/config/email":
+                body = self.read_json()
+                password = str(body.pop("password", "") or "")
+                gmail_client_secret = str(body.pop("gmail_client_secret", "") or "")
+                if password:
+                    ref = str(body.get("credentials_ref") or "").strip()
+                    if not ref:
+                        identity = str(body.get("email_address") or body.get("username") or "default").strip().casefold() or "default"
+                        ref = f"email:{identity}:imap"
+                    put_credentials(ref, {"password": password})
+                    body["credentials_ref"] = ref
+                if gmail_client_secret:
+                    ref = str(body.get("gmail_credentials_ref") or "").strip()
+                    if not ref:
+                        identity = str(body.get("email_address") or "default").strip().casefold() or "default"
+                        ref = f"email:gmail:{identity}:client"
+                    put_credentials(ref, {"client_secret": gmail_client_secret})
+                    body["gmail_credentials_ref"] = ref
+                if str(body.get("provider") or "").strip().lower() == "gmail" and not str(body.get("gmail_token_ref") or "").strip():
+                    identity = str(body.get("email_address") or "default").strip().casefold() or "default"
+                    body["gmail_token_ref"] = f"email:gmail:{identity}:tokens"
+                config = update_email_config(body)
+                self.send_json(config_to_json(config))
+                return
+
+            if path == "/calendar/permissions":
+                body = self.read_json()
+                scope = str(body.get("scope") or "")
+                state = str(body.get("state") or "")
+                account, _calendar = ensure_default_calendar(user_timezone())
+                try:
+                    permissions = set_calendar_permission(account.id, scope, state)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"permissions": permissions})
+                return
+
+            if path == "/email/permissions":
+                body = self.read_json()
+                scope = str(body.get("scope") or "")
+                state = str(body.get("state") or "")
+                account = email_account_id()
+                try:
+                    permissions = set_email_permission(account, scope, state)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"permissions": permissions})
+                return
+
+            if path.startswith("/calendar/events/"):
+                event_id = unquote(path.removeprefix("/calendar/events/").strip("/"))
+                if not event_id or "/" in event_id:
+                    self.send_json({"error": "Invalid event id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                body = self.read_json()
+                patch = EventPatch(
+                    title=str(body["title"]) if "title" in body else None,
+                    start_at=str(body["start"]) if "start" in body else None,
+                    end_at=str(body["end"]) if "end" in body else None,
+                    description=str(body["description"]) if "description" in body else None,
+                    location=str(body["location"]) if "location" in body else None,
+                    all_day=bool(body["all_day"]) if "all_day" in body else None,
+                    status=str(body["status"]) if "status" in body else None,
+                )
+                try:
+                    event, conflicts = calendar_modify_event(event_id, patch, enforce=False)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json({"event": event_to_json(event), "conflicts": [event_to_json(c) for c in conflicts]})
                 return
 
             if path == "/config/mcp":
@@ -733,6 +1097,30 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
             if path.startswith("/projects/"):
                 project_id = unquote(path.removeprefix("/projects/").strip("/"))
                 deleted = unregister_project(project_id)
+                self.send_json({"deleted": deleted}, status=HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
+                return
+
+            if path.startswith("/calendar/events/"):
+                event_id = unquote(path.removeprefix("/calendar/events/").strip("/"))
+                if not event_id or "/" in event_id:
+                    self.send_json({"error": "Invalid event id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    event = calendar_delete_event(event_id, enforce=False)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json({"deleted": True, "event": event_to_json(event)})
+                return
+
+            if path.startswith("/email/rules/"):
+                raw_id = unquote(path.removeprefix("/email/rules/").strip("/"))
+                try:
+                    rule_id = int(raw_id)
+                except ValueError:
+                    self.send_json({"error": "Invalid email rule id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                deleted = email_delete_rule(rule_id)
                 self.send_json({"deleted": deleted}, status=HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
                 return
 
@@ -902,6 +1290,26 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
         finally:
             run.unsubscribe(subscriber)
 
+    def stream_notifications(self) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_common_headers(content_type="text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+
+        subscriber = subscribe_notifications()
+        try:
+            while True:
+                try:
+                    event = subscriber.get(timeout=STREAM_HEARTBEAT_SECONDS)
+                except queue.Empty:
+                    self.write_sse({"kind": "heartbeat"})
+                    continue
+                self.write_sse(event)
+        except ClientDisconnected:
+            return
+        finally:
+            unsubscribe_notifications(subscriber)
+
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
 
@@ -919,6 +1327,17 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
         self.send_common_headers(content_type="application/json")
         self.send_header("Content-Length", str(len(encoded)))
 
+        try:
+            self.end_headers()
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionResetError) as error:
+            raise ClientDisconnected() from error
+
+    def send_html(self, html: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+        encoded = html.encode("utf-8")
+        self.send_response(status)
+        self.send_common_headers(content_type="text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
         try:
             self.end_headers()
             self.wfile.write(encoded)
@@ -995,7 +1414,10 @@ def config_to_json(config: BitBuddyConfig) -> dict[str, Any]:
             "type": config.provider.type,
             "url": config.provider.url,
             "model": config.provider.model,
+            "has_api_key": config.provider.has_api_key,
         },
+        "providers": [provider_to_json(provider) for provider in config.providers],
+        "active_provider": config.active_provider,
         "runtime": {
             "project_scan_interval_seconds": config.project_scan_interval_seconds,
         },
@@ -1060,6 +1482,40 @@ def config_to_json(config: BitBuddyConfig) -> dict[str, Any]:
             "low_priority_stale_intention_days": config.dreaming.low_priority_stale_intention_days,
             "self_note_injection_enabled": config.dreaming.self_note_injection_enabled,
         },
+        "calendar": {
+            "enabled": config.calendar.enabled,
+            "default_provider": config.calendar.default_provider,
+            "reminder_upcoming_minutes": config.calendar.reminder_upcoming_minutes,
+            "reminder_starting_soon_minutes": config.calendar.reminder_starting_soon_minutes,
+            "urgent_interrupts_enabled": config.calendar.urgent_interrupts_enabled,
+            "urgent_interrupt_persistent": config.calendar.urgent_interrupt_persistent,
+            "conflict_warnings_enabled": config.calendar.conflict_warnings_enabled,
+            "free_day_summary_enabled": config.calendar.free_day_summary_enabled,
+            "chat_nudges_enabled": config.calendar.chat_nudges_enabled,
+            "scheduler_tick_seconds": config.calendar.scheduler_tick_seconds,
+            "holidays_enabled": config.calendar.holidays_enabled,
+            "holidays_country": config.calendar.holidays_country,
+        },
+        "email": {
+            "enabled": config.email.enabled,
+            "provider": config.email.provider,
+            "account_label": config.email.account_label,
+            "email_address": config.email.email_address,
+            "imap_host": config.email.imap_host,
+            "imap_port": config.email.imap_port,
+            "imap_security": config.email.imap_security,
+            "username": config.email.username,
+            "credentials_ref": config.email.credentials_ref,
+            "gmail_client_id": config.email.gmail_client_id,
+            "gmail_credentials_ref": config.email.gmail_credentials_ref,
+            "gmail_token_ref": config.email.gmail_token_ref,
+            "gmail_redirect_uri": config.email.gmail_redirect_uri,
+            "default_mailbox": config.email.default_mailbox,
+            "max_preview_messages": config.email.max_preview_messages,
+            "has_password": bool(config.email.credentials_ref),
+            "has_gmail_client_secret": bool(get_credentials(config.email.gmail_credentials_ref).get("client_secret")),
+            "gmail_connected": bool(get_credentials(config.email.gmail_token_ref).get("refresh_token")),
+        },
         "presentation": {
             "style": config.presentation.style,
             "pronouns": config.presentation.pronouns,
@@ -1071,10 +1527,477 @@ def config_to_json(config: BitBuddyConfig) -> dict[str, Any]:
             "expressiveness": config.personality.expressiveness,
             "proactivity": config.personality.proactivity,
             "quirk_frequency": config.personality.quirk_frequency,
+            "bitbuddy_likes": list(config.personality.bitbuddy_likes),
+            "bitbuddy_dislikes": list(config.personality.bitbuddy_dislikes),
             "display_name": selected_personality.display_name,
             "dislikes": selected_personality.dislikes,
         },
     }
+
+
+def provider_to_json(provider: Any) -> dict[str, Any]:
+    return {
+        "key": provider.key,
+        "type": provider.type,
+        "url": provider.url,
+        "model": provider.model,
+        "has_api_key": provider.has_api_key,
+    }
+
+
+def draft_provider_client(body: dict[str, Any]) -> ProviderClient:
+    provider_type = str(body.get("type") or "").strip()
+    if not provider_type:
+        raise ValueError("Provider type is required.")
+    config = load_config()
+    existing = next((provider for provider in config.providers if provider.type == provider_type), None)
+    api_key = str(body.get("api_key") or "").strip() or (existing.api_key if existing else "")
+    api_key_ref = existing.api_key_ref if existing else ""
+    return ProviderClient(
+        ProviderConfig(
+            key=str(body.get("key") or provider_type),
+            type=provider_type,
+            url=str(body.get("url") or (existing.url if existing else "")).strip(),
+            model=str(body.get("model") or (existing.model if existing else "")).strip(),
+            api_key=api_key,
+            api_key_ref=api_key_ref,
+            has_api_key=bool(api_key or (existing.has_api_key if existing else False)),
+        )
+    )
+
+
+def start_codex_login(force: bool = False) -> dict[str, Any]:
+    status = codex_oauth_status()
+    if status.get("ok") and not force:
+        return {"ok": True, "connected": True, "message": status["message"], "auth_url": ""}
+    if force:
+        delete_credentials(CODEX_SECRET_REF)
+    verifier = token_urlsafe(64)
+    state = token_urlsafe(24)
+    CODEX_AUTH_FLOWS[state] = {"verifier": verifier, "created_at": str(time.time())}
+    auth_url = CODEX_AUTHORIZE_URL + "?" + urlencode(
+        {
+            "response_type": "code",
+            "client_id": CODEX_CLIENT_ID,
+            "redirect_uri": CODEX_REDIRECT_URI,
+            "scope": CODEX_SCOPE,
+            "code_challenge": pkce_challenge(verifier),
+            "code_challenge_method": "S256",
+            "state": state,
+            "id_token_add_organizations": "true",
+            "codex_cli_simplified_flow": "true",
+            "originator": "bitbuddy",
+        }
+    )
+    callback_error = start_codex_callback_server()
+    try:
+        subprocess.Popen(["xdg-open", auth_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+    message = "Open the ChatGPT authorization page, allow BitBuddy, then return here and check status."
+    callback_mode = "auto"
+    if callback_error:
+        message = f"Open the ChatGPT authorization page, approve access, then paste the final callback URL/code below. Auto-callback is unavailable: {callback_error}"
+        callback_mode = "manual"
+    return {
+        "ok": True,
+        "connected": False,
+        "message": message,
+        "auth_url": auth_url,
+        "callback_mode": callback_mode,
+        "device_code": "",
+        "log_excerpt": "",
+    }
+
+
+def gmail_redirect_uri(config: Any | None = None) -> str:
+    email_config = config or load_config().email
+    uri = str(getattr(email_config, "gmail_redirect_uri", "") or "").strip()
+    return uri or "http://localhost:8787/email/gmail/callback"
+
+
+def start_gmail_login(force: bool = False) -> dict[str, Any]:
+    cleanup_expired_gmail_auth_flows()
+    config = load_config().email
+    status = gmail_oauth_status()
+    redirect_uri = gmail_redirect_uri(config)
+    if status.get("ok") and not force:
+        return {"ok": True, "connected": True, "message": status["message"], "auth_url": "", "redirect_uri": redirect_uri}
+    if not config.gmail_client_id:
+        return {"ok": False, "connected": False, "message": "Enter a Google OAuth client ID in Email settings first.", "auth_url": "", "redirect_uri": redirect_uri}
+    if not get_credentials(config.gmail_credentials_ref).get("client_secret"):
+        return {"ok": False, "connected": False, "message": "Enter a Google OAuth client secret in Email settings first.", "auth_url": "", "redirect_uri": redirect_uri}
+    if not config.gmail_token_ref:
+        return {"ok": False, "connected": False, "message": "Save Email settings once before connecting Gmail.", "auth_url": "", "redirect_uri": redirect_uri}
+    if force:
+        delete_credentials(config.gmail_token_ref)
+    state = token_urlsafe(24)
+    prompt = "select_account consent"
+    access_type = "offline"
+    GMAIL_AUTH_FLOWS[state] = {
+        "created_at": str(time.time()),
+        "token_ref": config.gmail_token_ref,
+        "redirect_uri": redirect_uri,
+        "mode": "web",
+    }
+
+    auth_params = {
+        "response_type": "code",
+        "client_id": config.gmail_client_id,
+        "redirect_uri": redirect_uri,
+        "scope": GMAIL_SCOPE,
+        "access_type": access_type,
+        "prompt": prompt,
+        "state": state,
+    }
+    GMAIL_OAUTH_DIAGNOSTICS["last_auth_url_params"] = json.dumps(
+        {
+            "response_type": "code",
+            "redirect_uri": redirect_uri,
+            "scope": GMAIL_SCOPE,
+            "access_type": access_type,
+            "prompt": prompt,
+            "state_prefix": state[:8],
+            "mode": "web",
+        },
+        sort_keys=True,
+    )
+    GMAIL_OAUTH_DIAGNOSTICS["last_oauth_mode"] = "web"
+    log_activity(
+        "gmail.oauth.start",
+        "Starting Gmail OAuth flow",
+        {
+            "redirect_uri": redirect_uri,
+            "scope": GMAIL_SCOPE,
+            "prompt": prompt,
+            "access_type": access_type,
+            "state_prefix": state[:8],
+            "mode": "web",
+        },
+    )
+    auth_url = GOOGLE_AUTHORIZE_URL + "?" + urlencode(auth_params)
+    GMAIL_OAUTH_DIAGNOSTICS["last_redirect_uri"] = redirect_uri
+    GMAIL_OAUTH_DIAGNOSTICS["last_auth_started_at"] = str(int(time.time()))
+    GMAIL_OAUTH_DIAGNOSTICS["last_error"] = ""
+    GMAIL_OAUTH_DIAGNOSTICS["last_google_error"] = ""
+    GMAIL_OAUTH_DIAGNOSTICS["last_token_exchange_status"] = "not_started"
+    return {
+        "ok": True,
+        "connected": False,
+        "message": "Open the Google authorization page, allow Gmail read/search and Trash access, then return here and check status.",
+        "auth_url": auth_url,
+        "redirect_uri": redirect_uri,
+        "oauth_mode": "web",
+    }
+
+
+def cleanup_expired_gmail_auth_flows() -> None:
+    now = time.time()
+    expired: list[str] = []
+    for state, flow in GMAIL_AUTH_FLOWS.items():
+        try:
+            created_at = float(flow.get("created_at") or "0")
+        except ValueError:
+            created_at = 0
+        if created_at <= 0 or now - created_at > GMAIL_OAUTH_FLOW_TTL_SECONDS:
+            expired.append(state)
+    for state in expired:
+        GMAIL_AUTH_FLOWS.pop(state, None)
+
+
+def gmail_oauth_status() -> dict[str, Any]:
+    config = load_config().email
+    redirect_uri = gmail_redirect_uri(config)
+    tokens = get_credentials(config.gmail_token_ref)
+    connected = bool(tokens.get("refresh_token"))
+    if connected:
+        account = tokens.get("account_id") or config.email_address or "Gmail"
+        return {"ok": True, "connected": True, "message": f"Connected to Gmail as {account}.", "redirect_uri": redirect_uri, "diagnostics": dict(GMAIL_OAUTH_DIAGNOSTICS)}
+    configured = bool(config.gmail_client_id and get_credentials(config.gmail_credentials_ref).get("client_secret"))
+    message = "Gmail OAuth client is configured. Connect Gmail to authorize read/search and Trash access." if configured else "Gmail OAuth client is not configured."
+    return {"ok": False, "connected": False, "message": message, "redirect_uri": redirect_uri, "diagnostics": dict(GMAIL_OAUTH_DIAGNOSTICS)}
+
+
+def open_gmail_clean_firefox(force: bool = False) -> dict[str, Any]:
+    result = start_gmail_login(force=force)
+    auth_url = str(result.get("auth_url") or "")
+    if not auth_url:
+        return result
+    profile_dir = APP_DIR / "firefox-oauth-profile"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.Popen(["firefox", "--no-remote", "--profile", str(profile_dir), auth_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as error:
+        result["message"] = f"Could not open clean Firefox OAuth profile automatically: {error}. Copy the auth URL manually."
+        result["clean_firefox"] = False
+        return result
+    result["message"] = "Opened Gmail authorization in a clean BitBuddy Firefox profile. Approve access there, then return here and check status."
+    result["clean_firefox"] = True
+    result["profile_dir"] = str(profile_dir)
+    return result
+
+
+def complete_gmail_callback(*, code: str, state: str, google_error: str = "", google_error_description: str = "", callback_source: str = "") -> None:
+    GMAIL_OAUTH_DIAGNOSTICS["last_callback_seen"] = json.dumps(
+        {
+            "source": callback_source,
+            "has_code": bool(code),
+            "state_prefix": state[:8] if state else "",
+            "google_error": google_error[:120] if google_error else "",
+        },
+        sort_keys=True,
+    )
+    if google_error:
+        message = google_error_description or google_error
+        GMAIL_OAUTH_DIAGNOSTICS["last_google_error"] = message[:500]
+        GMAIL_OAUTH_DIAGNOSTICS["last_error"] = f"Google authorization failed: {message[:300]}"
+        raise ValueError(f"Google authorization failed: {message}")
+    exchange_gmail_code(code, state)
+
+
+def exchange_gmail_code(code: str, state: str) -> None:
+    if not code:
+        GMAIL_OAUTH_DIAGNOSTICS["last_error"] = "Missing authorization code."
+        GMAIL_OAUTH_DIAGNOSTICS["last_token_exchange_status"] = "missing_code"
+        raise ValueError("Missing authorization code.")
+    flow = GMAIL_AUTH_FLOWS.pop(state, None)
+    if not state or flow is None:
+        message = "Authorization state expired or did not match. Start Gmail authorization again from BitBuddy."
+        GMAIL_OAUTH_DIAGNOSTICS["last_error"] = message
+        GMAIL_OAUTH_DIAGNOSTICS["last_token_exchange_status"] = "state_mismatch"
+        raise ValueError(message)
+    try:
+        created_at = float(flow.get("created_at") or "0")
+    except ValueError:
+        created_at = 0
+    if created_at <= 0 or time.time() - created_at > GMAIL_OAUTH_FLOW_TTL_SECONDS:
+        message = "Authorization state expired. Start Gmail authorization again from BitBuddy."
+        GMAIL_OAUTH_DIAGNOSTICS["last_error"] = message
+        GMAIL_OAUTH_DIAGNOSTICS["last_token_exchange_status"] = "expired_state"
+        raise ValueError(message)
+    config = load_config().email
+    client_secret = get_credentials(config.gmail_credentials_ref).get("client_secret", "")
+    if not config.gmail_client_id or not client_secret:
+        raise ValueError("Gmail OAuth client ID/secret is not configured.")
+    payload_data = {
+        "grant_type": "authorization_code",
+        "client_id": config.gmail_client_id,
+        "code": code,
+        "redirect_uri": flow.get("redirect_uri") or gmail_redirect_uri(config),
+        "client_secret": client_secret,
+    }
+    GMAIL_OAUTH_DIAGNOSTICS["last_token_exchange_status"] = "started"
+    payload = urlencode(payload_data).encode("utf-8")
+    request = urllib.request.Request(GOOGLE_TOKEN_URL, data=payload, headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:500]
+        GMAIL_OAUTH_DIAGNOSTICS["last_error"] = f"Gmail token exchange failed: {detail or error}"
+        GMAIL_OAUTH_DIAGNOSTICS["last_google_error"] = detail or str(error)
+        GMAIL_OAUTH_DIAGNOSTICS["last_token_exchange_status"] = f"http_error:{error.code}"
+        raise ValueError(f"Gmail token exchange failed: {detail or error}") from error
+    except (OSError, json.JSONDecodeError) as error:
+        GMAIL_OAUTH_DIAGNOSTICS["last_error"] = f"Gmail token exchange failed: {error}"
+        GMAIL_OAUTH_DIAGNOSTICS["last_token_exchange_status"] = "error"
+        raise ValueError(f"Gmail token exchange failed: {error}") from error
+    access_token = str(data.get("access_token") or "")
+    refresh_token = str(data.get("refresh_token") or "")
+    expires_in = int(data.get("expires_in") or 0)
+    if not access_token or not refresh_token:
+        message = "Gmail token response did not include access and refresh tokens. Try connecting again and make sure offline access is allowed."
+        GMAIL_OAUTH_DIAGNOSTICS["last_error"] = message
+        GMAIL_OAUTH_DIAGNOSTICS["last_token_exchange_status"] = "missing_tokens"
+        raise ValueError(message)
+    GMAIL_OAUTH_DIAGNOSTICS["last_error"] = ""
+    GMAIL_OAUTH_DIAGNOSTICS["last_google_error"] = ""
+    GMAIL_OAUTH_DIAGNOSTICS["last_token_exchange_status"] = "success"
+    GMAIL_OAUTH_DIAGNOSTICS["last_connected_at"] = str(int(time.time()))
+    put_credentials(
+        config.gmail_token_ref or flow["token_ref"],
+        {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": str(int(time.time()) + max(0, expires_in)),
+            "account_id": config.email_address or "Gmail",
+        },
+    )
+
+
+def start_codex_callback_server() -> str:
+    class CodexCallbackServer(ThreadingHTTPServer):
+        allow_reuse_address = True
+
+    class CodexCallbackHandler(BaseHTTPRequestHandler):
+        server_version = "BitBuddyCodexOAuth/0.1"
+
+        def do_GET(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path != "/auth/callback":
+                self.send_response(HTTPStatus.NOT_FOUND)
+                self.end_headers()
+                return
+            params = parse_qs(parsed.query)
+            code = (params.get("code") or [""])[0]
+            state = (params.get("state") or [""])[0]
+            try:
+                exchange_codex_code(code, state)
+                html = codex_callback_html("Codex connected", "BitBuddy is authorized for Codex. You can close this tab and return to Settings.", ok=True)
+                status = HTTPStatus.OK
+            except ValueError as error:
+                html = codex_callback_html("Codex authorization failed", str(error), ok=False)
+                status = HTTPStatus.BAD_REQUEST
+            encoded = html.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+    try:
+        server = CodexCallbackServer(("localhost", 1455), CodexCallbackHandler)
+    except OSError as error:
+        return f"Could not start Codex authorization callback on http://localhost:1455/auth/callback: {error}"
+
+    def serve_once() -> None:
+        try:
+            server.timeout = 300
+            server.handle_request()
+        finally:
+            server.server_close()
+
+    threading.Thread(target=serve_once, daemon=True).start()
+    return ""
+
+
+def codex_oauth_status() -> dict[str, Any]:
+    credentials = get_credentials(CODEX_SECRET_REF)
+    if credentials.get("access_token") and credentials.get("refresh_token"):
+        account = credentials.get("account_id") or "ChatGPT"
+        return {"ok": True, "connected": True, "message": f"Connected to Codex as {account}."}
+    return {"ok": False, "connected": False, "message": "Codex is not authorized for BitBuddy."}
+
+
+def exchange_codex_code(code: str, state: str) -> None:
+    if not code:
+        raise ValueError("Missing authorization code.")
+    flow = CODEX_AUTH_FLOWS.pop(state, None)
+    if not state or flow is None:
+        raise ValueError("Authorization state expired or did not match. Start Codex authorization again from BitBuddy.")
+    payload = urlencode(
+        {
+            "grant_type": "authorization_code",
+            "client_id": CODEX_CLIENT_ID,
+            "code": code,
+            "code_verifier": flow["verifier"],
+            "redirect_uri": CODEX_REDIRECT_URI,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        CODEX_TOKEN_URL,
+        data=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:500]
+        raise ValueError(f"Token exchange failed: {detail or error}") from error
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Token exchange failed: {error}") from error
+    access_token = str(data.get("access_token") or "")
+    refresh_token = str(data.get("refresh_token") or "")
+    expires_in = int(data.get("expires_in") or 0)
+    if not access_token or not refresh_token:
+        raise ValueError("Token response did not include access and refresh tokens.")
+    put_credentials(
+        CODEX_SECRET_REF,
+        {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": str(int(time.time()) + max(0, expires_in)),
+            "account_id": codex_account_id(access_token) or "ChatGPT",
+        },
+    )
+
+
+def parse_codex_authorization_input(value: str) -> tuple[str, str]:
+    clean = value.strip()
+    if not clean:
+        raise ValueError("Paste the callback URL or authorization code from the browser.")
+    if clean.startswith("http://") or clean.startswith("https://"):
+        params = parse_qs(urlparse(clean).query)
+        return (params.get("code") or [""])[0], (params.get("state") or [""])[0]
+    if "code=" in clean:
+        params = parse_qs(clean.lstrip("?"))
+        return (params.get("code") or [""])[0], (params.get("state") or [""])[0]
+    if "#" in clean:
+        code, state = clean.split("#", 1)
+        return code.strip(), state.strip()
+    if len(CODEX_AUTH_FLOWS) == 1:
+        state = next(iter(CODEX_AUTH_FLOWS.keys()))
+        return clean, state
+    raise ValueError("Paste the full callback URL so BitBuddy can verify the authorization state.")
+
+
+def parse_gmail_authorization_input(value: str) -> tuple[str, str]:
+    clean = value.strip()
+    if not clean:
+        raise ValueError("Paste the Gmail callback URL or authorization code from the browser.")
+    if clean.startswith("http://") or clean.startswith("https://"):
+        params = parse_qs(urlparse(clean).query)
+        return (params.get("code") or [""])[0], (params.get("state") or [""])[0]
+    if "code=" in clean:
+        params = parse_qs(clean.lstrip("?"))
+        return (params.get("code") or [""])[0], (params.get("state") or [""])[0]
+    if "#" in clean:
+        code, state = clean.split("#", 1)
+        return code.strip(), state.strip()
+    if len(GMAIL_AUTH_FLOWS) == 1:
+        state = next(iter(GMAIL_AUTH_FLOWS.keys()))
+        return clean, state
+    raise ValueError("Paste the full Gmail callback URL so BitBuddy can verify the authorization state.")
+
+
+def token_urlsafe(length: int) -> str:
+    return base64.urlsafe_b64encode(py_secrets.token_bytes(length)).decode("ascii").rstrip("=")
+
+
+def pkce_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def codex_account_id(access_token: str) -> str:
+    parts = access_token.split(".")
+    if len(parts) != 3:
+        return ""
+    try:
+        raw = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8"))
+    except (ValueError, json.JSONDecodeError):
+        return ""
+    auth = payload.get("https://api.openai.com/auth") if isinstance(payload, dict) else None
+    if isinstance(auth, dict):
+        return str(auth.get("chatgpt_account_id") or auth.get("user_id") or "")
+    return ""
+
+
+def codex_callback_html(title: str, message: str, *, ok: bool) -> str:
+    color = "#6ee7b7" if ok else "#f87171"
+    return f"""<!doctype html>
+<html><head><meta charset=\"utf-8\"><title>{title}</title></head>
+<body style=\"margin:0;background:#0b1120;color:#eef5ff;font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh\">
+<main style=\"max-width:34rem;padding:2rem;border:1px solid #263449;border-radius:1rem;background:#111827\">
+<h1 style=\"margin-top:0;color:{color}\">{title}</h1>
+<p style=\"line-height:1.5;color:#b8c7dc\">{message}</p>
+</main></body></html>"""
 
 
 def mcp_status_to_json(message: str = "", doctor: dict[str, Any] | None = None) -> dict[str, Any]:

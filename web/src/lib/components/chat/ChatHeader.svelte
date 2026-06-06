@@ -1,7 +1,6 @@
 <script lang="ts">
 	import ModeToggle from './ModeToggle.svelte';
 	import RecentChats from './RecentChats.svelte';
-	import GearSixIcon from 'phosphor-svelte/lib/GearSixIcon';
 	import type { ChatSummary } from '$lib/api/bitbuddy';
 
 	let {
@@ -43,14 +42,46 @@
 
 <style>
 	.chat-header {
-		padding: 1.25rem 1.5rem;
+		position: relative;
+		z-index: 10;
+		padding: 1.15rem 1.55rem;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: 1rem;
-		border-bottom: 1px solid var(--border);
-		background: var(--header-bg);
+		border: 1px solid color-mix(in srgb, var(--bg-soft) 68%, var(--border));
+		border-radius: 1.35rem;
+		background:
+			radial-gradient(circle at 18% 0%, rgba(50, 78, 115, 0.1), transparent 23rem),
+			linear-gradient(135deg, rgba(255, 255, 255, 0.026), transparent 62%),
+			color-mix(in srgb, var(--panel-shell, var(--panel)) 86%, #01050d);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.13), var(--shadow-chat);
 		min-width: 0;
+		overflow: visible;
+	}
+
+	.chat-header::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		border-top: 1px solid rgba(255, 255, 255, 0.24);
+		border-radius: inherit;
+		pointer-events: none;
+	}
+
+	:global(:root.light) .chat-header {
+		border-color: rgba(73, 104, 145, 0.18);
+		background:
+			radial-gradient(circle at 18% 0%, rgba(37, 99, 235, 0.08), transparent 23rem),
+			linear-gradient(135deg, rgba(255, 255, 255, 0.34), transparent 62%),
+			color-mix(in srgb, #d6e4f2 82%, var(--panel) 18%);
+		box-shadow:
+			0 16px 34px rgba(50, 80, 118, 0.1),
+			inset 0 1px 0 rgba(255, 255, 255, 0.74);
+	}
+
+	:global(:root.light) .chat-header::before {
+		border-top-color: rgba(255, 255, 255, 0.78);
 	}
 
 	.header-main {
@@ -59,7 +90,7 @@
 	}
 
 	.eyebrow {
-		color: var(--text-soft);
+		color: color-mix(in srgb, var(--mode-color, var(--accent)) 48%, var(--text-soft));
 		font-size: 0.72rem;
 		font-weight: 700;
 		letter-spacing: 0.08em;
@@ -68,8 +99,9 @@
 	}
 
 	h1 {
-		font-size: 1.35rem;
+		font-size: clamp(1.25rem, 1.7vw, 1.72rem);
 		font-weight: 800;
+		letter-spacing: -0.035em;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;

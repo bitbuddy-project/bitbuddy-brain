@@ -10,7 +10,14 @@ from typing import Any
 from ..database import db_connection
 from ..config import load_config
 from ..paths import ARTIFACTS_DIR
-from ..autonomy.web_search import normalize_search_category, safe_web_search, search_results_to_text
+from ..autonomy.web_search import fetched_page_to_text, normalize_search_category, safe_web_fetch, safe_web_search, search_results_to_text
+from ..calendar.permissions import CalendarPermissionRequired
+from ..calendar.providers import EventDraft, EventPatch
+from ..calendar.service import create_event as calendar_create_event, delete_event as calendar_delete_event, find_free_slots, modify_event as calendar_modify_event, user_timezone, view_events
+from ..calendar.store import CalendarEvent, local_label
+from ..email.models import EmailMessage
+from ..email.permissions import EmailPermissionRequired
+from ..email.service import create_sender_trash_rule as email_create_sender_trash_rule, list_mailboxes as email_list_mailboxes, list_messages as email_list_messages, read_message as email_read_message, search_messages as email_search_messages, trash_message as email_trash_message
 from ..memory.episodic import create_episode, count_auto_episodes_for_conversation, delete_episode, get_episode, list_recent_episodes, search_episodes, update_episode
 from ..memory.layers import MemoryLayer, memory_layer
 from ..memory.project import MAX_FILE_BYTES, SKIP_DIRS, SKIP_SUFFIXES, list_projects, load_project, project_brief, project_model, record_project_note, update_structured_project_memory
@@ -150,6 +157,319 @@ def web_search_tool(arguments: dict[str, object], definition: ToolDefinition) ->
             error=str(e),
         )
 
+
+def web_fetch_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    url = str(arguments.get("url") or "")
+    if not url.strip():
+        return invalid_tool_result("Missing required argument: url")
+    try:
+        page = safe_web_fetch(url, max_chars=definition.max_chars)
+        text = fetched_page_to_text(page)
+        content, truncated = cap_text(text, definition.max_chars)
+        return ToolResult(
+            tool=definition.name,
+            ok=True,
+            content=content,
+            summary=page.title or page.url,
+            arguments_summary={"url": page.url},
+            truncated=truncated,
+        )
+    except Exception as e:
+        return ToolResult(
+            tool=definition.name,
+            ok=False,
+            content="",
+            summary="Web fetch failed.",
+            arguments_summary={"url": url},
+            error=str(e),
+        )
+
+
+def _calendar_permission_result(definition: ToolDefinition, error: CalendarPermissionRequired) -> ToolResult:
+    return ToolResult(
+        tool=definition.name,
+        ok=False,
+        content="",
+        summary="Calendar permission required.",
+        arguments_summary={"scope": error.scope, "state": error.state},
+        error=str(error),
+    )
+
+
+def _format_calendar_events(events: list[CalendarEvent], tz: str) -> str:
+    if not events:
+        return "No events found in that range."
+    lines: list[str] = []
+    for event in events:
+        when = "All day" if event.all_day else f"{local_label(event.start_at, tz)} - {local_label(event.end_at, tz)}"
+        suffix = f" @ {event.location}" if event.location else ""
+        lines.append(f"- [{event.id}] {event.title} ({when}){suffix}")
+    return "\n".join(lines)
+
+
+def _email_permission_result(definition: ToolDefinition, error: EmailPermissionRequired) -> ToolResult:
+    return ToolResult(
+        tool=definition.name,
+        ok=False,
+        content="",
+        summary="Email permission required.",
+        arguments_summary={"scope": error.scope, "state": error.state},
+        error=str(error),
+    )
+
+
+def _format_email_messages(messages: list[EmailMessage]) -> str:
+    if not messages:
+        return "No email messages found."
+    lines = []
+    for message in messages:
+        subject = message.subject or "(no subject)"
+        sender = message.from_addr or "unknown sender"
+        snippet = f" — {message.snippet}" if message.snippet else ""
+        lines.append(f"- [{message.id}] {subject} from {sender} ({message.date}){snippet}")
+    return "\n".join(lines)
+
+
+def email_list_mailboxes_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    try:
+        mailboxes = email_list_mailboxes()
+    except EmailPermissionRequired as error:
+        return _email_permission_result(definition, error)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    text = "\n".join(f"- {mailbox.name}" for mailbox in mailboxes) or "No mailboxes found."
+    content, truncated = cap_text(text, definition.max_chars)
+    return ToolResult(tool=definition.name, ok=True, content=content, summary=f"Found {len(mailboxes)} mailboxes.", truncated=truncated)
+
+
+def email_recent_messages_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    mailbox = str(arguments.get("mailbox") or "").strip()
+    try:
+        limit = int(arguments.get("limit", 10))
+    except (TypeError, ValueError):
+        limit = 10
+    try:
+        messages = email_list_messages(mailbox=mailbox, limit=limit)
+    except EmailPermissionRequired as error:
+        return _email_permission_result(definition, error)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    content, truncated = cap_text(_format_email_messages(messages), definition.max_chars)
+    return ToolResult(tool=definition.name, ok=True, content=content, summary=f"Found {len(messages)} email messages.", arguments_summary={"mailbox": mailbox or "default"}, truncated=truncated)
+
+
+def email_search_messages_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    query = str(arguments.get("query") or "").strip()
+    mailbox = str(arguments.get("mailbox") or "").strip()
+    if not query:
+        return invalid_tool_result("query is required.")
+    try:
+        limit = int(arguments.get("limit", 10))
+    except (TypeError, ValueError):
+        limit = 10
+    try:
+        messages = email_search_messages(query=query, mailbox=mailbox, limit=limit)
+    except EmailPermissionRequired as error:
+        return _email_permission_result(definition, error)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    content, truncated = cap_text(_format_email_messages(messages), definition.max_chars)
+    return ToolResult(tool=definition.name, ok=True, content=content, summary=f"Found {len(messages)} matching email messages.", arguments_summary={"query": query, "mailbox": mailbox or "default"}, truncated=truncated)
+
+
+def email_read_message_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    message_id = str(arguments.get("message_id") or "").strip()
+    mailbox = str(arguments.get("mailbox") or "").strip()
+    if not message_id:
+        return invalid_tool_result("message_id is required.")
+    try:
+        message = email_read_message(message_id=message_id, mailbox=mailbox)
+    except EmailPermissionRequired as error:
+        return _email_permission_result(definition, error)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    body = message.body or message.snippet or "No readable body found."
+    text = f"Subject: {message.subject or '(no subject)'}\nFrom: {message.from_addr}\nDate: {message.date}\n\n{body}"
+    content, truncated = cap_text(text, definition.max_chars)
+    return ToolResult(tool=definition.name, ok=True, content=content, summary=f"Read email '{message.subject or message.id}'.", arguments_summary={"message_id": message.id, "mailbox": mailbox or message.mailbox}, truncated=truncated)
+
+
+def email_trash_message_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    message_id = str(arguments.get("message_id") or "").strip()
+    mailbox = str(arguments.get("mailbox") or "").strip()
+    if not message_id:
+        return invalid_tool_result("message_id is required.")
+    try:
+        message = email_trash_message(message_id=message_id, mailbox=mailbox)
+    except EmailPermissionRequired as error:
+        return _email_permission_result(definition, error)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    return ToolResult(tool=definition.name, ok=True, content=f"Moved '{message.subject or message.id}' to Trash.", summary=f"Moved email '{message.subject or message.id}' to Trash.", arguments_summary={"message_id": message.id, "mailbox": mailbox or message.mailbox}, truncated=False)
+
+
+def email_create_auto_trash_rule_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    sender = str(arguments.get("sender") or "").strip()
+    mailbox = str(arguments.get("mailbox") or "INBOX").strip()
+    apply_existing = bool(arguments.get("apply_existing", False))
+    if not sender:
+        return invalid_tool_result("sender is required.")
+    try:
+        rule, applied = email_create_sender_trash_rule(sender=sender, apply_existing=apply_existing, mailbox=mailbox)
+    except EmailPermissionRequired as error:
+        return _email_permission_result(definition, error)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    content = f"Auto-trash rule enabled for sender {rule.value}."
+    if apply_existing:
+        content += f" Moved {applied} existing matching email{'s' if applied != 1 else ''} to Trash."
+    return ToolResult(tool=definition.name, ok=True, content=content, summary=f"Enabled auto-trash sender rule for {rule.value}.", arguments_summary={"sender": rule.value, "apply_existing": apply_existing}, truncated=False)
+
+
+def calendar_view_events_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    range_str = str(arguments.get("range") or "")
+    start = str(arguments.get("start") or "")
+    end = str(arguments.get("end") or "")
+    try:
+        events = view_events(range_str=range_str, start=start, end=end)
+    except CalendarPermissionRequired as error:
+        return _calendar_permission_result(definition, error)
+    tz = user_timezone()
+    content, truncated = cap_text(_format_calendar_events(events, tz), definition.max_chars)
+    return ToolResult(
+        tool=definition.name,
+        ok=True,
+        content=content,
+        summary=f"Found {len(events)} event{'' if len(events) == 1 else 's'}.",
+        arguments_summary={"range": range_str or f"{start}..{end}"},
+        truncated=truncated,
+    )
+
+
+def calendar_find_free_time_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    range_str = str(arguments.get("range") or "")
+    start = str(arguments.get("start") or "")
+    end = str(arguments.get("end") or "")
+    try:
+        duration = max(1, int(arguments.get("duration_minutes", 30)))
+    except (TypeError, ValueError):
+        return invalid_tool_result("duration_minutes must be an integer.")
+    try:
+        slots = find_free_slots(range_str=range_str, start=start, end=end, duration_minutes=duration)
+    except CalendarPermissionRequired as error:
+        return _calendar_permission_result(definition, error)
+    tz = user_timezone()
+    if not slots:
+        text = "No free slots of that length in the range."
+    else:
+        text = "\n".join(f"- {local_label(slot['start'], tz)} - {local_label(slot['end'], tz)}" for slot in slots)
+    content, truncated = cap_text(text, definition.max_chars)
+    return ToolResult(
+        tool=definition.name,
+        ok=True,
+        content=content,
+        summary=f"Found {len(slots)} free slot{'' if len(slots) == 1 else 's'}.",
+        arguments_summary={"duration_minutes": duration},
+        truncated=truncated,
+    )
+
+
+def calendar_create_event_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    title = str(arguments.get("title") or "").strip()
+    start = str(arguments.get("start") or "").strip()
+    end = str(arguments.get("end") or "").strip()
+    if not title:
+        return invalid_tool_result("title is required.")
+    if not start or not end:
+        return invalid_tool_result("start and end are required (ISO8601, e.g. 2026-06-05T14:30).")
+    attendees = [str(a) for a in arguments.get("attendees", []) if isinstance(a, str)]
+    draft = EventDraft(
+        title=title,
+        start_at=start,
+        end_at=end,
+        description=str(arguments.get("description") or ""),
+        location=str(arguments.get("location") or ""),
+        all_day=bool(arguments.get("all_day", False)),
+        attendees=attendees,
+        source="user",
+    )
+    try:
+        event, conflicts = calendar_create_event(draft)
+    except CalendarPermissionRequired as error:
+        return _calendar_permission_result(definition, error)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    tz = user_timezone()
+    reused_existing = bool(event.metadata.get("bitbuddy_existing_event"))
+    summary = (
+        f"Event already exists: '{event.title}' for {local_label(event.start_at, tz)}."
+        if reused_existing
+        else f"Created '{event.title}' for {local_label(event.start_at, tz)}."
+    )
+    content = summary
+    if conflicts:
+        names = ", ".join(f"'{c.title}'" for c in conflicts)
+        content += f"\nHeads up: this overlaps with {names}."
+    return ToolResult(
+        tool=definition.name,
+        ok=True,
+        content=content,
+        summary=summary,
+        arguments_summary={"event_id": event.id, "title": event.title},
+    )
+
+
+def calendar_modify_event_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    event_id = str(arguments.get("event_id") or "").strip()
+    if not event_id:
+        return invalid_tool_result("event_id is required.")
+    patch = EventPatch(
+        title=str(arguments["title"]) if "title" in arguments else None,
+        start_at=str(arguments["start"]) if "start" in arguments else None,
+        end_at=str(arguments["end"]) if "end" in arguments else None,
+        description=str(arguments["description"]) if "description" in arguments else None,
+        location=str(arguments["location"]) if "location" in arguments else None,
+        all_day=bool(arguments["all_day"]) if "all_day" in arguments else None,
+        status=str(arguments["status"]) if "status" in arguments else None,
+    )
+    try:
+        event, conflicts = calendar_modify_event(event_id, patch)
+    except CalendarPermissionRequired as error:
+        return _calendar_permission_result(definition, error)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    tz = user_timezone()
+    summary = f"Updated '{event.title}' ({local_label(event.start_at, tz)})."
+    content = summary
+    if conflicts:
+        names = ", ".join(f"'{c.title}'" for c in conflicts)
+        content += f"\nHeads up: this now overlaps with {names}."
+    return ToolResult(
+        tool=definition.name,
+        ok=True,
+        content=content,
+        summary=summary,
+        arguments_summary={"event_id": event.id},
+    )
+
+
+def calendar_delete_event_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    event_id = str(arguments.get("event_id") or "").strip()
+    if not event_id:
+        return invalid_tool_result("event_id is required.")
+    try:
+        event = calendar_delete_event(event_id)
+    except CalendarPermissionRequired as error:
+        return _calendar_permission_result(definition, error)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    return ToolResult(
+        tool=definition.name,
+        ok=True,
+        content=f"Deleted '{event.title}'.",
+        summary=f"Deleted '{event.title}'.",
+        arguments_summary={"event_id": event_id},
+    )
 
 
 def get_project_memory_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:

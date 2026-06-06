@@ -1,5 +1,9 @@
 # BitBuddy Agent
 
+<p align="center">
+  <img src="assets/bitbuddy-text.png" alt="BitBuddy" width="320" />
+</p>
+
 BitBuddy is your local companion that learns your projects, grows with you, and keeps its memory close to home.
 
 ## Setup
@@ -84,6 +88,22 @@ Defaults are equivalent to:
 ```bash
 bitbuddy web --host 127.0.0.1 --port 5173
 ```
+
+## Troubleshooting
+
+Run BitBuddy Doctor first when setup, startup, storage, the web UI, autonomy, or web search is not behaving:
+
+```bash
+bitbuddy doctor
+```
+
+If Doctor reports safe automatic repairs, run:
+
+```bash
+bitbuddy doctor fix
+```
+
+Doctor checks setup, storage, SQLite, provider configuration, web dependencies, backend/web ports, autonomy, and web search. `bitbuddy doctor` is read-only. `bitbuddy doctor fix` only performs safe repairs such as creating missing BitBuddy-owned directories, creating a default config when missing, initializing missing SQLite tables, and installing local web dependencies with `npm install` in `web/`. It does not delete memories, reset databases, change provider keys, modify project files, open firewall ports, or install global system packages.
 
 ## Project Memories
 

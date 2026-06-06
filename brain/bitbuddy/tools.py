@@ -74,6 +74,7 @@ from .toolbox.handlers import (
     update_episode_tool,
     update_memory_tool,
     update_project_memory_tool,
+    web_fetch_tool,
     web_search_tool,
     write_file_tool,
 )

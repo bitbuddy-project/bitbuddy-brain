@@ -27,7 +27,7 @@
 		<div class="devices-content">
 			<section class="coming-card">
 				<div class="device-orb" aria-hidden="true"></div>
-				<div class="device-glyph"><DevicesIcon size={54} weight="duotone" /></div>
+				<div class="device-glyph"><img src="/bitbuddy-app.png" alt="" aria-hidden="true" /></div>
 				<div class="coming-copy">
 					<p class="eyebrow">Next Layer</p>
 					<h2>BitBuddy is getting closer to the room.</h2>
@@ -58,10 +58,10 @@
 
 <style>
 	.devices-page {
-		--page-accent: #2dd4bf;
-		--page-soft: rgba(45, 212, 191, 0.12);
-		--page-border: rgba(45, 212, 191, 0.25);
-		--page-glow: rgba(45, 212, 191, 0.14);
+		--page-accent: var(--accent);
+		--page-soft: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+		--page-border: color-mix(in srgb, var(--accent) 20%, var(--border));
+		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
 
 		width: 100%;
 		max-width: 100%;
@@ -108,7 +108,6 @@
 	}
 
 	.title-mark,
-	.device-glyph,
 	.signal-chip {
 		display: grid;
 		place-items: center;
@@ -216,8 +215,12 @@
 		position: relative;
 		width: clamp(5.5rem, 12vw, 8rem);
 		height: clamp(5.5rem, 12vw, 8rem);
-		border-radius: 1.65rem;
-		box-shadow: 0 0 48px color-mix(in srgb, var(--page-accent) 18%, transparent);
+	}
+
+	.device-glyph img {
+		width: 100%;
+		height: 100%;
+		object-fit: contain;
 	}
 
 	.coming-copy {

@@ -7,7 +7,18 @@ from .base import ToolDefinition, ToolRegistry
 from .handlers import (
     archive_memory_tool,
     archive_skill_tool,
+    calendar_create_event_tool,
+    calendar_delete_event_tool,
+    calendar_find_free_time_tool,
+    calendar_modify_event_tool,
+    calendar_view_events_tool,
     create_skill_tool,
+    email_create_auto_trash_rule_tool,
+    email_list_mailboxes_tool,
+    email_read_message_tool,
+    email_recent_messages_tool,
+    email_search_messages_tool,
+    email_trash_message_tool,
     glob_files_tool,
     get_project_brief_tool,
     get_project_memory_tool,
@@ -31,6 +42,7 @@ from .handlers import (
     update_memory_tool,
     update_project_memory_tool,
     validate_skill_tool,
+    web_fetch_tool,
     web_search_tool,
     make_directory_tool,
     write_file_tool,
@@ -96,6 +108,194 @@ def default_tool_registry() -> ToolRegistry:
             max_chars=8000,
         ),
         web_search_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="web_fetch",
+            description="Fetch a single web page by URL and return its readable text content. Use after web_search to read a specific result, or when the user gives a direct URL to look at.",
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                },
+                "required": ["url"],
+                "additionalProperties": False,
+            },
+            max_chars=12000,
+        ),
+        web_fetch_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="calendar_view_events",
+            description="View calendar events. Use range=today|tomorrow|week|next_week|month for relative windows, or pass explicit ISO8601 start/end. Returns events with their ids.",
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "range": {"type": "string", "enum": ["today", "tomorrow", "week", "next_week", "month"]},
+                    "start": {"type": "string"},
+                    "end": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            max_chars=8000,
+        ),
+        calendar_view_events_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="calendar_find_free_time",
+            description="Find free time slots of a given duration within a range. Use before proposing a meeting time. Same range/start/end options as calendar_view_events.",
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "range": {"type": "string", "enum": ["today", "tomorrow", "week", "next_week", "month"]},
+                    "start": {"type": "string"},
+                    "end": {"type": "string"},
+                    "duration_minutes": {"type": "integer"},
+                },
+                "additionalProperties": False,
+            },
+            max_chars=4000,
+        ),
+        calendar_find_free_time_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="calendar_create_event",
+            description="Create a calendar event. Requires the user's calendar 'create' permission. start/end are ISO8601 (e.g. 2026-06-05T14:30). Returns the new event id and any overlap warnings.",
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "start": {"type": "string"},
+                    "end": {"type": "string"},
+                    "description": {"type": "string"},
+                    "location": {"type": "string"},
+                    "all_day": {"type": "boolean"},
+                    "attendees": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["title", "start", "end"],
+                "additionalProperties": False,
+            },
+            max_chars=2000,
+        ),
+        calendar_create_event_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="calendar_modify_event",
+            description="Modify an existing calendar event by id. Requires the user's calendar 'modify' permission. Only pass the fields you want to change.",
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "event_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "start": {"type": "string"},
+                    "end": {"type": "string"},
+                    "description": {"type": "string"},
+                    "location": {"type": "string"},
+                    "all_day": {"type": "boolean"},
+                    "status": {"type": "string", "enum": ["confirmed", "tentative", "cancelled"]},
+                },
+                "required": ["event_id"],
+                "additionalProperties": False,
+            },
+            max_chars=2000,
+        ),
+        calendar_modify_event_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="calendar_delete_event",
+            description="Delete a calendar event by id. Requires the user's calendar 'delete' permission.",
+            arguments_schema={
+                "type": "object",
+                "properties": {"event_id": {"type": "string"}},
+                "required": ["event_id"],
+                "additionalProperties": False,
+            },
+            max_chars=1000,
+        ),
+        calendar_delete_event_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="email_list_mailboxes",
+            description="List configured email mailboxes/folders. Read-only and requires email read permission.",
+            arguments_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            max_chars=4000,
+        ),
+        email_list_mailboxes_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="email_recent_messages",
+            description="List recent email messages from a mailbox. Use whenever the user asks about inbox/email/messages or asks you to scan mail. Read-only; returns message ids for email_read_message.",
+            arguments_schema={
+                "type": "object",
+                "properties": {"mailbox": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}},
+                "additionalProperties": False,
+            },
+            max_chars=8000,
+        ),
+        email_recent_messages_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="email_search_messages",
+            description="Search email subjects/senders/snippets in a mailbox. Use for email awareness, finding useful messages, receipts, appointments, travel, bills, or calendar-worthy emails. Read-only.",
+            arguments_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string"}, "mailbox": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            max_chars=8000,
+        ),
+        email_search_messages_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="email_read_message",
+            description="Read one email message by id and mailbox. Read-only; does not mark read, reply, delete, or archive.",
+            arguments_schema={
+                "type": "object",
+                "properties": {"message_id": {"type": "string"}, "mailbox": {"type": "string"}},
+                "required": ["message_id"],
+                "additionalProperties": False,
+            },
+            max_chars=16000,
+        ),
+        email_read_message_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="email_trash_message",
+            description="Move one email message to Trash. Recoverable, not permanent delete. Requires email trash permission and Gmail modify access.",
+            arguments_schema={
+                "type": "object",
+                "properties": {"message_id": {"type": "string"}, "mailbox": {"type": "string"}},
+                "required": ["message_id"],
+                "additionalProperties": False,
+            },
+            max_chars=4000,
+        ),
+        email_trash_message_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="email_create_auto_trash_rule",
+            description="Create a sender rule that automatically moves future matching emails to Trash, optionally applying it to existing matching messages. Requires explicit email trash permission.",
+            arguments_schema={
+                "type": "object",
+                "properties": {"sender": {"type": "string"}, "apply_existing": {"type": "boolean"}, "mailbox": {"type": "string"}},
+                "required": ["sender"],
+                "additionalProperties": False,
+            },
+            max_chars=4000,
+        ),
+        email_create_auto_trash_rule_tool,
     )
     registry.register(
         ToolDefinition(

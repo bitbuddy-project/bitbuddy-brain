@@ -20,6 +20,8 @@ from bitbuddy.notifications import (  # noqa: E402
     list_notifications,
     mark_all_notifications_read,
     mark_notification_read,
+    subscribe_notifications,
+    unsubscribe_notifications,
     unread_notification_count,
 )
 from bitbuddy.paths import GLOBAL_DB_PATH  # noqa: E402
@@ -53,6 +55,19 @@ class NotificationsTest(unittest.TestCase):
 
         self.assertEqual(mark_all_notifications_read(), 2)
         self.assertEqual(unread_notification_count(), 0)
+
+    def test_create_notification_broadcasts_to_subscribers(self) -> None:
+        subscriber = subscribe_notifications()
+        try:
+            notification = create_notification(category="reminder", title="Soon", body="Appointment soon.")
+
+            event = subscriber.get_nowait()
+        finally:
+            unsubscribe_notifications(subscriber)
+
+        self.assertEqual(event["kind"], "notification")
+        self.assertEqual(event["notification"]["id"], notification.id)
+        self.assertEqual(event["notification"]["category"], "reminder")
 
     def test_memory_consolidation_notifies_only_for_successful_writes(self) -> None:
         job = ConsolidationJob("chat-1", "job-1", None, {}, 0, 10, 2, 3)
