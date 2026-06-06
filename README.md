@@ -1,5 +1,3 @@
-# BitBuddy Agent
-
 <p align="center">
   <img src="assets/bitbuddy-text.png" alt="BitBuddy" width="320" />
 </p>
