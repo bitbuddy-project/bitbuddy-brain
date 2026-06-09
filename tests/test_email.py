@@ -5,8 +5,12 @@ import sqlite3
 import sys
 import tempfile
 import urllib.parse
+import urllib.error
+import urllib.request
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from unittest.mock import patch
 
 
@@ -15,7 +19,8 @@ sys.path.insert(0, str(REPO_ROOT / "brain"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-email-test-")
 
 from bitbuddy.config import parse_email_config, update_email_config, write_config  # noqa: E402
-from bitbuddy.http_api import GMAIL_AUTH_FLOWS, exchange_gmail_code, start_gmail_login  # noqa: E402
+from bitbuddy.auth import API_TOKEN_HEADER, get_api_token  # noqa: E402
+from bitbuddy.http_api import BitBuddyRequestHandler, GMAIL_AUTH_FLOWS, exchange_gmail_code, start_gmail_login  # noqa: E402
 from bitbuddy.calendar.secrets import put_credentials  # noqa: E402
 from bitbuddy.email.permissions import EmailPermissionRequired, all_permissions, permission_state, require_permission, set_permission  # noqa: E402
 from bitbuddy.email.models import mailbox_to_json, message_page_to_json  # noqa: E402
@@ -68,6 +73,11 @@ class EmailTest(unittest.TestCase):
         self.assertEqual(config.gmail_oauth_mode, "desktop_pkce")
         self.assertEqual(config.gmail_redirect_uri, "http://127.0.0.1:8787/email/gmail/callback")
 
+    def test_gmail_full_mail_access_defaults_off(self) -> None:
+        config = parse_email_config({"provider": "gmail"})
+
+        self.assertFalse(config.gmail_full_mail_access)
+
     def test_gmail_oauth_mode_preserves_legacy_web_secret_config(self) -> None:
         config = parse_email_config({"provider": "gmail", "gmail_credentials_ref": "email:gmail:me@example.com:client"})
 
@@ -102,6 +112,25 @@ class EmailTest(unittest.TestCase):
         self.assertEqual(params["redirect_uri"], ["http://127.0.0.1:8787/email/gmail/callback"])
         self.assertEqual(params["login_hint"], ["me@example.com"])
         self.assertEqual(params["prompt"], ["consent"])
+
+    def test_gmail_login_can_request_full_mail_scope(self) -> None:
+        write_config("none", "", "")
+        update_email_config(
+            {
+                "enabled": True,
+                "provider": "gmail",
+                "email_address": "me@example.com",
+                "gmail_oauth_mode": "desktop_pkce",
+                "gmail_client_id": "client-id.apps.googleusercontent.com",
+                "gmail_token_ref": "email:gmail:me@example.com:tokens",
+                "gmail_full_mail_access": True,
+            }
+        )
+
+        status = start_gmail_login(force=True)
+
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(status["auth_url"]).query)
+        self.assertEqual(params["scope"], ["https://mail.google.com/"])
 
     def test_legacy_web_gmail_login_requires_client_secret(self) -> None:
         write_config("none", "", "")
@@ -406,6 +435,66 @@ class EmailTest(unittest.TestCase):
         self.assertEqual(deleted, 2)
         self.assertEqual(deleted_batches, [["msg-1", "msg-2"]])
 
+    def test_gmail_delete_message_uses_permanent_delete_endpoint(self) -> None:
+        config = parse_email_config({"provider": "gmail", "gmail_client_id": "client", "gmail_token_ref": "tokens"})
+        provider = GmailProvider(config)
+        paths: list[str] = []
+
+        def fake_request(method: str, path: str, payload: object = None) -> dict[str, object]:
+            paths.append(f"{method} {path}")
+            if method == "GET":
+                return {
+                    "id": "msg-1",
+                    "labelIds": ["TRASH"],
+                    "snippet": "Trash",
+                    "payload": {"headers": [{"name": "Subject", "value": "Delete me"}]},
+                }
+            self.assertEqual(method, "DELETE")
+            self.assertEqual(path, "/users/me/messages/msg-1")
+            return {}
+
+        provider._request = fake_request  # type: ignore[method-assign]
+
+        message = provider.delete_message(mailbox="TRASH", message_id="msg-1")
+
+        self.assertEqual(message.id, "msg-1")
+        self.assertEqual(paths, ["GET /users/me/messages/msg-1?format=full", "DELETE /users/me/messages/msg-1"])
+
+    def test_http_api_requires_token_for_protected_routes(self) -> None:
+        with running_api_server() as base_url:
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(f"{base_url}/config", timeout=5)
+
+            self.assertEqual(caught.exception.code, 401)
+
+            request = urllib.request.Request(f"{base_url}/config", headers={API_TOKEN_HEADER: get_api_token()})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+
+    def test_http_api_blocks_non_loopback_browser_origins(self) -> None:
+        with running_api_server() as base_url:
+            request = urllib.request.Request(
+                f"{base_url}/config",
+                headers={API_TOKEN_HEADER: get_api_token(), "Origin": "https://evil.example"},
+            )
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+
+            self.assertEqual(caught.exception.code, 403)
+
+    def test_empty_trash_requires_server_side_confirmation(self) -> None:
+        with running_api_server() as base_url:
+            request = urllib.request.Request(
+                f"{base_url}/email/trash/empty",
+                data=b"{}",
+                headers={API_TOKEN_HEADER: get_api_token(), "Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+
+            self.assertEqual(caught.exception.code, 400)
+
     def test_thinking_cleanup_strips_system_reminders(self) -> None:
         clean = clean_model_thinking_text("before\n<system-reminder>secret\nmore</system-reminder>\nafter")
 
@@ -459,3 +548,16 @@ class EmailTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class running_api_server:
+    def __enter__(self) -> str:
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), BitBuddyRequestHandler)
+        self.thread = Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        return f"http://127.0.0.1:{self.server.server_port}"
+
+    def __exit__(self, *_args: object) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)

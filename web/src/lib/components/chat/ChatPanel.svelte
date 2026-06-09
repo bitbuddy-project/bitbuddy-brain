@@ -56,11 +56,9 @@
 				thinkEnabled={chatSession.thinkEnabled}
 				disabled={false}
 				isStreaming={chatSession.isStreaming}
-				hasPendingSteer={Boolean(chatSession.pendingSteer)}
 				onDraftChange={scheduleContextUsage}
 				onSend={sendMessage}
 				onStop={stopActiveResponse}
-				onSteer={steerPendingMessage}
 				onThinkToggle={toggleThink}
 			/>
 		</div>

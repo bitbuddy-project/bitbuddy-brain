@@ -16,6 +16,8 @@ from typing import Any
 
 import yaml
 
+from ..auth import api_token_path
+from ..calendar.secrets import SECRETS_PATH
 from ..config import CLOUD_PROVIDER_TYPES, URL_PROVIDER_TYPES, parse_autonomy_config, parse_calendar_config, parse_dreaming_config, parse_provider_registry, parse_user_context
 from ..paths import APP_DIR, ARTIFACTS_DIR, CONFIG_PATH, GLOBAL_DB_PATH, PROJECTS_DIR, SKILLS_DIR, WEB_DIR, WORKSPACE_DIR
 from .report import DoctorCheckResult
@@ -179,9 +181,43 @@ def storage_checks() -> list[DoctorCheckResult]:
         writable = exists and os.access(path, os.W_OK)
         status = "pass" if writable else "fail"
         results.append(DoctorCheckResult(check_id, "Storage", status, f"{title} writable" if writable else f"{title} missing or not writable", str(path), None if writable else fix_id))
+    results.extend(storage_permission_checks())
     db_parent = GLOBAL_DB_PATH.parent
     results.append(DoctorCheckResult("storage.db_parent", "Storage", "pass" if os.access(db_parent, os.W_OK) else "fail", "Database parent writable" if os.access(db_parent, os.W_OK) else "Database parent not writable", str(db_parent), None if os.access(db_parent, os.W_OK) else "dirs.ensure"))
     return results
+
+
+def storage_permission_checks() -> list[DoctorCheckResult]:
+    checks = [
+        ("storage.perms.config", CONFIG_PATH, "Config file"),
+        ("storage.perms.db", GLOBAL_DB_PATH, "SQLite database"),
+        ("storage.perms.secrets", SECRETS_PATH, "Credential store"),
+        ("storage.perms.api_token", api_token_path(), "API token"),
+    ]
+    results: list[DoctorCheckResult] = []
+    if APP_DIR.exists():
+        results.append(permission_result("storage.perms.app", APP_DIR, "BitBuddy home directory", directory=True))
+    for check_id, path, label in checks:
+        if path.exists():
+            results.append(permission_result(check_id, path, label))
+    return results
+
+
+def permission_result(check_id: str, path: Path, label: str, *, directory: bool = False) -> DoctorCheckResult:
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError as error:
+        return DoctorCheckResult(check_id, "Storage", "warn", f"Could not inspect {label} permissions", str(error))
+    unsafe_bits = 0o077 if not directory else 0o027
+    safe = (mode & unsafe_bits) == 0
+    expected = "0600" if not directory else "0750 or stricter"
+    return DoctorCheckResult(
+        check_id,
+        "Storage",
+        "pass" if safe else "warn",
+        f"{label} permissions look private" if safe else f"{label} is readable/writable by other users",
+        f"{path} mode={mode:03o}; expected {expected}.",
+    )
 
 
 def database_checks() -> list[DoctorCheckResult]:

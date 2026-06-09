@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from http.server import ThreadingHTTPServer
 
+from .auth import get_api_token
 from .config import load_config
 from .http_api import BitBuddyRequestHandler
 from .paths import APP_DIR, ensure_app_dirs
@@ -16,6 +17,7 @@ from .utils import log_activity
 
 def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
     ensure_app_dirs()
+    get_api_token()
     config = load_config()
 
     ensure_web_search_server(config.autonomy.web_search)

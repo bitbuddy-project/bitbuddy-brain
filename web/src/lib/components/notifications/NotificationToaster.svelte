@@ -8,7 +8,6 @@
 
 	const TOAST_TIMEOUT_MS = 8000;
 	const timers = new Map<number, number>();
-	let urgentReminder = $derived(notificationCenter.toasts.find(isUrgentReminder));
 
 	$effect(() => {
 		const activeIds = new Set(notificationCenter.toasts.map((notification) => notification.id));
@@ -59,30 +58,7 @@
 	function isPersistent(notification: NotificationItem) {
 		return notification.metadata?.persistent === true;
 	}
-
-	function isUrgentReminder(notification: NotificationItem) {
-		return notification.category === 'reminder' && notification.metadata?.calendar_urgent === true;
-	}
 </script>
-
-{#if urgentReminder}
-	<section class="urgent-reminder" aria-live="assertive" aria-label="Urgent calendar reminder">
-		<div class="urgent-card">
-			<div class="urgent-mark" aria-hidden="true"></div>
-			<div class="urgent-copy">
-				<span>Calendar reminder</span>
-				<h2>{urgentReminder.title}</h2>
-				{#if urgentReminder.body}<p>{urgentReminder.body}</p>{/if}
-			</div>
-			<div class="urgent-actions">
-				{#if urgentReminder.action_url}
-					<button class="view-btn" type="button" onclick={() => viewNotification(urgentReminder)}>Open</button>
-				{/if}
-				<button class="close-btn" type="button" onclick={() => closeToast(urgentReminder.id)}>Dismiss</button>
-			</div>
-		</div>
-	</section>
-{/if}
 
 {#if notificationCenter.toasts.length > 0}
 	<section class="notification-stack" aria-label="BitBuddy notifications" aria-live="polite">
@@ -119,65 +95,6 @@
 		flex-direction: column;
 		gap: 0.75rem;
 		pointer-events: none;
-	}
-
-	.urgent-reminder {
-		position: fixed;
-		left: 50%;
-		bottom: 1.25rem;
-		z-index: 120;
-		width: min(42rem, calc(100vw - 2rem));
-		transform: translateX(-50%);
-		pointer-events: none;
-	}
-
-	.urgent-card {
-		pointer-events: auto;
-		display: grid;
-		grid-template-columns: 0.35rem minmax(0, 1fr) auto;
-		align-items: center;
-		gap: 0.95rem;
-		padding: 1rem;
-		border: 1px solid color-mix(in srgb, var(--warning) 46%, var(--border));
-		border-radius: 1.2rem;
-		background:
-			linear-gradient(135deg, color-mix(in srgb, var(--warning) 15%, transparent), transparent 68%),
-			var(--panel);
-		box-shadow:
-			0 18px 48px rgba(0, 0, 0, 0.28),
-			inset 0 1px 0 rgba(255, 255, 255, 0.08);
-		backdrop-filter: blur(22px) saturate(1.12);
-		animation: toast-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
-	}
-
-	.urgent-mark {
-		width: 0.35rem;
-		height: 100%;
-		min-height: 4rem;
-		border-radius: 999px;
-		background: var(--warning);
-		box-shadow: 0 0 24px color-mix(in srgb, var(--warning) 42%, transparent);
-	}
-
-	.urgent-copy {
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-
-	.urgent-copy span {
-		color: var(--warning);
-		font-size: 0.72rem;
-		font-weight: 850;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-	}
-
-	.urgent-actions {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
 	}
 
 	.toast {
@@ -314,20 +231,6 @@
 			right: 1rem;
 			bottom: 1rem;
 			width: calc(100vw - 2rem);
-		}
-
-		.urgent-reminder {
-			bottom: 1rem;
-			width: calc(100vw - 2rem);
-		}
-
-		.urgent-card {
-			grid-template-columns: 0.35rem minmax(0, 1fr);
-		}
-
-		.urgent-actions {
-			grid-column: 2;
-			justify-content: flex-end;
 		}
 	}
 </style>

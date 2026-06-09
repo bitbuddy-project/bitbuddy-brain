@@ -177,6 +177,7 @@ class EmailConfig:
     gmail_credentials_ref: str = ""
     gmail_token_ref: str = ""
     gmail_redirect_uri: str = "http://127.0.0.1:8787/email/gmail/callback"
+    gmail_full_mail_access: bool = False
     default_mailbox: str = "INBOX"
     max_preview_messages: int = 50
 
@@ -305,6 +306,7 @@ def default_config(
             "gmail_credentials_ref": "",
             "gmail_token_ref": "",
             "gmail_redirect_uri": "http://127.0.0.1:8787/email/gmail/callback",
+            "gmail_full_mail_access": False,
             "default_mailbox": "INBOX",
             "max_preview_messages": 50,
         },
@@ -764,6 +766,7 @@ def parse_email_config(raw: Any) -> EmailConfig:
         gmail_credentials_ref=str(raw.get("gmail_credentials_ref") or "").strip(),
         gmail_token_ref=str(raw.get("gmail_token_ref") or "").strip(),
         gmail_redirect_uri=str(raw.get("gmail_redirect_uri") or "http://127.0.0.1:8787/email/gmail/callback").strip() or "http://127.0.0.1:8787/email/gmail/callback",
+        gmail_full_mail_access=bool(raw.get("gmail_full_mail_access", False)),
         default_mailbox=str(raw.get("default_mailbox") or "INBOX").strip() or "INBOX",
         max_preview_messages=max(1, min(200, max_preview)),
     )
@@ -794,6 +797,7 @@ def update_email_config(email: dict[str, Any]) -> BitBuddyConfig:
         "gmail_credentials_ref",
         "gmail_token_ref",
         "gmail_redirect_uri",
+        "gmail_full_mail_access",
         "default_mailbox",
         "max_preview_messages",
     ):
@@ -816,6 +820,7 @@ def update_email_config(email: dict[str, Any]) -> BitBuddyConfig:
         "gmail_credentials_ref": parsed.gmail_credentials_ref,
         "gmail_token_ref": parsed.gmail_token_ref,
         "gmail_redirect_uri": parsed.gmail_redirect_uri,
+        "gmail_full_mail_access": parsed.gmail_full_mail_access,
         "default_mailbox": parsed.default_mailbox,
         "max_preview_messages": parsed.max_preview_messages,
     }

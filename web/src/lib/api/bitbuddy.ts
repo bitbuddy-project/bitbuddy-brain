@@ -566,6 +566,27 @@ export type ProjectMemoryResponse = {
 };
 
 export const BITBUDDY_API = 'http://127.0.0.1:8787';
+const BITBUDDY_TOKEN_KEY = 'bitbuddy:api-token';
+
+function apiToken() {
+	if (typeof window === 'undefined') return '';
+	const url = new URL(window.location.href);
+	const token = url.searchParams.get('bitbuddy_token') ?? '';
+	if (token) {
+		window.localStorage.setItem(BITBUDDY_TOKEN_KEY, token);
+		url.searchParams.delete('bitbuddy_token');
+		window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+		return token;
+	}
+	return window.localStorage.getItem(BITBUDDY_TOKEN_KEY) ?? window.sessionStorage.getItem(BITBUDDY_TOKEN_KEY) ?? '';
+}
+
+function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+	const headers = new Headers(init.headers);
+	const token = apiToken();
+	if (token) headers.set('X-BitBuddy-Token', token);
+	return fetch(input, { ...init, headers });
+}
 
 export class ApiError extends Error {
 	constructor(
@@ -577,8 +598,8 @@ export class ApiError extends Error {
 }
 
 export async function getActivity(): Promise<ActivityItem[]> {
-	const response = await fetch(`${BITBUDDY_API}/activity`);
-	if (!response.ok) throw new Error('Could not load BitBuddy activity. Is `bitbuddy serve` running?');
+	const response = await apiFetch(`${BITBUDDY_API}/activity`);
+	if (!response.ok) throw new Error('Could not load BitBuddy activity. Start the backend with `bitbuddy serve`, then open `bitbuddy dashboard`.');
 	const data = await response.json();
 	return data.activity ?? [];
 }
@@ -588,7 +609,7 @@ export async function getNotifications(options: { afterId?: number; limit?: numb
 	if (options.afterId) params.set('after_id', String(options.afterId));
 	if (options.limit) params.set('limit', String(options.limit));
 	const suffix = params.toString() ? `?${params.toString()}` : '';
-	const response = await fetch(`${BITBUDDY_API}/notifications${suffix}`);
+	const response = await apiFetch(`${BITBUDDY_API}/notifications${suffix}`);
 	if (!response.ok) throw new Error('Could not load BitBuddy notifications.');
 	const data = await response.json();
 	return {
@@ -598,83 +619,83 @@ export async function getNotifications(options: { afterId?: number; limit?: numb
 }
 
 export async function markNotificationRead(id: number): Promise<number> {
-	const response = await fetch(`${BITBUDDY_API}/notifications/${id}/read`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/notifications/${id}/read`, { method: 'POST' });
 	if (!response.ok) throw new Error('Could not mark notification read.');
 	const data = await response.json();
 	return Number(data.unread_count ?? 0);
 }
 
 export async function dismissNotification(id: number): Promise<number> {
-	const response = await fetch(`${BITBUDDY_API}/notifications/${id}/dismiss`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/notifications/${id}/dismiss`, { method: 'POST' });
 	if (!response.ok) throw new Error('Could not dismiss notification.');
 	const data = await response.json();
 	return Number(data.unread_count ?? 0);
 }
 
 export async function getAutonomyStatus(): Promise<AutonomyStatus> {
-	const response = await fetch(`${BITBUDDY_API}/autonomy/status`);
+	const response = await apiFetch(`${BITBUDDY_API}/autonomy/status`);
 	if (!response.ok) throw new Error('Could not load BitBuddy autonomy status.');
 	const data = await response.json();
 	return data.autonomy;
 }
 
 export async function getAutonomyTimeline(): Promise<AutonomyTimeline> {
-	const response = await fetch(`${BITBUDDY_API}/autonomy/timeline`);
+	const response = await apiFetch(`${BITBUDDY_API}/autonomy/timeline`);
 	if (!response.ok) throw new Error('Could not load BitBuddy autonomy timeline.');
 	const data = await response.json();
 	return data.timeline;
 }
 
 export async function getLifecycleStatus(): Promise<LifecycleState> {
-	const response = await fetch(`${BITBUDDY_API}/lifecycle/status`);
+	const response = await apiFetch(`${BITBUDDY_API}/lifecycle/status`);
 	if (!response.ok) throw new Error('Could not load BitBuddy lifecycle status.');
 	const data = await response.json();
 	return data.lifecycle;
 }
 
 export async function getDreamRuns(): Promise<DreamRun[]> {
-	const response = await fetch(`${BITBUDDY_API}/dreams`);
+	const response = await apiFetch(`${BITBUDDY_API}/dreams`);
 	if (!response.ok) throw new Error('Could not load BitBuddy dream logs.');
 	const data = await response.json();
 	return data.dreams ?? [];
 }
 
 export async function getDreamTasks(dreamId: string): Promise<DreamTask[]> {
-	const response = await fetch(`${BITBUDDY_API}/dreams/${encodeURIComponent(dreamId)}`);
+	const response = await apiFetch(`${BITBUDDY_API}/dreams/${encodeURIComponent(dreamId)}`);
 	if (!response.ok) throw new Error('Could not load BitBuddy dream tasks.');
 	const data = await response.json();
 	return data.tasks ?? [];
 }
 
 export async function getPermissionActivity(): Promise<ActivityItem[]> {
-	const response = await fetch(`${BITBUDDY_API}/permissions/activity`);
+	const response = await apiFetch(`${BITBUDDY_API}/permissions/activity`);
 	if (!response.ok) throw new Error('Could not load permission activity.');
 	const data = await response.json();
 	return data.activity ?? [];
 }
 
 export async function getIntentions(): Promise<IntentionItem[]> {
-	const response = await fetch(`${BITBUDDY_API}/autonomy/intentions`);
+	const response = await apiFetch(`${BITBUDDY_API}/autonomy/intentions`);
 	if (!response.ok) throw new Error('Could not load BitBuddy intentions.');
 	const data = await response.json();
 	return data.intentions ?? [];
 }
 
 export async function dismissIntention(id: number): Promise<boolean> {
-	const response = await fetch(`${BITBUDDY_API}/autonomy/intentions/${id}/dismiss`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/autonomy/intentions/${id}/dismiss`, { method: 'POST' });
 	if (!response.ok) throw new Error('Could not dismiss intention.');
 	const data = await response.json();
 	return Boolean(data.dismissed);
 }
 
 export async function getSelfSnapshot(): Promise<SelfSnapshot> {
-	const response = await fetch(`${BITBUDDY_API}/self`);
+	const response = await apiFetch(`${BITBUDDY_API}/self`);
 	if (!response.ok) throw new Error('Could not load BitBuddy self model.');
 	return response.json();
 }
 
 export async function updateSelfState(updates: Record<string, string>): Promise<SelfSnapshot> {
-	const response = await fetch(`${BITBUDDY_API}/self`, {
+	const response = await apiFetch(`${BITBUDDY_API}/self`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(updates)
@@ -686,14 +707,14 @@ export async function updateSelfState(updates: Record<string, string>): Promise<
 
 export async function getGoals(includeDone = false): Promise<GoalItem[]> {
 	const suffix = includeDone ? '?include_done=true' : '';
-	const response = await fetch(`${BITBUDDY_API}/goals${suffix}`);
+	const response = await apiFetch(`${BITBUDDY_API}/goals${suffix}`);
 	if (!response.ok) throw new Error('Could not load BitBuddy goals.');
 	const data = await response.json();
 	return data.goals ?? [];
 }
 
 export async function createGoal(options: Partial<GoalItem> & { title: string }): Promise<GoalItem> {
-	const response = await fetch(`${BITBUDDY_API}/goals`, {
+	const response = await apiFetch(`${BITBUDDY_API}/goals`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(options)
@@ -704,7 +725,7 @@ export async function createGoal(options: Partial<GoalItem> & { title: string })
 }
 
 export async function updateGoal(id: number, updates: Partial<GoalItem>): Promise<GoalItem> {
-	const response = await fetch(`${BITBUDDY_API}/goals/${id}`, {
+	const response = await apiFetch(`${BITBUDDY_API}/goals/${id}`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(updates)
@@ -715,14 +736,14 @@ export async function updateGoal(id: number, updates: Partial<GoalItem>): Promis
 }
 
 export async function getProjects(): Promise<ProjectSummary[]> {
-	const response = await fetch(`${BITBUDDY_API}/projects`);
-	if (!response.ok) throw new Error('Could not load project memories. Is `bitbuddy serve` running?');
+	const response = await apiFetch(`${BITBUDDY_API}/projects`);
+	if (!response.ok) throw new Error('Could not load project memories. Start the backend with `bitbuddy serve`, then open `bitbuddy dashboard`.');
 	const data = await response.json();
 	return data.projects ?? [];
 }
 
 export async function addProject(options: { name: string; paths: string[] }): Promise<ProjectSummary> {
-	const response = await fetch(`${BITBUDDY_API}/projects`, {
+	const response = await apiFetch(`${BITBUDDY_API}/projects`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(options)
@@ -733,32 +754,32 @@ export async function addProject(options: { name: string; paths: string[] }): Pr
 }
 
 export async function getProjectMemory(projectId: string): Promise<ProjectMemoryResponse> {
-	const response = await fetch(`${BITBUDDY_API}/projects/${projectId}/memory`);
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}/memory`);
 	if (!response.ok) throw new Error('Could not load project memory.');
 	return response.json();
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
-	const response = await fetch(`${BITBUDDY_API}/projects/${projectId}`, { method: 'DELETE' });
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}`, { method: 'DELETE' });
 	if (!response.ok) throw new Error('Could not delete project.');
 }
 
 export async function getRecentEpisodes(): Promise<Episode[]> {
-	const response = await fetch(`${BITBUDDY_API}/memory/episodes`);
+	const response = await apiFetch(`${BITBUDDY_API}/memory/episodes`);
 	if (!response.ok) throw new Error('Could not load episodic memories.');
 	const data = await response.json();
 	return data.episodes ?? [];
 }
 
 export async function searchEpisodes(query: string): Promise<Episode[]> {
-	const response = await fetch(`${BITBUDDY_API}/memory/episodes/search?q=${encodeURIComponent(query)}`);
+	const response = await apiFetch(`${BITBUDDY_API}/memory/episodes/search?q=${encodeURIComponent(query)}`);
 	if (!response.ok) throw new Error('Could not search episodic memories.');
 	const data = await response.json();
 	return data.episodes ?? [];
 }
 
 export async function getMemoryLayers(): Promise<MemoryLayerInfo[]> {
-	const response = await fetch(`${BITBUDDY_API}/memory/layers`);
+	const response = await apiFetch(`${BITBUDDY_API}/memory/layers`);
 	if (!response.ok) throw new Error('Could not load memory layers.');
 	const data = await response.json();
 	return data.layers ?? [];
@@ -772,20 +793,20 @@ export async function getMemories(options: { layer?: MemoryLayer; query?: string
 	if (options.includeArchived) params.set('include_archived', 'true');
 	if (options.limit) params.set('limit', String(options.limit));
 	const suffix = params.toString() ? `?${params.toString()}` : '';
-	const response = await fetch(`${BITBUDDY_API}/memory${suffix}`);
+	const response = await apiFetch(`${BITBUDDY_API}/memory${suffix}`);
 	if (!response.ok) throw new Error('Could not load memories.');
 	const data = await response.json();
 	return data.memories ?? [];
 }
 
 export async function getConfig(): Promise<BitBuddyConfig> {
-	const response = await fetch(`${BITBUDDY_API}/config`);
+	const response = await apiFetch(`${BITBUDDY_API}/config`);
 	if (!response.ok) throw new Error('Could not load BitBuddy config.');
 	return response.json();
 }
 
 export async function updateUserContext(userContext: UserContextConfig): Promise<BitBuddyConfig> {
-	const response = await fetch(`${BITBUDDY_API}/config/user-context`, {
+	const response = await apiFetch(`${BITBUDDY_API}/config/user-context`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(userContext)
@@ -796,7 +817,7 @@ export async function updateUserContext(userContext: UserContextConfig): Promise
 }
 
 export async function updatePersonalityConfig(personality: Partial<NonNullable<BitBuddyConfig['personality']>>): Promise<BitBuddyConfig> {
-	const response = await fetch(`${BITBUDDY_API}/config/personality`, {
+	const response = await apiFetch(`${BITBUDDY_API}/config/personality`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(personality)
@@ -807,7 +828,7 @@ export async function updatePersonalityConfig(personality: Partial<NonNullable<B
 }
 
 export async function updateDreamingConfig(dreaming: DreamingConfig): Promise<BitBuddyConfig> {
-	const response = await fetch(`${BITBUDDY_API}/config/dreaming`, {
+	const response = await apiFetch(`${BITBUDDY_API}/config/dreaming`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(dreaming)
@@ -818,7 +839,7 @@ export async function updateDreamingConfig(dreaming: DreamingConfig): Promise<Bi
 }
 
 export async function updateChatConfig(chat: ChatConfig): Promise<BitBuddyConfig> {
-	const response = await fetch(`${BITBUDDY_API}/config/chat`, {
+	const response = await apiFetch(`${BITBUDDY_API}/config/chat`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(chat)
@@ -829,7 +850,7 @@ export async function updateChatConfig(chat: ChatConfig): Promise<BitBuddyConfig
 }
 
 export async function updateAutonomyConfig(autonomy: AutonomyConfig): Promise<BitBuddyConfig> {
-	const response = await fetch(`${BITBUDDY_API}/config/autonomy`, {
+	const response = await apiFetch(`${BITBUDDY_API}/config/autonomy`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(autonomy)
@@ -888,6 +909,7 @@ export type EmailConfig = {
 	gmail_credentials_ref: string;
 	gmail_token_ref: string;
 	gmail_redirect_uri: string;
+	gmail_full_mail_access: boolean;
 	default_mailbox: string;
 	max_preview_messages: number;
 	has_password?: boolean;
@@ -965,7 +987,7 @@ export async function getCalendarEvents(
 	if (options.start) params.set('start', options.start);
 	if (options.end) params.set('end', options.end);
 	const suffix = params.toString() ? `?${params.toString()}` : '';
-	const response = await fetch(`${BITBUDDY_API}/calendar/events${suffix}`);
+	const response = await apiFetch(`${BITBUDDY_API}/calendar/events${suffix}`);
 	if (!response.ok) throw new Error('Could not load calendar events.');
 	return response.json();
 }
@@ -973,7 +995,7 @@ export async function getCalendarEvents(
 export async function createCalendarEvent(
 	input: CalendarEventInput
 ): Promise<{ event: CalendarEvent; conflicts: CalendarEvent[] }> {
-	const response = await fetch(`${BITBUDDY_API}/calendar/events`, {
+	const response = await apiFetch(`${BITBUDDY_API}/calendar/events`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(input)
@@ -987,7 +1009,7 @@ export async function updateCalendarEvent(
 	id: string,
 	updates: Partial<CalendarEventInput> & { status?: string }
 ): Promise<{ event: CalendarEvent; conflicts: CalendarEvent[] }> {
-	const response = await fetch(`${BITBUDDY_API}/calendar/events/${id}`, {
+	const response = await apiFetch(`${BITBUDDY_API}/calendar/events/${id}`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(updates)
@@ -998,7 +1020,7 @@ export async function updateCalendarEvent(
 }
 
 export async function deleteCalendarEvent(id: string): Promise<boolean> {
-	const response = await fetch(`${BITBUDDY_API}/calendar/events/${id}`, { method: 'DELETE' });
+	const response = await apiFetch(`${BITBUDDY_API}/calendar/events/${id}`, { method: 'DELETE' });
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not delete event.');
 	return Boolean(data.deleted);
@@ -1008,7 +1030,7 @@ export async function getCalendarPermissions(): Promise<{
 	scopes: CalendarScope[];
 	permissions: Record<CalendarScope, CalendarPermissionState>;
 }> {
-	const response = await fetch(`${BITBUDDY_API}/calendar/permissions`);
+	const response = await apiFetch(`${BITBUDDY_API}/calendar/permissions`);
 	if (!response.ok) throw new Error('Could not load calendar permissions.');
 	return response.json();
 }
@@ -1017,7 +1039,7 @@ export async function setCalendarPermission(
 	scope: CalendarScope,
 	state: CalendarPermissionState
 ): Promise<Record<CalendarScope, CalendarPermissionState>> {
-	const response = await fetch(`${BITBUDDY_API}/calendar/permissions`, {
+	const response = await apiFetch(`${BITBUDDY_API}/calendar/permissions`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ scope, state })
@@ -1028,7 +1050,7 @@ export async function setCalendarPermission(
 }
 
 export async function updateCalendarConfig(calendar: Partial<CalendarConfig>): Promise<BitBuddyConfig> {
-	const response = await fetch(`${BITBUDDY_API}/config/calendar`, {
+	const response = await apiFetch(`${BITBUDDY_API}/config/calendar`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(calendar)
@@ -1039,7 +1061,7 @@ export async function updateCalendarConfig(calendar: Partial<CalendarConfig>): P
 }
 
 export async function updateEmailConfig(email: Partial<EmailConfig> & { password?: string; gmail_client_secret?: string }): Promise<BitBuddyConfig> {
-	const response = await fetch(`${BITBUDDY_API}/config/email`, {
+	const response = await apiFetch(`${BITBUDDY_API}/config/email`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(email)
@@ -1050,14 +1072,14 @@ export async function updateEmailConfig(email: Partial<EmailConfig> & { password
 }
 
 export async function getGmailStatus(): Promise<GmailOAuthStatus> {
-	const response = await fetch(`${BITBUDDY_API}/email/gmail/status`);
+	const response = await apiFetch(`${BITBUDDY_API}/email/gmail/status`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not load Gmail status.');
 	return data;
 }
 
 export async function startGmailLogin(force = false): Promise<GmailOAuthStatus> {
-	const response = await fetch(`${BITBUDDY_API}/email/gmail/login`, {
+	const response = await apiFetch(`${BITBUDDY_API}/email/gmail/login`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ force })
@@ -1068,7 +1090,7 @@ export async function startGmailLogin(force = false): Promise<GmailOAuthStatus> 
 }
 
 export async function openGmailCleanBrowser(force = false): Promise<GmailOAuthStatus> {
-	const response = await fetch(`${BITBUDDY_API}/email/gmail/open-clean-browser`, {
+	const response = await apiFetch(`${BITBUDDY_API}/email/gmail/open-clean-browser`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ force })
@@ -1079,7 +1101,7 @@ export async function openGmailCleanBrowser(force = false): Promise<GmailOAuthSt
 }
 
 export async function completeGmailLogin(input: string): Promise<GmailOAuthStatus> {
-	const response = await fetch(`${BITBUDDY_API}/email/gmail/complete`, {
+	const response = await apiFetch(`${BITBUDDY_API}/email/gmail/complete`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ input })
@@ -1090,33 +1112,33 @@ export async function completeGmailLogin(input: string): Promise<GmailOAuthStatu
 }
 
 export async function logoutGmail(): Promise<GmailOAuthStatus> {
-	const response = await fetch(`${BITBUDDY_API}/email/gmail/logout`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/email/gmail/logout`, { method: 'POST' });
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not disconnect Gmail.');
 	return data;
 }
 
 export async function clearGmailClientSecret(): Promise<GmailOAuthStatus> {
-	const response = await fetch(`${BITBUDDY_API}/email/gmail/client-secret`, { method: 'DELETE' });
+	const response = await apiFetch(`${BITBUDDY_API}/email/gmail/client-secret`, { method: 'DELETE' });
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not clear Gmail client secret.');
 	return data;
 }
 
 export async function getEmailOverview(): Promise<EmailConfig & { permissions: Record<string, string>; account_id: string }> {
-	const response = await fetch(`${BITBUDDY_API}/email/overview`);
+	const response = await apiFetch(`${BITBUDDY_API}/email/overview`);
 	if (!response.ok) throw new Error('Could not load email overview.');
 	return response.json();
 }
 
 export async function getEmailPermissions(): Promise<{ scopes: string[]; permissions: Record<string, string> }> {
-	const response = await fetch(`${BITBUDDY_API}/email/permissions`);
+	const response = await apiFetch(`${BITBUDDY_API}/email/permissions`);
 	if (!response.ok) throw new Error('Could not load email permissions.');
 	return response.json();
 }
 
 export async function setEmailPermission(scope: string, state: string): Promise<Record<string, string>> {
-	const response = await fetch(`${BITBUDDY_API}/email/permissions`, {
+	const response = await apiFetch(`${BITBUDDY_API}/email/permissions`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ scope, state })
@@ -1127,7 +1149,7 @@ export async function setEmailPermission(scope: string, state: string): Promise<
 }
 
 export async function getEmailMailboxes(): Promise<EmailMailbox[]> {
-	const response = await fetch(`${BITBUDDY_API}/email/mailboxes`);
+	const response = await apiFetch(`${BITBUDDY_API}/email/mailboxes`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not load email mailboxes.');
 	return data.mailboxes ?? [];
@@ -1138,7 +1160,7 @@ export async function getEmailMessages(mailbox = '', limit = 50, pageToken = '')
 	if (mailbox) params.set('mailbox', mailbox);
 	params.set('limit', String(limit));
 	if (pageToken) params.set('page_token', pageToken);
-	const response = await fetch(`${BITBUDDY_API}/email/messages?${params}`);
+	const response = await apiFetch(`${BITBUDDY_API}/email/messages?${params}`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not load email messages.');
 	return { messages: data.messages ?? [], next_page_token: data.next_page_token ?? '', result_size_estimate: data.result_size_estimate ?? null };
@@ -1148,7 +1170,7 @@ export async function searchEmailMessages(query: string, mailbox = '', limit = 5
 	const params = new URLSearchParams({ q: query, limit: String(limit) });
 	if (mailbox) params.set('mailbox', mailbox);
 	if (pageToken) params.set('page_token', pageToken);
-	const response = await fetch(`${BITBUDDY_API}/email/search?${params}`);
+	const response = await apiFetch(`${BITBUDDY_API}/email/search?${params}`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not search email messages.');
 	return { messages: data.messages ?? [], next_page_token: data.next_page_token ?? '', result_size_estimate: data.result_size_estimate ?? null };
@@ -1157,14 +1179,14 @@ export async function searchEmailMessages(query: string, mailbox = '', limit = 5
 export async function readEmailMessage(id: string, mailbox = ''): Promise<EmailMessage> {
 	const params = new URLSearchParams({ id });
 	if (mailbox) params.set('mailbox', mailbox);
-	const response = await fetch(`${BITBUDDY_API}/email/message?${params}`);
+	const response = await apiFetch(`${BITBUDDY_API}/email/message?${params}`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not read email message.');
 	return data.message;
 }
 
 export async function trashEmailMessage(id: string, mailbox = ''): Promise<EmailMessage> {
-	const response = await fetch(`${BITBUDDY_API}/email/message/trash`, {
+	const response = await apiFetch(`${BITBUDDY_API}/email/message/trash`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ message_id: id, mailbox })
@@ -1174,22 +1196,37 @@ export async function trashEmailMessage(id: string, mailbox = ''): Promise<Email
 	return data.message;
 }
 
+export async function deleteEmailMessage(id: string, mailbox = 'TRASH'): Promise<EmailMessage> {
+	const response = await apiFetch(`${BITBUDDY_API}/email/message/delete`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ message_id: id, mailbox, confirm: 'DELETE_MESSAGE' })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not permanently delete email.');
+	return data.message;
+}
+
 export async function emptyEmailTrash(): Promise<{ emptied: boolean; deleted: number }> {
-	const response = await fetch(`${BITBUDDY_API}/email/trash/empty`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/email/trash/empty`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ confirm: 'EMPTY_TRASH' })
+	});
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not empty Trash.');
 	return { emptied: Boolean(data.emptied), deleted: Number(data.deleted ?? 0) };
 }
 
 export async function getEmailRules(): Promise<EmailRule[]> {
-	const response = await fetch(`${BITBUDDY_API}/email/rules`);
+	const response = await apiFetch(`${BITBUDDY_API}/email/rules`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not load email rules.');
 	return data.rules ?? [];
 }
 
 export async function createSenderTrashRule(sender: string, options: { mailbox?: string; applyExisting?: boolean } = {}): Promise<{ rule: EmailRule; applied: number }> {
-	const response = await fetch(`${BITBUDDY_API}/email/rules/sender-trash`, {
+	const response = await apiFetch(`${BITBUDDY_API}/email/rules/sender-trash`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ sender, mailbox: options.mailbox ?? 'INBOX', apply_existing: options.applyExisting ?? false })
@@ -1200,14 +1237,14 @@ export async function createSenderTrashRule(sender: string, options: { mailbox?:
 }
 
 export async function deleteEmailRule(id: number): Promise<boolean> {
-	const response = await fetch(`${BITBUDDY_API}/email/rules/${id}`, { method: 'DELETE' });
+	const response = await apiFetch(`${BITBUDDY_API}/email/rules/${id}`, { method: 'DELETE' });
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not delete email rule.');
 	return Boolean(data.deleted);
 }
 
 export async function updateModelRuntimeConfig(config: ModelRuntimeConfig): Promise<BitBuddyConfig> {
-	const response = await fetch(`${BITBUDDY_API}/config/model-runtime`, {
+	const response = await apiFetch(`${BITBUDDY_API}/config/model-runtime`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(config)
@@ -1218,7 +1255,7 @@ export async function updateModelRuntimeConfig(config: ModelRuntimeConfig): Prom
 }
 
 export async function updateMcpConfig(config: McpConfig): Promise<BitBuddyConfig> {
-	const response = await fetch(`${BITBUDDY_API}/config/mcp`, {
+	const response = await apiFetch(`${BITBUDDY_API}/config/mcp`, {
 		method: 'PATCH',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(config)
@@ -1229,35 +1266,35 @@ export async function updateMcpConfig(config: McpConfig): Promise<BitBuddyConfig
 }
 
 export async function getMcpStatus(): Promise<McpStatus> {
-	const response = await fetch(`${BITBUDDY_API}/mcp/status`);
+	const response = await apiFetch(`${BITBUDDY_API}/mcp/status`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not load MCP status.');
 	return data;
 }
 
 export async function installComputerUseLinux(): Promise<McpStatus> {
-	const response = await fetch(`${BITBUDDY_API}/mcp/computer-use-linux/install`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/mcp/computer-use-linux/install`, { method: 'POST' });
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.message ?? data.error ?? 'Could not install Linux desktop control.');
 	return data;
 }
 
 export async function configureComputerUseLinux(): Promise<McpStatus> {
-	const response = await fetch(`${BITBUDDY_API}/mcp/computer-use-linux/configure`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/mcp/computer-use-linux/configure`, { method: 'POST' });
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.message ?? data.error ?? 'Could not configure Linux desktop control.');
 	return data;
 }
 
 export async function doctorComputerUseLinux(): Promise<McpStatus> {
-	const response = await fetch(`${BITBUDDY_API}/mcp/computer-use-linux/doctor`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/mcp/computer-use-linux/doctor`, { method: 'POST' });
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.message ?? data.error ?? 'Linux desktop-control doctor failed.');
 	return data;
 }
 
 export async function getProviderHealth(): Promise<ProviderHealth> {
-	const response = await fetch(`${BITBUDDY_API}/provider/health`);
+	const response = await apiFetch(`${BITBUDDY_API}/provider/health`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok && typeof data.message !== 'string') throw new Error(data.error ?? 'Could not check provider connection.');
 	return {
@@ -1268,25 +1305,25 @@ export async function getProviderHealth(): Promise<ProviderHealth> {
 
 export async function getProviderModels(provider?: Partial<ProviderEntry>): Promise<string[]> {
 	const response = provider
-		? await fetch(`${BITBUDDY_API}/provider/models`, {
+		? await apiFetch(`${BITBUDDY_API}/provider/models`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(provider)
 			})
-		: await fetch(`${BITBUDDY_API}/provider/models`);
+		: await apiFetch(`${BITBUDDY_API}/provider/models`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not list provider models.');
 	return data.models ?? [];
 }
 
 export async function getProviderContext(): Promise<ProviderContext> {
-	const response = await fetch(`${BITBUDDY_API}/provider/context`);
+	const response = await apiFetch(`${BITBUDDY_API}/provider/context`);
 	if (!response.ok) throw new Error('Could not load provider context window.');
 	return response.json();
 }
 
 export async function getCodexStatus(): Promise<ProviderHealth> {
-	const response = await fetch(`${BITBUDDY_API}/provider/codex/status`);
+	const response = await apiFetch(`${BITBUDDY_API}/provider/codex/status`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not check Codex login status.');
 	return {
@@ -1302,7 +1339,7 @@ export async function getCodexStatus(): Promise<ProviderHealth> {
 }
 
 export async function startCodexLogin(options: { force?: boolean } = {}): Promise<ProviderHealth> {
-	const response = await fetch(`${BITBUDDY_API}/provider/codex/login`, {
+	const response = await apiFetch(`${BITBUDDY_API}/provider/codex/login`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(options)
@@ -1322,7 +1359,7 @@ export async function startCodexLogin(options: { force?: boolean } = {}): Promis
 }
 
 export async function completeCodexLogin(input: string): Promise<ProviderHealth> {
-	const response = await fetch(`${BITBUDDY_API}/provider/codex/complete`, {
+	const response = await apiFetch(`${BITBUDDY_API}/provider/codex/complete`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ input })
@@ -1337,7 +1374,7 @@ export async function completeCodexLogin(input: string): Promise<ProviderHealth>
 }
 
 export async function logoutCodex(): Promise<ProviderHealth> {
-	const response = await fetch(`${BITBUDDY_API}/provider/codex/logout`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/provider/codex/logout`, { method: 'POST' });
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not logout Codex.');
 	return {
@@ -1348,7 +1385,7 @@ export async function logoutCodex(): Promise<ProviderHealth> {
 }
 
 export async function getChatContextUsage(options: { mode: ChatMode; messages: ChatMessage[] }): Promise<ProviderContext> {
-	const response = await fetch(`${BITBUDDY_API}/chat/context`, {
+	const response = await apiFetch(`${BITBUDDY_API}/chat/context`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ mode: options.mode, messages: options.messages })
@@ -1358,8 +1395,8 @@ export async function getChatContextUsage(options: { mode: ChatMode; messages: C
 }
 
 export async function getRecentChats(): Promise<ChatSummary[]> {
-	const response = await fetch(`${BITBUDDY_API}/chats`);
-	if (!response.ok) throw new Error('Could not load recent chats. Is `bitbuddy serve` running?');
+	const response = await apiFetch(`${BITBUDDY_API}/chats`);
+	if (!response.ok) throw new Error('Could not load recent chats. Start the backend with `bitbuddy serve`, then open `bitbuddy dashboard`.');
 	const data = await response.json();
 	return data.chats ?? [];
 }
@@ -1369,14 +1406,14 @@ export async function getChats(options: { search?: string; limit?: number } = {}
 	if (options.search) params.set('search', options.search);
 	if (options.limit) params.set('limit', String(options.limit));
 	const query = params.toString() ? `?${params}` : '';
-	const response = await fetch(`${BITBUDDY_API}/chats${query}`);
+	const response = await apiFetch(`${BITBUDDY_API}/chats${query}`);
 	if (!response.ok) throw new Error('Could not load chats.');
 	const data = await response.json();
 	return data.chats ?? [];
 }
 
 export async function getChat(chatId: string): Promise<PersistedChat> {
-	const response = await fetch(`${BITBUDDY_API}/chats/${chatId}`);
+	const response = await apiFetch(`${BITBUDDY_API}/chats/${chatId}`);
 	if (!response.ok) {
 		throw new ApiError(response.status === 404 ? 'Chat no longer exists.' : 'Could not load chat.', response.status);
 	}
@@ -1384,26 +1421,26 @@ export async function getChat(chatId: string): Promise<PersistedChat> {
 }
 
 export async function deleteChat(chatId: string): Promise<void> {
-	const response = await fetch(`${BITBUDDY_API}/chats/${chatId}`, { method: 'DELETE' });
+	const response = await apiFetch(`${BITBUDDY_API}/chats/${chatId}`, { method: 'DELETE' });
 	if (!response.ok) throw new Error('Could not delete chat.');
 }
 
 export async function deleteChatMessageTurn(chatId: string, messageId: number): Promise<PersistedChat> {
-	const response = await fetch(`${BITBUDDY_API}/chats/${encodeURIComponent(chatId)}/messages/${messageId}/turn`, { method: 'DELETE' });
+	const response = await apiFetch(`${BITBUDDY_API}/chats/${encodeURIComponent(chatId)}/messages/${messageId}/turn`, { method: 'DELETE' });
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not delete message turn.');
 	return data.chat;
 }
 
 export async function trimChatFromMessage(chatId: string, messageId: number): Promise<PersistedChat> {
-	const response = await fetch(`${BITBUDDY_API}/chats/${encodeURIComponent(chatId)}/messages/${messageId}/trim-from-message`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/chats/${encodeURIComponent(chatId)}/messages/${messageId}/trim-from-message`, { method: 'POST' });
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not edit message.');
 	return data.chat;
 }
 
 export async function cancelChat(chatId: string): Promise<boolean> {
-	const response = await fetch(`${BITBUDDY_API}/chat/cancel`, {
+	const response = await apiFetch(`${BITBUDDY_API}/chat/cancel`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ chat_id: chatId })
@@ -1414,7 +1451,7 @@ export async function cancelChat(chatId: string): Promise<boolean> {
 }
 
 export async function grantPermission(chatId: string, granted: boolean): Promise<void> {
-	const response = await fetch(`${BITBUDDY_API}/chat/permission`, {
+	const response = await apiFetch(`${BITBUDDY_API}/chat/permission`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ chat_id: chatId, granted })
@@ -1431,7 +1468,7 @@ export async function streamChat(options: {
 	signal?: AbortSignal;
 	onChunk: (chunk: StreamChunk) => void;
 }): Promise<void> {
-	const response = await fetch(`${BITBUDDY_API}/chat/stream`, {
+	const response = await apiFetch(`${BITBUDDY_API}/chat/stream`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		signal: options.signal,
@@ -1445,7 +1482,7 @@ export async function streamChat(options: {
 	});
 
 	if (!response.ok || !response.body) {
-		throw new Error('Could not connect to BitBuddy. Start the backend with `bitbuddy serve`.');
+		throw new Error('Could not connect to BitBuddy. Start the backend with `bitbuddy serve`, then open `bitbuddy dashboard`.');
 	}
 
 	const reader = response.body.getReader();
@@ -1470,7 +1507,7 @@ export async function streamChat(options: {
 }
 
 export async function sendActiveChat(chatId: string): Promise<void> {
-	await fetch(`${BITBUDDY_API}/chat/active`, {
+	await apiFetch(`${BITBUDDY_API}/chat/active`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ chat_id: chatId })
@@ -1478,7 +1515,7 @@ export async function sendActiveChat(chatId: string): Promise<void> {
 }
 
 export async function getActiveChatNotifications(): Promise<Record<string, number>> {
-	const response = await fetch(`${BITBUDDY_API}/chat/active/notifications`);
+	const response = await apiFetch(`${BITBUDDY_API}/chat/active/notifications`);
 	if (!response.ok) return {};
 	const data = await response.json();
 	return data.notifications ?? {};
@@ -1505,7 +1542,7 @@ export type SubagentRun = {
 };
 
 export async function getSubagentRuns(limit = 20): Promise<SubagentRun[]> {
-	const response = await fetch(`${BITBUDDY_API}/subagents/runs?limit=${limit}`);
+	const response = await apiFetch(`${BITBUDDY_API}/subagents/runs?limit=${limit}`);
 	if (!response.ok) return [];
 	const data = await response.json();
 	return data.runs ?? [];
@@ -1521,7 +1558,7 @@ export type MemoryUpdatePatch = {
 };
 
 export async function archiveMemory(id: string, reason = 'Archived from memory browser.'): Promise<MemoryRecord> {
-	const response = await fetch(`${BITBUDDY_API}/memory/${encodeURIComponent(id)}/archive`, {
+	const response = await apiFetch(`${BITBUDDY_API}/memory/${encodeURIComponent(id)}/archive`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ reason }),
@@ -1531,7 +1568,7 @@ export async function archiveMemory(id: string, reason = 'Archived from memory b
 }
 
 export async function moveMemory(id: string, newLayer: MemoryLayer, reason = ''): Promise<MemoryRecord> {
-	const response = await fetch(`${BITBUDDY_API}/memory/${encodeURIComponent(id)}/move`, {
+	const response = await apiFetch(`${BITBUDDY_API}/memory/${encodeURIComponent(id)}/move`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ new_layer: newLayer, reason }),
@@ -1541,7 +1578,7 @@ export async function moveMemory(id: string, newLayer: MemoryLayer, reason = '')
 }
 
 export async function updateMemory(id: string, patch: MemoryUpdatePatch): Promise<MemoryRecord> {
-	const response = await fetch(`${BITBUDDY_API}/memory/${encodeURIComponent(id)}`, {
+	const response = await apiFetch(`${BITBUDDY_API}/memory/${encodeURIComponent(id)}`, {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(patch),
@@ -1565,20 +1602,20 @@ export type Skill = {
 
 export async function getSkills(includeArchived = false): Promise<Skill[]> {
 	const params = includeArchived ? '?include_archived=true' : '';
-	const response = await fetch(`${BITBUDDY_API}/skills${params}`);
+	const response = await apiFetch(`${BITBUDDY_API}/skills${params}`);
 	if (!response.ok) throw new Error('Could not load skills.');
 	const data = await response.json();
 	return data.skills ?? [];
 }
 
 export async function getSkill(name: string): Promise<Skill> {
-	const response = await fetch(`${BITBUDDY_API}/skills/${encodeURIComponent(name)}`);
+	const response = await apiFetch(`${BITBUDDY_API}/skills/${encodeURIComponent(name)}`);
 	if (!response.ok) throw new Error(`Could not load skill: ${name}`);
 	return response.json();
 }
 
 export async function archiveSkillByName(name: string): Promise<void> {
-	const response = await fetch(`${BITBUDDY_API}/skills/${encodeURIComponent(name)}/archive`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/skills/${encodeURIComponent(name)}/archive`, { method: 'POST' });
 	if (!response.ok) throw new Error(`Could not archive skill: ${name}`);
 }
 
@@ -1604,25 +1641,25 @@ export async function getWorkspaceDocuments(kind = '', status = 'active'): Promi
 	if (kind) params.set('kind', kind);
 	if (status) params.set('status', status);
 	const query = params.toString() ? `?${params.toString()}` : '';
-	const response = await fetch(`${BITBUDDY_API}/workspace${query}`);
+	const response = await apiFetch(`${BITBUDDY_API}/workspace${query}`);
 	if (!response.ok) throw new Error('Could not load workspace documents.');
 	const data = await response.json();
 	return data.documents ?? [];
 }
 
 export async function getWorkspaceDocument(id: string): Promise<WorkspaceDocument> {
-	const response = await fetch(`${BITBUDDY_API}/workspace/${encodeURIComponent(id)}`);
+	const response = await apiFetch(`${BITBUDDY_API}/workspace/${encodeURIComponent(id)}`);
 	if (!response.ok) throw new Error(`Could not load document: ${id}`);
 	return response.json();
 }
 
 export async function archiveWorkspaceDocument(id: string): Promise<void> {
-	const response = await fetch(`${BITBUDDY_API}/workspace/${encodeURIComponent(id)}/archive`, { method: 'POST' });
+	const response = await apiFetch(`${BITBUDDY_API}/workspace/${encodeURIComponent(id)}/archive`, { method: 'POST' });
 	if (!response.ok) throw new Error(`Could not archive document: ${id}`);
 }
 
 export async function pinWorkspaceDocument(id: string, pinned: boolean): Promise<void> {
-	const response = await fetch(`${BITBUDDY_API}/workspace/${encodeURIComponent(id)}/pin`, {
+	const response = await apiFetch(`${BITBUDDY_API}/workspace/${encodeURIComponent(id)}/pin`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ pinned })

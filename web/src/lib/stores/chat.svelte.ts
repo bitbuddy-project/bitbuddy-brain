@@ -57,7 +57,7 @@ export const chatSession = $state({
 	attachments: [] as PendingChatAttachment[],
 	pendingSteer: null as PendingSteerMessage | null,
 	backgroundNotifications: {} as Record<string, number>,
-	thinkEnabled: false,
+	thinkEnabled: true,
 	// Thinking setting captured at the start of the active stream. Visibility of the
 	// in-flight thinking stream is gated on this, so toggling thinkEnabled mid-response
 	// does not tear down the thinking already being shown for the current run.
@@ -67,7 +67,8 @@ export const chatSession = $state({
 function loadThinkPreference() {
 	if (typeof window === 'undefined') return;
 	try {
-		chatSession.thinkEnabled = window.localStorage.getItem(THINK_STORAGE_KEY) === 'true';
+		const stored = window.localStorage.getItem(THINK_STORAGE_KEY);
+		if (stored !== null) chatSession.thinkEnabled = stored === 'true';
 	} catch { /* ignore */ }
 }
 
@@ -553,19 +554,26 @@ export async function refreshRecentChats() {
 export async function stopActiveResponse() {
 	const stream = activeStream;
 	if (!stream) return;
+	const pending = chatSession.pendingSteer;
 
 	const chatId = stream.chatId || chatSession.currentChatId;
 	stream.controller.abort();
 	finishStream(stream);
 	clearStreamState();
 
-	if (!chatId) return;
-	try {
-		await cancelChat(chatId);
-	} catch (caught) {
-		if (chatSession.currentChatId === chatId) {
-			chatSession.error = caught instanceof Error ? caught.message : 'Could not stop BitBuddy.';
+	if (chatId) {
+		try {
+			await cancelChat(chatId);
+		} catch (caught) {
+			if (chatSession.currentChatId === chatId) {
+				chatSession.error = caught instanceof Error ? caught.message : 'Could not stop BitBuddy.';
+			}
 		}
+	}
+
+	if (pending && chatSession.pendingSteer === pending) {
+		chatSession.pendingSteer = null;
+		await sendMessage(pending.content, pending.attachments);
 	}
 }
 

@@ -89,6 +89,17 @@ class ImapProvider:
             client.uid("STORE", uid, "+FLAGS", "(\\Deleted)")
             return message
 
+    def delete_message(self, *, mailbox: str, message_id: str) -> EmailMessage:
+        uid = message_id.encode("ascii", errors="ignore")
+        with self._connect() as client:
+            self._select(client, mailbox or self._trash_mailbox(client), readonly=False)
+            message = self._fetch_message(client, mailbox, uid, include_body=False)
+            status, _data = client.uid("STORE", uid, "+FLAGS", "(\\Deleted)")
+            if status != "OK":
+                raise ValueError(f"Could not permanently delete email message {message_id}.")
+            client.expunge()
+            return message
+
     def empty_trash(self) -> int:
         with self._connect() as client:
             trash_mailbox = self._trash_mailbox(client)

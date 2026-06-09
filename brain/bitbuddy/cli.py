@@ -13,10 +13,12 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from .activity import list_activity, log_activity
+from .auth import API_TOKEN_HEADER, get_api_token, is_loopback_host
 from .chats.repository import delete_chat, get_chat, list_recent_chats
-from .config import ProviderConfig, load_config, update_calendar_config, update_mcp_config, update_model_runtime_config, upsert_mcp_server, validate_timezone, write_config
+from .config import ProviderConfig, load_config, update_calendar_config, update_email_config, update_mcp_config, update_model_runtime_config, upsert_mcp_server, validate_timezone, write_config
 from .database import db_connection
 from .personality import BUILTIN_PERSONALITIES
 from .paths import APP_DIR, CONFIG_PATH, GLOBAL_DB_PATH, PERSONALITIES_DIR, WEB_DIR, ensure_app_dirs
@@ -70,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser("serve", help="Run the BitBuddy backend server.")
     serve_parser.add_argument("--host", default="127.0.0.1", help="Host for the backend server.")
     serve_parser.add_argument("--port", type=int, default=8787, help="Port for the backend server.")
+    serve_parser.add_argument("--allow-lan", action="store_true", help="Allow binding the backend to a non-loopback/LAN interface. Requires local API token auth.")
     serve_parser.set_defaults(handler=run_serve)
 
     web_parser = subparsers.add_parser("web", help="Run the SvelteKit/Vite web app.")
@@ -82,6 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_parser.add_argument("--port", default="5173", help="Port for the dev server.")
     dashboard_parser.add_argument("--api-host", default="127.0.0.1", help="Host for the backend server.")
     dashboard_parser.add_argument("--api-port", type=int, default=8787, help="Port for the backend server.")
+    dashboard_parser.add_argument("--allow-lan", action="store_true", help="Allow binding the backend to a non-loopback/LAN interface. Requires local API token auth.")
     dashboard_parser.add_argument("--no-open", action="store_true", help="Do not open the dashboard in a browser.")
     dashboard_parser.set_defaults(handler=run_dashboard)
 
@@ -103,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
     config_path.set_defaults(handler=config_path_command)
     config_edit = config_subparsers.add_parser("edit", help="Open config.yaml in $EDITOR.")
     config_edit.set_defaults(handler=config_edit_command)
+    config_gmail_full = config_subparsers.add_parser("gmail-full-access", help="Enable or disable Gmail full mail scope for permanent delete/empty Trash.")
+    config_gmail_group = config_gmail_full.add_mutually_exclusive_group(required=True)
+    config_gmail_group.add_argument("--enable", action="store_true", help="Request https://mail.google.com/ on the next Gmail reconnect.")
+    config_gmail_group.add_argument("--disable", action="store_true", help="Use the safer Gmail modify scope on the next Gmail reconnect.")
+    config_gmail_full.set_defaults(handler=config_gmail_full_access_command)
     config_parser.set_defaults(handler=config_show_command)
 
     model_parser = subparsers.add_parser("model", help="List, add, or switch model providers.")
@@ -637,8 +646,11 @@ def run_setup(_args: argparse.Namespace) -> int:
     if configure_calendar and not configure_calendar_setup(questionary, style, load_config()):
         return 1
 
+    handle_setup_launch_prompt(questionary, style)
+
     print()
-    print("Setup complete. Run `bitbuddy serve` to start the BitBuddy backend server.")
+    print("Setup complete.")
+    print("Use `bitbuddy serve` for the backend and `bitbuddy dashboard` for the web UI.")
     return 0
 
 
@@ -939,6 +951,104 @@ def configure_calendar_setup(questionary: Any, style: Any, current_config: objec
     return True
 
 
+def handle_setup_launch_prompt(questionary: Any, style: Any) -> None:
+    token = get_api_token()
+    backend_running = check_backend_health(token=token)
+    if backend_running:
+        restart = questionary.confirm(
+            "BitBuddy server is already running. Restart it now to load setup changes?",
+            default=False,
+            qmark="◆",
+            style=style,
+        ).ask()
+        if restart:
+            restarted = restart_backend_detached()
+            print("BitBuddy server restarted." if restarted else "Could not restart automatically. Stop the old server and run `bitbuddy serve`.")
+    else:
+        start = questionary.confirm(
+            "Start BitBuddy server now?",
+            default=True,
+            qmark="◆",
+            style=style,
+        ).ask()
+        if start:
+            start_backend_detached()
+            print("BitBuddy server starting in the background.")
+
+    open_dashboard = questionary.confirm(
+        "Open the dashboard now?",
+        default=True,
+        qmark="◆",
+        style=style,
+    ).ask()
+    if open_dashboard:
+        start_dashboard_detached()
+        print("BitBuddy dashboard starting in the background.")
+
+
+def start_backend_detached() -> subprocess.Popen[bytes]:
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = APP_DIR / "serve.log"
+    log = log_path.open("ab")
+    return subprocess.Popen([bitbuddy_command(), "serve"], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+
+
+def start_dashboard_detached() -> subprocess.Popen[bytes]:
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = APP_DIR / "dashboard.log"
+    log = log_path.open("ab")
+    return subprocess.Popen([bitbuddy_command(), "dashboard"], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+
+
+def restart_backend_detached() -> bool:
+    pids = backend_process_ids()
+    if not pids:
+        return False
+    for pid in pids:
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and check_backend_health():
+        time.sleep(0.2)
+    start_backend_detached()
+    return True
+
+
+def backend_process_ids() -> list[int]:
+    try:
+        result = subprocess.run(["ps", "-eo", "pid=,cmd="], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    pids: list[int] = []
+    own_pid = os.getpid()
+    for line in result.stdout.splitlines():
+        clean = line.strip()
+        if not clean:
+            continue
+        pid_text, _, command = clean.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid == own_pid:
+            continue
+        if "bitbuddy" in command and (" serve" in command or "bitbuddy.server import serve" in command):
+            pids.append(pid)
+    return pids
+
+
+def bitbuddy_command() -> str:
+    command = shutil.which("bitbuddy")
+    if command:
+        return command
+    candidate = Path(sys.executable).with_name("bitbuddy")
+    return str(candidate if candidate.exists() else sys.argv[0])
+
+
 def setup_positive_int(questionary: Any, style: Any, prompt: str, default: int) -> int | None:
     value = questionary.text(prompt, default=str(default), qmark="◆", style=style).ask()
     if value is None:
@@ -974,26 +1084,24 @@ def run_web(args: argparse.Namespace) -> int:
 
 
 def run_dashboard(args: argparse.Namespace) -> int:
-    backend_process: subprocess.Popen[bytes] | None = None
     web_process: subprocess.Popen[bytes] | None = None
+    api_token = get_api_token()
     api_url = f"http://{local_browser_host(args.api_host)}:{int(args.api_port)}"
     dashboard_url = f"http://{local_browser_host(args.host)}:{args.port}"
+    launch_url = f"{dashboard_url}?{urlencode({'bitbuddy_token': api_token})}"
+    dashboard_url_file = write_private_dashboard_url(launch_url)
 
-    if not check_backend_health(args.api_host, int(args.api_port)):
-        print(f"Starting BitBuddy backend at {api_url} ...")
-        backend_process = subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                "import os; from bitbuddy.server import serve; serve(os.environ['BITBUDDY_HOST'], int(os.environ['BITBUDDY_PORT']))",
-            ],
-            env={**os.environ, "BITBUDDY_HOST": str(args.api_host), "BITBUDDY_PORT": str(int(args.api_port))},
-        )
-        if not wait_for_backend(args.api_host, int(args.api_port), timeout_seconds=15):
-            terminate_process(backend_process)
-            raise ValueError("BitBuddy backend did not become ready. Run `bitbuddy doctor` for diagnostics.")
-    else:
+    if check_backend_health(args.api_host, int(args.api_port), token=api_token):
         print(f"Using existing BitBuddy backend at {api_url}.")
+    else:
+        print(f"BitBuddy backend is not running at {api_url}. Start it with `bitbuddy serve`.")
+
+    if wait_for_http(dashboard_url, timeout_seconds=1.5):
+        print(f"Using existing BitBuddy dashboard at {dashboard_url}.")
+        print(f"Dashboard URL saved to {dashboard_url_file}.")
+        if not args.no_open:
+            webbrowser.open(launch_url)
+        return 0
 
     print(f"Starting BitBuddy dashboard at {dashboard_url} ...")
     try:
@@ -1002,18 +1110,19 @@ def run_dashboard(args: argparse.Namespace) -> int:
             cwd=WEB_DIR,
         )
         if wait_for_http(dashboard_url, timeout_seconds=20) and not args.no_open:
-            webbrowser.open(dashboard_url)
+            webbrowser.open(launch_url)
         elif not args.no_open:
-            print(f"Dashboard is starting. Open {dashboard_url} when it is ready.")
+            print(f"Dashboard is starting. Tokenized URL saved to {dashboard_url_file}.")
+        print(f"Dashboard URL saved to {dashboard_url_file}.")
         return web_process.wait()
     finally:
         if web_process is not None and web_process.poll() is None:
             terminate_process(web_process)
-        if backend_process is not None and backend_process.poll() is None:
-            terminate_process(backend_process)
 
 
 def run_serve(args: argparse.Namespace) -> int:
+    ensure_backend_bind_allowed(str(args.host), bool(getattr(args, "allow_lan", False)))
+    get_api_token()
     serve(args.host, args.port)
     return 0
 
@@ -1048,20 +1157,21 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def check_backend_health(host: str = "127.0.0.1", port: int = 8787) -> bool:
-    return wait_for_backend(host, port, timeout_seconds=1.5)
+def check_backend_health(host: str = "127.0.0.1", port: int = 8787, *, token: str = "") -> bool:
+    return wait_for_backend(host, port, timeout_seconds=1.5, token=token)
 
 
-def wait_for_backend(host: str = "127.0.0.1", port: int = 8787, *, timeout_seconds: float = 10) -> bool:
-    return wait_for_http(f"http://{local_browser_host(host)}:{int(port)}/health", timeout_seconds=timeout_seconds, require_2xx=True)
+def wait_for_backend(host: str = "127.0.0.1", port: int = 8787, *, timeout_seconds: float = 10, token: str = "") -> bool:
+    return wait_for_http(f"http://{local_browser_host(host)}:{int(port)}/health", timeout_seconds=timeout_seconds, require_2xx=True, token=token)
 
 
-def wait_for_http(url: str, *, timeout_seconds: float = 10, require_2xx: bool = False) -> bool:
+def wait_for_http(url: str, *, timeout_seconds: float = 10, require_2xx: bool = False, token: str = "") -> bool:
     deadline = time.monotonic() + timeout_seconds
     last_error = ""
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=1.5) as response:
+            request = urllib.request.Request(url, headers={API_TOKEN_HEADER: token} if token else {})
+            with urllib.request.urlopen(request, timeout=1.5) as response:
                 return 200 <= response.status < (300 if require_2xx else 500)
         except OSError as error:
             last_error = str(error)
@@ -1071,6 +1181,25 @@ def wait_for_http(url: str, *, timeout_seconds: float = 10, require_2xx: bool = 
 
 def local_browser_host(host: str) -> str:
     return "127.0.0.1" if host in {"0.0.0.0", "::", ""} else str(host)
+
+
+def write_private_dashboard_url(url: str) -> Path:
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    path = APP_DIR / "dashboard.url"
+    tmp_path = path.with_suffix(".url.tmp")
+    tmp_path.write_text(url + "\n", encoding="utf-8")
+    os.chmod(tmp_path, 0o600)
+    tmp_path.replace(path)
+    os.chmod(path, 0o600)
+    return path
+
+
+def ensure_backend_bind_allowed(host: str, allow_lan: bool) -> None:
+    if is_loopback_host(host):
+        return
+    if not allow_lan:
+        raise ValueError("Refusing to bind BitBuddy backend to a non-loopback address without --allow-lan.")
+    print("Warning: BitBuddy backend is being exposed beyond localhost. Keep the API token private and only use trusted networks.")
 
 
 def terminate_process(process: subprocess.Popen[bytes]) -> None:
@@ -1100,6 +1229,16 @@ def config_edit_command(_args: argparse.Namespace) -> int:
     if not editor:
         raise ValueError("Set $EDITOR or $VISUAL to edit config.yaml from the CLI.")
     return subprocess.call([*shlex.split(editor), str(CONFIG_PATH)])
+
+
+def config_gmail_full_access_command(args: argparse.Namespace) -> int:
+    config = update_email_config({"gmail_full_mail_access": bool(args.enable)})
+    if config.email.gmail_full_mail_access:
+        print("Gmail full mail access enabled for the next reconnect.")
+        print("Add https://mail.google.com/ in Google Cloud OAuth Data Access, save, then run Gmail reconnect in Settings.")
+    else:
+        print("Gmail full mail access disabled. The next reconnect will use the safer Gmail modify scope.")
+    return 0
 
 
 def model_command(args: argparse.Namespace) -> int:

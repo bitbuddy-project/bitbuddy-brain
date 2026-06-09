@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 import urllib.error
 import urllib.request
 
+from .auth import API_TOKEN_HEADER, is_allowed_origin, valid_api_token
 from .chats.repository import (
     chat_summary_to_json,
     create_chat,
@@ -50,7 +51,7 @@ from .calendar.service import calendar_overview, create_event as calendar_create
 from .calendar.store import calendar_to_json, ensure_default_calendar, event_to_json, list_calendars as list_calendars_store
 from .email.models import mailbox_to_json, message_page_to_json, message_to_json, rule_to_json
 from .email.permissions import EMAIL_SCOPES, EmailPermissionRequired, all_permissions as email_permissions, set_permission as set_email_permission
-from .email.service import create_sender_trash_rule as email_create_sender_trash_rule, delete_rule as email_delete_rule, email_account_id, email_overview, empty_trash as email_empty_trash, list_mailboxes as email_list_mailboxes, list_messages_page as email_list_messages_page, list_rules as email_list_rules, read_message as email_read_message, search_messages_page as email_search_messages_page, trash_message as email_trash_message
+from .email.service import create_sender_trash_rule as email_create_sender_trash_rule, delete_message as email_delete_message, delete_rule as email_delete_rule, email_account_id, email_overview, empty_trash as email_empty_trash, list_mailboxes as email_list_mailboxes, list_messages_page as email_list_messages_page, list_rules as email_list_rules, read_message as email_read_message, search_messages_page as email_search_messages_page, trash_message as email_trash_message
 from .continuity import record_continuity_event
 from .personality import load_selected_personality, selected_personality_to_legacy_dict
 from .paths import APP_DIR, CONFIG_PATH, PERSONALITIES_DIR, PERSONALITY_PATH
@@ -89,17 +90,24 @@ CODEX_AUTH_FLOWS: dict[str, dict[str, str]] = {}
 GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+GMAIL_FULL_MAIL_SCOPE = "https://mail.google.com/"
 GMAIL_DEFAULT_REDIRECT_URI = "http://127.0.0.1:8787/email/gmail/callback"
 GMAIL_LEGACY_LOCALHOST_REDIRECT_URI = "http://localhost:8787/email/gmail/callback"
 GMAIL_AUTH_FLOWS: dict[str, dict[str, str]] = {}
 GMAIL_OAUTH_DIAGNOSTICS: dict[str, str] = {}
 GMAIL_OAUTH_FLOW_TTL_SECONDS = 900
+PUBLIC_PATHS = {"/health", "/provider/codex/callback", "/email/gmail/callback"}
 
 
 class BitBuddyRequestHandler(BaseHTTPRequestHandler):
     server_version = "BitBuddy/0.1"
 
     def do_OPTIONS(self) -> None:
+        if not self.origin_allowed():
+            self.send_response(HTTPStatus.FORBIDDEN)
+            self.send_common_headers()
+            self.end_headers()
+            return
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_common_headers()
         self.end_headers()
@@ -130,6 +138,8 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if not self.authorize_request(path):
+            return
 
         try:
             if path == "/health":
@@ -469,6 +479,8 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if not self.authorize_request(path):
+            return
 
         try:
             if path == "/projects":
@@ -666,7 +678,24 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"message": message_to_json(message), "trashed": True})
                 return
 
+            if path == "/email/message/delete":
+                body = self.read_json()
+                message_id = str(body.get("message_id") or body.get("id") or "").strip()
+                mailbox = str(body.get("mailbox") or "TRASH").strip()
+                confirm = str(body.get("confirm") or "")
+                try:
+                    message = email_delete_message(message_id=message_id, mailbox=mailbox, enforce=True, confirm=confirm)
+                except (EmailPermissionRequired, ValueError) as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"message": message_to_json(message), "deleted": True})
+                return
+
             if path == "/email/trash/empty":
+                body = self.read_json()
+                if str(body.get("confirm") or "") != "EMPTY_TRASH":
+                    self.send_json({"error": "Empty Trash requires confirm=EMPTY_TRASH."}, status=HTTPStatus.BAD_REQUEST)
+                    return
                 try:
                     deleted = email_empty_trash(enforce=True)
                 except (EmailPermissionRequired, ValueError) as error:
@@ -896,6 +925,8 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
     def do_PATCH(self) -> None:
         path = urlparse(self.path).path
+        if not self.authorize_request(path):
+            return
 
         try:
             if path == "/config/user-context":
@@ -1089,6 +1120,8 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
+        if not self.authorize_request(path):
+            return
 
         try:
             if path.startswith("/chats/") and path.endswith("/turn"):
@@ -1371,10 +1404,27 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError) as error:
             raise ClientDisconnected() from error
 
+    def origin_allowed(self) -> bool:
+        return is_allowed_origin(self.headers.get("Origin", ""))
+
+    def authorize_request(self, path: str) -> bool:
+        if path in PUBLIC_PATHS:
+            return True
+        if not self.origin_allowed():
+            self.send_json({"error": "Origin is not allowed."}, status=HTTPStatus.FORBIDDEN)
+            return False
+        if not valid_api_token(self.headers.get(API_TOKEN_HEADER, "")):
+            self.send_json({"error": "BitBuddy API token is required."}, status=HTTPStatus.UNAUTHORIZED)
+            return False
+        return True
+
     def send_common_headers(self, content_type: str = "text/plain") -> None:
         self.send_header("Content-Type", content_type)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "content-type")
+        origin = self.headers.get("Origin", "")
+        if origin and is_allowed_origin(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Headers", f"content-type, {API_TOKEN_HEADER}")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -1531,6 +1581,7 @@ def config_to_json(config: BitBuddyConfig) -> dict[str, Any]:
             "gmail_credentials_ref": config.email.gmail_credentials_ref,
             "gmail_token_ref": config.email.gmail_token_ref,
             "gmail_redirect_uri": config.email.gmail_redirect_uri,
+            "gmail_full_mail_access": config.email.gmail_full_mail_access,
             "default_mailbox": config.email.default_mailbox,
             "max_preview_messages": config.email.max_preview_messages,
             "has_password": bool(config.email.credentials_ref),
@@ -1660,6 +1711,7 @@ def start_gmail_login(force: bool = False) -> dict[str, Any]:
     verifier = token_urlsafe(64)
     prompt = "consent" if config.email_address else "select_account consent"
     access_type = "offline"
+    scope = gmail_oauth_scope(config)
     GMAIL_AUTH_FLOWS[state] = {
         "created_at": str(time.time()),
         "token_ref": config.gmail_token_ref,
@@ -1672,7 +1724,7 @@ def start_gmail_login(force: bool = False) -> dict[str, Any]:
         "response_type": "code",
         "client_id": config.gmail_client_id,
         "redirect_uri": redirect_uri,
-        "scope": GMAIL_SCOPE,
+        "scope": scope,
         "access_type": access_type,
         "prompt": prompt,
         "state": state,
@@ -1686,7 +1738,7 @@ def start_gmail_login(force: bool = False) -> dict[str, Any]:
         {
             "response_type": "code",
             "redirect_uri": redirect_uri,
-            "scope": GMAIL_SCOPE,
+            "scope": scope,
             "access_type": access_type,
             "prompt": prompt,
             "state_prefix": state[:8],
@@ -1702,7 +1754,7 @@ def start_gmail_login(force: bool = False) -> dict[str, Any]:
         "Starting Gmail OAuth flow",
         {
             "redirect_uri": redirect_uri,
-            "scope": GMAIL_SCOPE,
+            "scope": scope,
             "prompt": prompt,
             "access_type": access_type,
             "state_prefix": state[:8],
@@ -1723,6 +1775,10 @@ def start_gmail_login(force: bool = False) -> dict[str, Any]:
         "redirect_uri": redirect_uri,
         "oauth_mode": oauth_mode,
     }
+
+
+def gmail_oauth_scope(config: object) -> str:
+    return GMAIL_FULL_MAIL_SCOPE if bool(getattr(config, "gmail_full_mail_access", False)) else GMAIL_SCOPE
 
 
 def cleanup_expired_gmail_auth_flows() -> None:

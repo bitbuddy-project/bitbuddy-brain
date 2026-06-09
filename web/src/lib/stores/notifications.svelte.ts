@@ -1,13 +1,13 @@
 import type { NotificationItem } from '$lib/api/bitbuddy';
-import { BITBUDDY_API, getNotifications, markNotificationRead } from '$lib/api/bitbuddy';
+import { getNotifications, markNotificationRead } from '$lib/api/bitbuddy';
 
 const NOTIFICATION_POLL_MS = 8000;
 const LAST_SEEN_KEY = 'bitbuddy:notifications:last-seen-id';
 const MAX_TOASTS = 4;
 const MAX_ITEMS = 50;
+const STARTING_SOON_STALE_GRACE_MS = 30 * 60 * 1000;
 
 let notificationPollTimer: number | undefined;
-let notificationEvents: EventSource | null = null;
 let lastSeenId = 0;
 
 export const notificationCenter = $state({
@@ -24,32 +24,8 @@ export function initializeNotifications() {
 		notificationCenter.initialized = true;
 		lastSeenId = readLastSeenId();
 		void pollNotifications({ showToasts: true });
-		startNotificationStream();
 	}
 	startNotificationPolling();
-}
-
-function startNotificationStream() {
-	if (typeof window === 'undefined' || notificationEvents) return;
-	try {
-		notificationEvents = new EventSource(`${BITBUDDY_API}/notifications/stream`);
-		notificationEvents.onmessage = (event) => {
-			try {
-				const chunk = JSON.parse(event.data);
-				if (chunk.kind === 'notification' && chunk.notification) {
-					handleIncomingNotifications([chunk.notification], { showToasts: true });
-				}
-			} catch {
-				// Ignore malformed stream events; polling remains the fallback.
-			}
-		};
-		notificationEvents.onerror = () => {
-			notificationEvents?.close();
-			notificationEvents = null;
-		};
-	} catch {
-		notificationEvents = null;
-	}
 }
 
 export function startNotificationPolling() {
@@ -77,13 +53,14 @@ export async function pollNotifications({ showToasts = true }: { showToasts?: bo
 }
 
 function handleIncomingNotifications(notifications: NotificationItem[], { showToasts = true }: { showToasts?: boolean } = {}) {
+	notificationCenter.toasts = notificationCenter.toasts.filter((notification) => !isStaleCalendarReminder(notification));
 	if (notifications.length === 0) return;
 	const incoming = notifications.filter((notification) => notification.id > lastSeenId);
 	lastSeenId = Math.max(lastSeenId, ...notifications.map((notification) => notification.id));
 	writeLastSeenId(lastSeenId);
 	notificationCenter.items = mergeNotifications(notificationCenter.items, notifications);
 	if (showToasts && incoming.length > 0) {
-		notificationCenter.toasts = mergeToastNotifications(notificationCenter.toasts, incoming);
+		notificationCenter.toasts = mergeToastNotifications(notificationCenter.toasts, incoming.filter((notification) => !isStaleCalendarReminder(notification)));
 		notificationCenter.unreadCount += incoming.filter((notification) => !notification.read_at && !notification.dismissed_at).length;
 	}
 }
@@ -108,7 +85,7 @@ function mergeNotifications(current: NotificationItem[], incoming: NotificationI
 }
 
 function mergeToastNotifications(current: NotificationItem[], incoming: NotificationItem[]) {
-	const merged = mergeNotifications(current, incoming);
+	const merged = mergeNotifications(current, incoming).filter((notification) => !isStaleCalendarReminder(notification));
 	const persistent = merged.filter(isPersistentNotification);
 	const regular = merged.filter((notification) => !isPersistentNotification(notification)).slice(0, MAX_TOASTS);
 	return [...persistent, ...regular].slice(0, Math.max(MAX_TOASTS, persistent.length));
@@ -116,6 +93,17 @@ function mergeToastNotifications(current: NotificationItem[], incoming: Notifica
 
 export function isPersistentNotification(notification: NotificationItem) {
 	return notification.metadata?.persistent === true;
+}
+
+function isStaleCalendarReminder(notification: NotificationItem) {
+	if (notification.category !== 'reminder') return false;
+	const rawStart = notification.metadata?.calendar_event_start_at;
+	if (typeof rawStart !== 'string' || !rawStart) return false;
+	const start = new Date(rawStart).getTime();
+	if (!Number.isFinite(start)) return false;
+	const kind = typeof notification.metadata?.calendar_reminder_kind === 'string' ? notification.metadata.calendar_reminder_kind : '';
+	const grace = kind === 'starting_soon' || kind === 'conflict' ? STARTING_SOON_STALE_GRACE_MS : 0;
+	return Date.now() > start + grace;
 }
 
 function readLastSeenId() {

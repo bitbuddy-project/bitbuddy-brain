@@ -28,6 +28,7 @@ def email_overview() -> dict[str, object]:
         "gmail_oauth_mode": config.gmail_oauth_mode,
         "gmail_client_id": config.gmail_client_id,
         "gmail_redirect_uri": config.gmail_redirect_uri,
+        "gmail_full_mail_access": config.gmail_full_mail_access,
         "default_mailbox": config.default_mailbox,
         "max_preview_messages": config.max_preview_messages,
         "has_password": bool(config.credentials_ref),
@@ -101,6 +102,24 @@ def trash_message(*, message_id: str, mailbox: str = "", enforce: bool = True) -
     if not clean_id:
         raise ValueError("message_id is required.")
     return get_provider(config).trash_message(mailbox=clean_mailbox, message_id=clean_id)
+
+
+def delete_message(*, message_id: str, mailbox: str = "", enforce: bool = True, confirm: str = "") -> EmailMessage:
+    config = require_enabled_config()
+    if enforce:
+        require_permission(email_account_id(config), "trash")
+    if confirm != "DELETE_MESSAGE":
+        raise ValueError("Permanent delete requires confirm=DELETE_MESSAGE.")
+    clean_mailbox = mailbox.strip() or "TRASH"
+    if clean_mailbox.casefold() not in {"trash", "[gmail]/trash"}:
+        raise ValueError("Permanent delete is only allowed from Trash.")
+    clean_id = str(message_id or "").strip()
+    if not clean_id:
+        raise ValueError("message_id is required.")
+    provider = get_provider(config)
+    if not hasattr(provider, "delete_message"):
+        raise ValueError("This email provider does not support permanent delete.")
+    return provider.delete_message(mailbox=clean_mailbox, message_id=clean_id)
 
 
 def empty_trash(*, enforce: bool = True) -> int:

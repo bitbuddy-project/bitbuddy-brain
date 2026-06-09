@@ -5,6 +5,7 @@
 	import TrashIcon from 'phosphor-svelte/lib/TrashIcon';
 	import {
 		createSenderTrashRule,
+		deleteEmailMessage,
 		emptyEmailTrash,
 		getEmailMailboxes,
 		getEmailMessages,
@@ -160,9 +161,14 @@
 		if (!selectedMessage || messageAction) return;
 		messageAction = true;
 		try {
-			await trashEmailMessage(selectedMessage.id, selectedMessage.mailbox || selectedMailbox);
+			if (selectedMailbox === 'TRASH') {
+				await deleteEmailMessage(selectedMessage.id, selectedMessage.mailbox || selectedMailbox);
+				actionStatus = 'Permanently deleted.';
+			} else {
+				await trashEmailMessage(selectedMessage.id, selectedMessage.mailbox || selectedMailbox);
+				actionStatus = 'Moved to Trash.';
+			}
 			messages = messages.filter((message) => message.id !== selectedMessage?.id);
-			actionStatus = 'Moved to Trash.';
 			selectedMessage = null;
 			error = '';
 		} catch (caught) {
@@ -260,7 +266,11 @@
 	}
 
 	function showEmptyTrashButton() {
-		return selectedMailbox === 'TRASH' && (messages.length > 0 || (selectedMailboxCount() ?? 0) > 0);
+		return selectedMailbox === 'TRASH' && (overview?.provider !== 'gmail' || overview.gmail_full_mail_access) && (messages.length > 0 || (selectedMailboxCount() ?? 0) > 0);
+	}
+
+	function gmailTrashDeleteUnavailable() {
+		return selectedMailbox === 'TRASH' && overview?.provider === 'gmail' && !overview.gmail_full_mail_access;
 	}
 
 	function formatDate(value: string) {
@@ -409,10 +419,14 @@
 									<time>{formatDate(selectedMessage.date)}</time>
 								</div>
 								<div class="preview-actions">
-									<button class="trash-action" type="button" onclick={trashSelectedMessage} disabled={messageAction}>
-										<TrashIcon size={15} weight="bold" /> Move to Trash
-									</button>
-									<button class="secondary-preview-action" type="button" onclick={() => (ruleConfirm = !ruleConfirm)} disabled={messageAction}>Auto-trash sender</button>
+									{#if gmailTrashDeleteUnavailable()}
+										<div class="trash-scope-note">Gmail requires the full mail scope to permanently delete Trash. Enable Full Gmail access in Settings, add <code>https://mail.google.com/</code> in Google Cloud Data Access, then reconnect Gmail.</div>
+									{:else}
+										<button class="trash-action" type="button" onclick={trashSelectedMessage} disabled={messageAction}>
+											<TrashIcon size={15} weight="bold" /> {selectedMailbox === 'TRASH' ? 'Delete permanently' : 'Move to Trash'}
+										</button>
+										{#if selectedMailbox !== 'TRASH'}<button class="secondary-preview-action" type="button" onclick={() => (ruleConfirm = !ruleConfirm)} disabled={messageAction}>Auto-trash sender</button>{/if}
+									{/if}
 								</div>
 								{#if ruleConfirm}
 									<div class="rule-confirm">
@@ -944,6 +958,16 @@
 	.trash-action {
 		background: var(--danger);
 		color: #fff;
+	}
+
+	.trash-scope-note {
+		padding: 0.62rem 0.72rem;
+		border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 30%, var(--border));
+		border-radius: 0.72rem;
+		background: color-mix(in srgb, var(--warning, #f59e0b) 10%, transparent);
+		color: var(--text-soft);
+		font-size: 0.78rem;
+		line-height: 1.35;
 	}
 
 	.secondary-preview-action,

@@ -46,6 +46,16 @@ While running, the server monitors registered project memories on the configured
 
 `bitbuddy serve` also starts BitBuddy's managed local SearxNG-compatible web search backend when web search is enabled. The LLM uses this backend through the `web_search` tool; users do not need to start a separate SearxNG process for the default setup.
 
+## Dashboard
+
+In another terminal, open the local web UI:
+
+```bash
+bitbuddy dashboard
+```
+
+`bitbuddy dashboard` starts the dashboard UI and opens a tokenized localhost URL in your browser. It does not start the backend; keep `bitbuddy serve` running for chat, memory, calendar, and email features.
+
 ## Providers
 
 BitBuddy stores local model provider settings in `~/.bitbuddy/config.yaml`.
@@ -99,7 +109,7 @@ Recommended setup:
 2. Enable the Gmail API.
 3. Configure Google Auth Platform for external/testing use.
 4. Add your Google account as a test user while the app is in testing mode.
-5. Add the Gmail scope `https://www.googleapis.com/auth/gmail.modify` in Data Access.
+5. Add the Gmail scope `https://www.googleapis.com/auth/gmail.modify` in Data Access. If you want BitBuddy to permanently delete messages or empty Trash, enable Full Gmail access in BitBuddy and add `https://mail.google.com/` instead.
 6. Create an OAuth client with application type `Desktop app`.
 7. Paste the Desktop client ID and client secret into BitBuddy Settings -> Email.
 8. Save email settings, then connect Gmail.

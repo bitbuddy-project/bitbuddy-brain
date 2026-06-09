@@ -9,18 +9,16 @@
 	import type { ChatAttachment, ProviderContext } from '$lib/api/bitbuddy';
 	import { chatSession, type PendingChatAttachment } from '$lib/stores/chat.svelte';
 
-	let { mode, buddyName, contextUsage, thinkEnabled, disabled, isStreaming, hasPendingSteer, onDraftChange, onSend, onStop, onSteer, onThinkToggle } = $props<{
+	let { mode, buddyName, contextUsage, thinkEnabled, disabled, isStreaming, onDraftChange, onSend, onStop, onThinkToggle } = $props<{
 		mode: string;
 		buddyName: string;
 		contextUsage: ProviderContext | null;
 		thinkEnabled: boolean;
 		disabled: boolean;
 		isStreaming: boolean;
-		hasPendingSteer: boolean;
 		onDraftChange: (draft: string) => void;
 		onSend: (message: string, attachments?: ChatAttachment[]) => void;
 		onStop: () => void;
-		onSteer: () => void;
 		onThinkToggle: () => void;
 	}>();
 
@@ -474,12 +472,8 @@
 			<MicrophoneIcon size={20} />
 		</button>
 		{#if isStreaming && !hasOutgoingDraft}
-			<button class="send-button stop-button" class:steer-now={hasPendingSteer} type="button" aria-label={hasPendingSteer ? 'Send queued steering message' : 'Stop response'} onclick={hasPendingSteer ? onSteer : onStop}>
-				{#if hasPendingSteer}
-					<ArrowUpIcon size={18} weight="bold" />
-				{:else}
-					<span class="stop-square" aria-hidden="true"></span>
-				{/if}
+			<button class="send-button stop-button" type="button" aria-label="Stop response" onclick={onStop}>
+				<span class="stop-square" aria-hidden="true"></span>
 			</button>
 		{:else}
 			<button class="send-button" disabled={disabled || !hasOutgoingDraft} type="submit" aria-label={isStreaming ? 'Queue steering message' : 'Send message'}>
@@ -1217,11 +1211,6 @@
 		background: var(--danger, #ef4444);
 		color: #fff;
 		box-shadow: none;
-	}
-
-	.stop-button.steer-now {
-		background: var(--mode-color);
-		color: var(--on-accent);
 	}
 
 	.stop-square {

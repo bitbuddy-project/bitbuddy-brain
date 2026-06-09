@@ -259,7 +259,7 @@
 			<MessageBubble
 				role="assistant"
 				{buddyName}
-				content={`Start \`bitbuddy serve\`, then I can chat through your local Ollama or llama.cpp provider with project memories as background context.`}
+				content={`Start the backend with \`bitbuddy serve\`, then open the web UI with \`bitbuddy dashboard\`.`}
 			/>
 		{:else if chatSession.initialized}
 			<div class="empty-chat">No messages yet.</div>

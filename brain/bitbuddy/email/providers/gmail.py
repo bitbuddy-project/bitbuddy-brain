@@ -129,6 +129,19 @@ class GmailProvider:
             raise
         return gmail_message_to_email(data, mailbox=label, include_body=False)
 
+    def delete_message(self, *, mailbox: str, message_id: str) -> EmailMessage:
+        if not message_id:
+            raise ValueError("message_id is required.")
+        message = self.read_message(mailbox=mailbox or "TRASH", message_id=message_id)
+        try:
+            self._request("DELETE", f"/users/me/messages/{urllib.parse.quote(message_id)}")
+        except ValueError as error:
+            detail = str(error)
+            if "insufficientPermissions" in detail or "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in detail:
+                raise ValueError("Gmail permanent delete requires Google's full mail scope (https://mail.google.com/). Enable Full Gmail access, add that scope in Google Cloud Data Access, then reconnect Gmail.") from error
+            raise
+        return message
+
     def empty_trash(self) -> int:
         message_ids: list[str] = []
         page_token = ""
@@ -147,7 +160,7 @@ class GmailProvider:
             except ValueError as error:
                 message = str(error)
                 if "insufficientPermissions" in message or "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in message:
-                    raise ValueError("Gmail empty Trash requires reconnecting Gmail in Settings to grant the Gmail modify scope.") from error
+                    raise ValueError("Gmail permanent delete/empty Trash requires Google's full mail scope (https://mail.google.com/). BitBuddy uses the safer Gmail modify scope, so empty Trash must be done in Gmail.") from error
                 raise
         return len(message_ids)
 

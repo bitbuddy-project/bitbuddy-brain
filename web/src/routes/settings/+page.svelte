@@ -246,6 +246,7 @@
 		gmail_credentials_ref: '',
 		gmail_token_ref: '',
 		gmail_redirect_uri: 'http://127.0.0.1:8787/email/gmail/callback',
+		gmail_full_mail_access: false,
 		default_mailbox: 'INBOX',
 		max_preview_messages: 50,
 		has_password: false,
@@ -2165,17 +2166,18 @@
 									</div>
 									<ol class="setup-steps">
 										<li><span>Use a Google OAuth client configured as <strong>Desktop app</strong>.</span></li>
-										<li><span>Enable the Gmail API and add Gmail scope <code>https://www.googleapis.com/auth/gmail.modify</code>.</span></li>
+									<li><span>Enable the Gmail API and add Gmail scope <code>{email.gmail_full_mail_access ? 'https://mail.google.com/' : 'https://www.googleapis.com/auth/gmail.modify'}</code>.</span></li>
 										<li><span>If the OAuth app is still in testing mode, add your Google account as a test user.</span></li>
 										<li><span>Paste the Desktop app client ID and client secret below, save settings, then connect Gmail.</span></li>
 									</ol>
 								</div>
 								<label class="mock-item field-row"><span>Google OAuth client ID<small>{email.gmail_oauth_mode === 'web_secret' ? 'Legacy Web Application OAuth client' : 'Recommended Desktop app OAuth client'}</small></span><input bind:value={email.gmail_client_id} placeholder="...apps.googleusercontent.com" disabled={!email.enabled} /></label>
 								<label class="mock-item field-row"><span>Google OAuth client secret<small>{email.has_gmail_client_secret ? 'Saved locally. Enter a new value to replace it, or clear it below.' : email.gmail_oauth_mode === 'web_secret' ? 'Required for Web Application OAuth. Stored locally outside config.' : 'Use the client_secret from your Google Desktop OAuth credentials JSON. Stored locally outside config.'}</small></span><input type="password" bind:value={gmailClientSecret} placeholder={email.has_gmail_client_secret ? 'Saved' : 'Client secret'} disabled={!email.enabled} /></label>
+								<div class="mock-item toggle-row"><span>Full Gmail access<small>Requests <code>https://mail.google.com/</code> so BitBuddy can permanently delete and empty Trash. Add this scope in Google Cloud Data Access, save, then reconnect Gmail.</small></span><Checkbox bind:checked={email.gmail_full_mail_access} ariaLabel="Enable full Gmail access" /></div>
 								{#if email.has_gmail_client_secret}
 									<div class="mock-item status-row"><span>Saved client secret<small>Stored locally in BitBuddy secrets, not in config. Clear it if you changed Google OAuth clients.</small></span><div class="provider-actions"><button class="secondary-action" onclick={removeGmailClientSecret} disabled={!email.enabled || gmailWorking}>Clear secret</button></div></div>
 								{/if}
-								<div class="mock-item status-row"><span>Gmail connection<small>{gmailStatus?.message ?? (email.gmail_connected ? 'Connected. Reconnect if you added Trash access after first setup.' : 'Not connected')}</small></span><div class="provider-actions"><button class="secondary-action" onclick={() => connectGmail(Boolean(email.gmail_connected || gmailStatus?.connected))} disabled={!email.enabled || gmailWorking || emailSaving}>{gmailWorking ? 'Working...' : email.gmail_connected || gmailStatus?.connected ? 'Reconnect Gmail' : 'Connect Gmail'}</button><button class="secondary-action" onclick={refreshGmailStatus} disabled={!email.enabled || gmailWorking}>Check status</button><button class="ghost danger" onclick={disconnectGmail} disabled={!email.enabled || gmailWorking || !(email.gmail_connected || gmailStatus?.connected)}>Disconnect</button></div></div>
+								<div class="mock-item status-row"><span>Gmail connection<small>{gmailStatus?.message ?? (email.gmail_connected ? 'Connected. Reconnect after changing Gmail scope/full access.' : 'Not connected')}</small></span><div class="provider-actions"><button class="secondary-action" onclick={() => connectGmail(Boolean(email.gmail_connected || gmailStatus?.connected))} disabled={!email.enabled || gmailWorking || emailSaving}>{gmailWorking ? 'Working...' : email.gmail_connected || gmailStatus?.connected ? 'Reconnect Gmail' : 'Connect Gmail'}</button><button class="secondary-action" onclick={refreshGmailStatus} disabled={!email.enabled || gmailWorking}>Check status</button><button class="ghost danger" onclick={disconnectGmail} disabled={!email.enabled || gmailWorking || !(email.gmail_connected || gmailStatus?.connected)}>Disconnect</button></div></div>
 
 								<button class="mock-item settings-row mini-row" class:open={emailAdvancedOpen} onclick={() => (emailAdvancedOpen = !emailAdvancedOpen)} aria-expanded={emailAdvancedOpen}>
 									<span>Advanced OAuth<small>Redirect URI and inbox tuning</small></span>
@@ -2195,7 +2197,7 @@
 								{#if emailTroubleshootingOpen}
 									<div class="mock-item status-row"><span>OAuth status<small>{gmailTroubleshootingHint(gmailStatus)}</small></span><div class="provider-actions"><button class="secondary-action" onclick={refreshGmailStatus} disabled={!email.enabled || gmailWorking}>Refresh</button></div></div>
 									<div class="mock-item status-row"><span>Browser extensions can break OAuth<small>URL cleaners such as ClearURLs, redirect cleaners, tracking-param strippers, and container extensions can remove Google OAuth parameters before BitBuddy receives a callback. Disable them or whitelist accounts.google.com, oauth2.googleapis.com, google.com, 127.0.0.1, and localhost.</small></span></div>
-									<div class="mock-item status-row"><span>Google says "Something went wrong"<small>This usually happens before BitBuddy receives a callback. Check URL-cleaning extensions first, then VPN/IP protection, Google OAuth test-user access, Gmail API enablement, and the Gmail modify scope in Data Access.</small></span></div>
+									<div class="mock-item status-row"><span>Google says "Something went wrong"<small>This usually happens before BitBuddy receives a callback. Check URL-cleaning extensions first, then VPN/IP protection, Google OAuth test-user access, Gmail API enablement, and the selected Gmail scope in Data Access.</small></span></div>
 									<div class="mock-item status-row"><span>Clean browser OAuth<small>Opens Google auth in a disposable Chromium profile when available, otherwise a hardened Firefox profile. If this works, your normal browser profile or extension setup is the problem.</small></span><div class="provider-actions"><button class="secondary-action" onclick={connectGmailCleanBrowser} disabled={!email.enabled || gmailWorking || emailSaving}>Open Clean Browser</button></div></div>
 									<label class="mock-item field-row"><span>Finish in another browser<small>Paste the final callback URL if the browser reaches BitBuddy but cannot complete automatically.</small></span><input bind:value={gmailManualInput} placeholder="http://127.0.0.1:8787/email/gmail/callback?code=...&state=..." disabled={!email.enabled || gmailWorking} /></label>
 									<div class="mock-item provider-manual-actions"><button class="secondary-action" onclick={finishGmailLogin} disabled={!email.enabled || gmailWorking || !gmailManualInput.trim()}>Finish Gmail authorization</button></div>
