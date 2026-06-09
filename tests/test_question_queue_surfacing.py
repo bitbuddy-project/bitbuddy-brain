@@ -121,7 +121,7 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
 
     def test_chat_runtime_surfaces_one_item_after_successful_response(self) -> None:
         chat = create_chat("Question surfacing", "chat")
-        create_intention("question", "Do you want to revisit apples?", metadata={"priority": 3})
+        create_intention("question", "Should we preserve the apples decision before editing?", metadata={"priority": 4})
 
         self.run_chat(chat.id)
         persisted = get_chat(chat.id)
@@ -129,7 +129,7 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
 
         self.assertIn("Here is the normal answer", assistant_text)
         self.assertIn("Also, I had a question saved from earlier", assistant_text)
-        self.assertIn("Do you want to revisit apples?", assistant_text)
+        self.assertIn("Should we preserve the apples decision before editing?", assistant_text)
         self.assertEqual(list_pending_intentions(), [])
 
     def test_cooldown_prevents_repeated_surfacing_in_same_chat(self) -> None:
@@ -159,7 +159,7 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
 
     def test_delivery_check_appends_question_without_user_prompt(self) -> None:
         chat = create_chat("Autonomous question", "chat")
-        create_intention("question", "Should we revisit the continuity queue?", metadata={"priority": 3})
+        create_intention("question", "Should we schedule the continuity queue review now?", metadata={"priority": 4})
 
         with patch("bitbuddy.autonomy.delivery_scheduler.load_config", return_value=fake_config()), \
              patch("bitbuddy.autonomy.delivery.load_config", return_value=fake_config()), \

@@ -883,6 +883,7 @@ export type EmailConfig = {
 	imap_security: 'ssl' | 'starttls' | 'none' | string;
 	username: string;
 	credentials_ref: string;
+	gmail_oauth_mode: 'desktop_pkce' | 'web_secret' | string;
 	gmail_client_id: string;
 	gmail_credentials_ref: string;
 	gmail_token_ref: string;
@@ -1056,14 +1057,14 @@ export async function startGmailLogin(force = false): Promise<GmailOAuthStatus> 
 	return data;
 }
 
-export async function openGmailCleanFirefox(force = false): Promise<GmailOAuthStatus> {
-	const response = await fetch(`${BITBUDDY_API}/email/gmail/open-clean-firefox`, {
+export async function openGmailCleanBrowser(force = false): Promise<GmailOAuthStatus> {
+	const response = await fetch(`${BITBUDDY_API}/email/gmail/open-clean-browser`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ force })
 	});
 	const data = await response.json().catch(() => ({}));
-	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not open clean Firefox OAuth profile.');
+	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not open clean browser OAuth profile.');
 	return data;
 }
 
@@ -1082,6 +1083,13 @@ export async function logoutGmail(): Promise<GmailOAuthStatus> {
 	const response = await fetch(`${BITBUDDY_API}/email/gmail/logout`, { method: 'POST' });
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not disconnect Gmail.');
+	return data;
+}
+
+export async function clearGmailClientSecret(): Promise<GmailOAuthStatus> {
+	const response = await fetch(`${BITBUDDY_API}/email/gmail/client-secret`, { method: 'DELETE' });
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? data.message ?? 'Could not clear Gmail client secret.');
 	return data;
 }
 

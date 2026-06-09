@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import webbrowser
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -79,6 +80,9 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_parser = subparsers.add_parser("dashboard", help="Start the local web UI dashboard.")
     dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host for the dev server.")
     dashboard_parser.add_argument("--port", default="5173", help="Port for the dev server.")
+    dashboard_parser.add_argument("--api-host", default="127.0.0.1", help="Host for the backend server.")
+    dashboard_parser.add_argument("--api-port", type=int, default=8787, help="Port for the backend server.")
+    dashboard_parser.add_argument("--no-open", action="store_true", help="Do not open the dashboard in a browser.")
     dashboard_parser.set_defaults(handler=run_dashboard)
 
     doctor_parser = subparsers.add_parser("doctor", help="Diagnose BitBuddy setup, storage, services, autonomy, and web search.")
@@ -890,7 +894,7 @@ def configure_calendar_setup(questionary: Any, style: Any, current_config: objec
     if conflict_warnings is None:
         return False
     chat_nudges = questionary.confirm(
-        "Let imminent reminders also speak up in chat?",
+        "Post calendar reminders directly into chat too?",
         default=bool(getattr(calendar, "chat_nudges_enabled", True)),
         qmark="◆",
         style=style,
@@ -970,8 +974,43 @@ def run_web(args: argparse.Namespace) -> int:
 
 
 def run_dashboard(args: argparse.Namespace) -> int:
-    print("Starting BitBuddy dashboard. Run `bitbuddy serve` separately if the backend is not already running.")
-    return run_web(args)
+    backend_process: subprocess.Popen[bytes] | None = None
+    web_process: subprocess.Popen[bytes] | None = None
+    api_url = f"http://{local_browser_host(args.api_host)}:{int(args.api_port)}"
+    dashboard_url = f"http://{local_browser_host(args.host)}:{args.port}"
+
+    if not check_backend_health(args.api_host, int(args.api_port)):
+        print(f"Starting BitBuddy backend at {api_url} ...")
+        backend_process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import os; from bitbuddy.server import serve; serve(os.environ['BITBUDDY_HOST'], int(os.environ['BITBUDDY_PORT']))",
+            ],
+            env={**os.environ, "BITBUDDY_HOST": str(args.api_host), "BITBUDDY_PORT": str(int(args.api_port))},
+        )
+        if not wait_for_backend(args.api_host, int(args.api_port), timeout_seconds=15):
+            terminate_process(backend_process)
+            raise ValueError("BitBuddy backend did not become ready. Run `bitbuddy doctor` for diagnostics.")
+    else:
+        print(f"Using existing BitBuddy backend at {api_url}.")
+
+    print(f"Starting BitBuddy dashboard at {dashboard_url} ...")
+    try:
+        web_process = subprocess.Popen(
+            ["npm", "run", "dev", "--", "--host", args.host, "--port", str(args.port)],
+            cwd=WEB_DIR,
+        )
+        if wait_for_http(dashboard_url, timeout_seconds=20) and not args.no_open:
+            webbrowser.open(dashboard_url)
+        elif not args.no_open:
+            print(f"Dashboard is starting. Open {dashboard_url} when it is ready.")
+        return web_process.wait()
+    finally:
+        if web_process is not None and web_process.poll() is None:
+            terminate_process(web_process)
+        if backend_process is not None and backend_process.poll() is None:
+            terminate_process(backend_process)
 
 
 def run_serve(args: argparse.Namespace) -> int:
@@ -1009,12 +1048,38 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def check_backend_health() -> bool:
+def check_backend_health(host: str = "127.0.0.1", port: int = 8787) -> bool:
+    return wait_for_backend(host, port, timeout_seconds=1.5)
+
+
+def wait_for_backend(host: str = "127.0.0.1", port: int = 8787, *, timeout_seconds: float = 10) -> bool:
+    return wait_for_http(f"http://{local_browser_host(host)}:{int(port)}/health", timeout_seconds=timeout_seconds, require_2xx=True)
+
+
+def wait_for_http(url: str, *, timeout_seconds: float = 10, require_2xx: bool = False) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    last_error = ""
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as response:
+                return 200 <= response.status < (300 if require_2xx else 500)
+        except OSError as error:
+            last_error = str(error)
+            time.sleep(0.25)
+    return False
+
+
+def local_browser_host(host: str) -> str:
+    return "127.0.0.1" if host in {"0.0.0.0", "::", ""} else str(host)
+
+
+def terminate_process(process: subprocess.Popen[bytes]) -> None:
+    process.terminate()
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8787/health", timeout=1.5) as response:
-            return 200 <= response.status < 300
-    except OSError:
-        return False
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
 
 
 def config_show_command(_args: argparse.Namespace) -> int:

@@ -172,10 +172,11 @@ class EmailConfig:
     imap_security: str = "ssl"
     username: str = ""
     credentials_ref: str = ""
+    gmail_oauth_mode: str = "desktop_pkce"
     gmail_client_id: str = ""
     gmail_credentials_ref: str = ""
     gmail_token_ref: str = ""
-    gmail_redirect_uri: str = "http://localhost:8787/email/gmail/callback"
+    gmail_redirect_uri: str = "http://127.0.0.1:8787/email/gmail/callback"
     default_mailbox: str = "INBOX"
     max_preview_messages: int = 50
 
@@ -299,10 +300,11 @@ def default_config(
             "imap_security": "ssl",
             "username": "",
             "credentials_ref": "",
+            "gmail_oauth_mode": "desktop_pkce",
             "gmail_client_id": "",
             "gmail_credentials_ref": "",
             "gmail_token_ref": "",
-            "gmail_redirect_uri": "http://localhost:8787/email/gmail/callback",
+            "gmail_redirect_uri": "http://127.0.0.1:8787/email/gmail/callback",
             "default_mailbox": "INBOX",
             "max_preview_messages": 50,
         },
@@ -743,6 +745,10 @@ def parse_email_config(raw: Any) -> EmailConfig:
     provider = str(raw.get("provider") or "imap").strip().lower()
     if provider not in {"imap", "gmail", "outlook"}:
         provider = "imap"
+    raw_gmail_oauth_mode = str(raw.get("gmail_oauth_mode") or "").strip().lower()
+    gmail_oauth_mode = raw_gmail_oauth_mode or ("web_secret" if str(raw.get("gmail_credentials_ref") or "").strip() else "desktop_pkce")
+    if gmail_oauth_mode not in {"desktop_pkce", "web_secret"}:
+        gmail_oauth_mode = "desktop_pkce"
     return EmailConfig(
         enabled=bool(raw.get("enabled", False)),
         provider=provider,
@@ -753,10 +759,11 @@ def parse_email_config(raw: Any) -> EmailConfig:
         imap_security=security,
         username=str(raw.get("username") or "").strip(),
         credentials_ref=str(raw.get("credentials_ref") or "").strip(),
+        gmail_oauth_mode=gmail_oauth_mode,
         gmail_client_id=str(raw.get("gmail_client_id") or "").strip(),
         gmail_credentials_ref=str(raw.get("gmail_credentials_ref") or "").strip(),
         gmail_token_ref=str(raw.get("gmail_token_ref") or "").strip(),
-        gmail_redirect_uri=str(raw.get("gmail_redirect_uri") or "http://localhost:8787/email/gmail/callback").strip() or "http://localhost:8787/email/gmail/callback",
+        gmail_redirect_uri=str(raw.get("gmail_redirect_uri") or "http://127.0.0.1:8787/email/gmail/callback").strip() or "http://127.0.0.1:8787/email/gmail/callback",
         default_mailbox=str(raw.get("default_mailbox") or "INBOX").strip() or "INBOX",
         max_preview_messages=max(1, min(200, max_preview)),
     )
@@ -782,6 +789,7 @@ def update_email_config(email: dict[str, Any]) -> BitBuddyConfig:
         "imap_security",
         "username",
         "credentials_ref",
+        "gmail_oauth_mode",
         "gmail_client_id",
         "gmail_credentials_ref",
         "gmail_token_ref",
@@ -803,6 +811,7 @@ def update_email_config(email: dict[str, Any]) -> BitBuddyConfig:
         "imap_security": parsed.imap_security,
         "username": parsed.username,
         "credentials_ref": parsed.credentials_ref,
+        "gmail_oauth_mode": parsed.gmail_oauth_mode,
         "gmail_client_id": parsed.gmail_client_id,
         "gmail_credentials_ref": parsed.gmail_credentials_ref,
         "gmail_token_ref": parsed.gmail_token_ref,

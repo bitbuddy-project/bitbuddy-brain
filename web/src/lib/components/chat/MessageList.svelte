@@ -47,6 +47,7 @@
 	let lastMessageCount = $state(0);
 	let lastFinalStartKey = $state('');
 	let wasStreaming = $state(false);
+	let activeEditingMessageKey = $state('');
 	let animatingIds = $state<Set<string | number>>(new Set());
 	let resizeObserver: ResizeObserver | null = null;
 
@@ -88,6 +89,11 @@
 	});
 
 	$effect(() => {
+		if (activeEditingMessageKey) {
+			const stillEditable = !isStreaming && messages.some((message: ChatMessage, index: number) => editMessageKey(message, index) === activeEditingMessageKey && canEditUserMessage(message));
+			if (!stillEditable) activeEditingMessageKey = '';
+		}
+
 		const messageCount = messages.length;
 		if (messageCount !== lastMessageCount) {
 			lastMessageCount = messageCount;
@@ -207,6 +213,26 @@
 		return `${chatKey}:${messageKey}`;
 	}
 
+	function editMessageKey(message: ChatMessage, index: number) {
+		if (!message.id) return '';
+		return String(message.id ?? `${index}:${message.role}`);
+	}
+
+	function editDisabledFor(message: ChatMessage, index: number) {
+		const key = editMessageKey(message, index);
+		return Boolean(activeEditingMessageKey && key && activeEditingMessageKey !== key);
+	}
+
+	function setMessageEditing(message: ChatMessage, index: number, editing: boolean) {
+		const key = editMessageKey(message, index);
+		if (!key) return;
+		if (editing) {
+			activeEditingMessageKey = key;
+			return;
+		}
+		if (activeEditingMessageKey === key) activeEditingMessageKey = '';
+	}
+
 	function canEditUserMessage(message: ChatMessage) {
 		return message.role === 'user' && (message.kind ?? 'message') === 'message' && Boolean(message.id) && !isStreaming;
 	}
@@ -271,8 +297,10 @@
 						typingStorageKey={message.role === 'assistant' ? typingStorageKey(message, index) : ''}
 						createdAt={message.created_at ?? ''}
 						canManage={canEditUserMessage(message)}
+						editDisabled={editDisabledFor(message, index)}
 						onDelete={message.role === 'user' ? () => onUserMessageDelete?.(message) : undefined}
 						onEdit={message.role === 'user' ? (content) => onUserMessageEdit?.(message, content) : undefined}
+						onEditingChange={(editing) => setMessageEditing(message, index, editing)}
 					/>
 				{/if}
 			{/if}

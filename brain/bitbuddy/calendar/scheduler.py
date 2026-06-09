@@ -3,8 +3,8 @@
 The idle autonomy loop only runs when the user is away, so it cannot deliver
 time-precise reminders. This lightweight daemon timer wakes on a fixed cadence,
 computes due reminders, de-dupes them via ``calendar_reminders``, and creates
-notification records immediately. Optional chat nudges still use the intention
-pipeline, but the actual reminder does not wait for autonomy delivery gates.
+notification records immediately. Optional chat reminders are delivered directly
+to chat and never wait for autonomy/question/comment gates.
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ def _process_reminders(config) -> None:
                   title=f"Upcoming: {event.title}",
                   body=f"'{event.title}' is coming up at {_local(event.start_at, tz)}.",
                   event_id=event.id,
-                  nudge=False)
+                  nudge=True)
 
     if cal.conflict_warnings_enabled:
         for pair in detect_conflicts(events):
@@ -104,6 +104,12 @@ def _fire(dedupe_id: str, kind: str, fire_at: str, cal, *, title: str, body: str
     from ..notifications import notify_user
 
     urgent = kind == "starting_soon" and bool(getattr(cal, "urgent_interrupts_enabled", True))
+    chat_id = ""
+    if nudge and cal.chat_nudges_enabled:
+        try:
+            chat_id = deliver_calendar_chat_reminder(kind=kind, title=title, body=body, fire_at=fire_at, event_id=event_id)
+        except Exception as error:
+            print(f"BitBuddy calendar chat reminder failed: {error}", file=sys.stderr)
     metadata = {
         "calendar_reminder_kind": kind,
         "calendar_urgent": urgent,
@@ -119,23 +125,51 @@ def _fire(dedupe_id: str, kind: str, fire_at: str, cal, *, title: str, body: str
         title=title,
         body=body,
         source_kind="calendar",
-        action_url="/calendar",
+        chat_id=chat_id,
+        action_url=f"/?chat_id={chat_id}" if chat_id else "/calendar",
         metadata=metadata,
     )
 
-    if nudge and cal.chat_nudges_enabled:
-        try:
-            from ..autonomy.intentions import create_intention
 
-            create_intention(
-                kind="comment",
-                content=body,
-                reason="Calendar reminder",
-                source="calendar",
-                metadata={"calendar_reminder_kind": kind},
-            )
-        except Exception as error:
-            print(f"BitBuddy calendar nudge failed: {error}", file=sys.stderr)
+
+def deliver_calendar_chat_reminder(*, kind: str, title: str, body: str, fire_at: str, event_id: str = "") -> str:
+    from ..autonomy.delivery_scheduler import get_active_visible_chat
+    from ..chats.repository import append_chat_message, create_chat, get_chat_summary, list_recent_chats
+    from ..continuity import continuity_state, record_continuity_event
+
+    chat_id = ""
+    for candidate in (get_active_visible_chat(), str(continuity_state().get("last_chat_id") or "")):
+        if not candidate:
+            continue
+        try:
+            get_chat_summary(candidate)
+        except Exception:
+            continue
+        chat_id = candidate
+        break
+    if not chat_id:
+        recent = list_recent_chats(limit=1)
+        chat_id = recent[0].id if recent else create_chat("Calendar reminders", "chat").id
+
+    metadata = {
+        "calendar_reminder": True,
+        "calendar_reminder_kind": kind,
+        "calendar_event_start_at": fire_at,
+    }
+    if event_id:
+        metadata["calendar_event_id"] = event_id
+    append_chat_message(chat_id, "assistant", calendar_chat_message(kind=kind, title=title, body=body), metadata=metadata)
+    record_continuity_event("calendar_reminder_delivered", body, source="calendar", chat_id=chat_id, metadata=metadata)
+    return chat_id
+
+
+def calendar_chat_message(*, kind: str, title: str, body: str) -> str:
+    label = {
+        "upcoming": "Calendar reminder",
+        "starting_soon": "Calendar reminder - starting soon",
+        "conflict": "Calendar conflict",
+    }.get(kind, "Calendar reminder")
+    return f"{label}: {title}\n{body}"
 
 
 def _iso(dt: datetime) -> str:

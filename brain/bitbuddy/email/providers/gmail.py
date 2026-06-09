@@ -150,14 +150,17 @@ def gmail_access_token(config: EmailConfig) -> str:
         raise ValueError("Gmail is not connected. Connect Gmail in Settings first.")
     client = get_credentials(config.gmail_credentials_ref)
     client_secret = client.get("client_secret", "")
-    if not config.gmail_client_id or not client_secret:
-        raise ValueError("Gmail OAuth client ID/secret is not configured.")
+    if not config.gmail_client_id:
+        raise ValueError("Gmail OAuth client ID is not configured.")
     payload_data = {
         "grant_type": "refresh_token",
         "client_id": config.gmail_client_id,
-        "client_secret": client_secret,
         "refresh_token": refresh_token,
     }
+    if client_secret:
+        payload_data["client_secret"] = client_secret
+    elif config.gmail_oauth_mode == "web_secret":
+        raise ValueError("Gmail OAuth client secret is required for legacy Web Application OAuth.")
     payload = urllib.parse.urlencode(payload_data).encode("utf-8")
     request = urllib.request.Request(GOOGLE_TOKEN_URL, data=payload, headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}, method="POST")
     try:

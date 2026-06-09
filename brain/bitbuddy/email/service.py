@@ -25,6 +25,7 @@ def email_overview() -> dict[str, object]:
         "imap_port": config.imap_port,
         "imap_security": config.imap_security,
         "username": config.username,
+        "gmail_oauth_mode": config.gmail_oauth_mode,
         "gmail_client_id": config.gmail_client_id,
         "gmail_redirect_uri": config.gmail_redirect_uri,
         "default_mailbox": config.default_mailbox,

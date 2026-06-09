@@ -49,10 +49,18 @@ class PersonalityEvolutionTest(unittest.TestCase):
             project_id="bitbuddy",
             evidence="Second signal",
         )
+        third = upsert_personality_evolution(
+            "project_affinity",
+            "BitBuddy project work",
+            "BitBuddy enjoys improving BitBuddy itself.",
+            project_id="bitbuddy",
+            evidence="Third signal",
+        )
 
         self.assertEqual(first.status, "emerging")
-        self.assertEqual(second.status, "stable")
-        self.assertEqual(second.evidence_count, 2)
+        self.assertEqual(second.status, "emerging")
+        self.assertEqual(third.status, "stable")
+        self.assertEqual(third.evidence_count, 3)
         self.assertTrue(any("BitBuddy project work" in goal.title for goal in list_goals()))
 
     def test_self_snapshot_and_prompt_include_stable_evolution(self) -> None:
@@ -68,13 +76,19 @@ class PersonalityEvolutionTest(unittest.TestCase):
             "BitBuddy is developing taste around companion UI and personality feel.",
             evidence="second",
         )
+        upsert_personality_evolution(
+            "interest",
+            "companion interface identity",
+            "BitBuddy is developing taste around companion UI and personality feel.",
+            evidence="third",
+        )
 
         snapshot = get_self_state()
         messages = build_chat_messages([{"role": "user", "content": "hello"}], "chat")
         system_prompt = messages[0]["content"]
 
         self.assertEqual(snapshot["evolution"][0]["status"], "stable")
-        self.assertIn("Emergent personality", system_prompt)
+        self.assertIn("Documented personality growth", system_prompt)
         self.assertIn("companion interface identity", system_prompt)
 
     def test_dream_review_detects_bitbuddy_affinity_signal(self) -> None:

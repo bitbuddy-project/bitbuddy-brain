@@ -5,6 +5,7 @@ import hashlib
 import json
 import queue
 import secrets as py_secrets
+import shutil
 import subprocess
 import threading
 import time
@@ -88,6 +89,8 @@ CODEX_AUTH_FLOWS: dict[str, dict[str, str]] = {}
 GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+GMAIL_DEFAULT_REDIRECT_URI = "http://127.0.0.1:8787/email/gmail/callback"
+GMAIL_LEGACY_LOCALHOST_REDIRECT_URI = "http://localhost:8787/email/gmail/callback"
 GMAIL_AUTH_FLOWS: dict[str, dict[str, str]] = {}
 GMAIL_OAUTH_DIAGNOSTICS: dict[str, str] = {}
 GMAIL_OAUTH_FLOW_TTL_SECONDS = 900
@@ -849,9 +852,9 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(start_gmail_login(force=bool(body.get("force", False))))
                 return
 
-            if path == "/email/gmail/open-clean-firefox":
+            if path in {"/email/gmail/open-clean-browser", "/email/gmail/open-clean-firefox"}:
                 body = self.read_json()
-                self.send_json(open_gmail_clean_firefox(force=bool(body.get("force", False))))
+                self.send_json(open_gmail_clean_browser(force=bool(body.get("force", False))))
                 return
 
             if path == "/email/gmail/complete":
@@ -1122,6 +1125,12 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                     return
                 deleted = email_delete_rule(rule_id)
                 self.send_json({"deleted": deleted}, status=HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
+                return
+
+            if path == "/email/gmail/client-secret":
+                config = load_config().email
+                delete_credentials(config.gmail_credentials_ref)
+                self.send_json(gmail_oauth_status() | {"message": "Saved Gmail OAuth client secret removed from BitBuddy."})
                 return
 
             if path.startswith("/notifications/"):
@@ -1506,6 +1515,7 @@ def config_to_json(config: BitBuddyConfig) -> dict[str, Any]:
             "imap_security": config.email.imap_security,
             "username": config.email.username,
             "credentials_ref": config.email.credentials_ref,
+            "gmail_oauth_mode": config.email.gmail_oauth_mode,
             "gmail_client_id": config.email.gmail_client_id,
             "gmail_credentials_ref": config.email.gmail_credentials_ref,
             "gmail_token_ref": config.email.gmail_token_ref,
@@ -1613,7 +1623,10 @@ def start_codex_login(force: bool = False) -> dict[str, Any]:
 def gmail_redirect_uri(config: Any | None = None) -> str:
     email_config = config or load_config().email
     uri = str(getattr(email_config, "gmail_redirect_uri", "") or "").strip()
-    return uri or "http://localhost:8787/email/gmail/callback"
+    mode = str(getattr(email_config, "gmail_oauth_mode", "") or "desktop_pkce").strip()
+    if mode == "desktop_pkce" and uri == GMAIL_LEGACY_LOCALHOST_REDIRECT_URI:
+        return GMAIL_DEFAULT_REDIRECT_URI
+    return uri or GMAIL_DEFAULT_REDIRECT_URI
 
 
 def start_gmail_login(force: bool = False) -> dict[str, Any]:
@@ -1621,24 +1634,27 @@ def start_gmail_login(force: bool = False) -> dict[str, Any]:
     config = load_config().email
     status = gmail_oauth_status()
     redirect_uri = gmail_redirect_uri(config)
+    oauth_mode = config.gmail_oauth_mode or "desktop_pkce"
     if status.get("ok") and not force:
         return {"ok": True, "connected": True, "message": status["message"], "auth_url": "", "redirect_uri": redirect_uri}
     if not config.gmail_client_id:
-        return {"ok": False, "connected": False, "message": "Enter a Google OAuth client ID in Email settings first.", "auth_url": "", "redirect_uri": redirect_uri}
-    if not get_credentials(config.gmail_credentials_ref).get("client_secret"):
+        return {"ok": False, "connected": False, "message": "Enter a Google OAuth desktop client ID in Email settings first.", "auth_url": "", "redirect_uri": redirect_uri}
+    if oauth_mode == "web_secret" and not get_credentials(config.gmail_credentials_ref).get("client_secret"):
         return {"ok": False, "connected": False, "message": "Enter a Google OAuth client secret in Email settings first.", "auth_url": "", "redirect_uri": redirect_uri}
     if not config.gmail_token_ref:
         return {"ok": False, "connected": False, "message": "Save Email settings once before connecting Gmail.", "auth_url": "", "redirect_uri": redirect_uri}
     if force:
         delete_credentials(config.gmail_token_ref)
     state = token_urlsafe(24)
-    prompt = "select_account consent"
+    verifier = token_urlsafe(64)
+    prompt = "consent" if config.email_address else "select_account consent"
     access_type = "offline"
     GMAIL_AUTH_FLOWS[state] = {
         "created_at": str(time.time()),
         "token_ref": config.gmail_token_ref,
         "redirect_uri": redirect_uri,
-        "mode": "web",
+        "mode": oauth_mode,
+        "verifier": verifier,
     }
 
     auth_params = {
@@ -1650,6 +1666,11 @@ def start_gmail_login(force: bool = False) -> dict[str, Any]:
         "prompt": prompt,
         "state": state,
     }
+    if config.email_address:
+        auth_params["login_hint"] = config.email_address
+    if oauth_mode == "desktop_pkce":
+        auth_params["code_challenge"] = pkce_challenge(verifier)
+        auth_params["code_challenge_method"] = "S256"
     GMAIL_OAUTH_DIAGNOSTICS["last_auth_url_params"] = json.dumps(
         {
             "response_type": "code",
@@ -1658,11 +1679,13 @@ def start_gmail_login(force: bool = False) -> dict[str, Any]:
             "access_type": access_type,
             "prompt": prompt,
             "state_prefix": state[:8],
-            "mode": "web",
+            "mode": oauth_mode,
+            "pkce": oauth_mode == "desktop_pkce",
+            "login_hint": config.email_address,
         },
         sort_keys=True,
     )
-    GMAIL_OAUTH_DIAGNOSTICS["last_oauth_mode"] = "web"
+    GMAIL_OAUTH_DIAGNOSTICS["last_oauth_mode"] = oauth_mode
     log_activity(
         "gmail.oauth.start",
         "Starting Gmail OAuth flow",
@@ -1672,7 +1695,7 @@ def start_gmail_login(force: bool = False) -> dict[str, Any]:
             "prompt": prompt,
             "access_type": access_type,
             "state_prefix": state[:8],
-            "mode": "web",
+            "mode": oauth_mode,
         },
     )
     auth_url = GOOGLE_AUTHORIZE_URL + "?" + urlencode(auth_params)
@@ -1684,10 +1707,10 @@ def start_gmail_login(force: bool = False) -> dict[str, Any]:
     return {
         "ok": True,
         "connected": False,
-        "message": "Open the Google authorization page, allow Gmail read/search and Trash access, then return here and check status.",
+        "message": "Open the Google authorization page, allow Gmail access, then return here and check status.",
         "auth_url": auth_url,
         "redirect_uri": redirect_uri,
-        "oauth_mode": "web",
+        "oauth_mode": oauth_mode,
     }
 
 
@@ -1713,28 +1736,92 @@ def gmail_oauth_status() -> dict[str, Any]:
     if connected:
         account = tokens.get("account_id") or config.email_address or "Gmail"
         return {"ok": True, "connected": True, "message": f"Connected to Gmail as {account}.", "redirect_uri": redirect_uri, "diagnostics": dict(GMAIL_OAUTH_DIAGNOSTICS)}
-    configured = bool(config.gmail_client_id and get_credentials(config.gmail_credentials_ref).get("client_secret"))
-    message = "Gmail OAuth client is configured. Connect Gmail to authorize read/search and Trash access." if configured else "Gmail OAuth client is not configured."
+    configured = bool(config.gmail_client_id and (config.gmail_oauth_mode == "desktop_pkce" or get_credentials(config.gmail_credentials_ref).get("client_secret")))
+    message = "Gmail OAuth client is configured. Connect Gmail to authorize mailbox access." if configured else "Gmail OAuth client is not configured."
     return {"ok": False, "connected": False, "message": message, "redirect_uri": redirect_uri, "diagnostics": dict(GMAIL_OAUTH_DIAGNOSTICS)}
 
 
-def open_gmail_clean_firefox(force: bool = False) -> dict[str, Any]:
+def open_gmail_clean_browser(force: bool = False) -> dict[str, Any]:
     result = start_gmail_login(force=force)
     auth_url = str(result.get("auth_url") or "")
     if not auth_url:
         return result
-    profile_dir = APP_DIR / "firefox-oauth-profile"
+    chromium = next(
+        (
+            path
+            for path in (
+                shutil.which("chromium"),
+                shutil.which("chromium-browser"),
+                shutil.which("google-chrome"),
+                shutil.which("google-chrome-stable"),
+                shutil.which("brave-browser"),
+            )
+            if path
+        ),
+        "",
+    )
+    if chromium:
+        profile_dir = APP_DIR / "chromium-oauth-profiles" / token_urlsafe(8)
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.Popen(
+                [
+                    chromium,
+                    f"--user-data-dir={profile_dir}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-extensions",
+                    "--disable-sync",
+                    "--new-window",
+                    auth_url,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            result["message"] = f"Could not open clean Chromium OAuth profile automatically: {error}. Falling back to Firefox."
+        else:
+            result["message"] = "Opened Gmail authorization in a disposable Chromium profile. Approve access there, then return here and check status."
+            result["clean_browser"] = True
+            result["clean_firefox"] = False
+            result["browser"] = "chromium"
+            result["profile_dir"] = str(profile_dir)
+            return result
+    profile_dir = APP_DIR / "firefox-oauth-profiles" / token_urlsafe(8)
     profile_dir.mkdir(parents=True, exist_ok=True)
+    prefs = "\n".join(
+        [
+            'user_pref("browser.privatebrowsing.autostart", false);',
+            'user_pref("browser.shell.checkDefaultBrowser", false);',
+            'user_pref("extensions.enabledScopes", 0);',
+            'user_pref("network.cookie.cookieBehavior", 0);',
+            'user_pref("privacy.firstparty.isolate", false);',
+            'user_pref("privacy.resistFingerprinting", false);',
+            'user_pref("privacy.trackingprotection.enabled", false);',
+            'user_pref("privacy.trackingprotection.pbmode.enabled", false);',
+            "",
+        ]
+    )
+    try:
+        (profile_dir / "user.js").write_text(prefs, encoding="utf-8")
+    except OSError as error:
+        result["message"] = f"Could not prepare clean Firefox OAuth profile: {error}. Copy the auth URL manually."
+        result["clean_firefox"] = False
+        return result
     try:
         subprocess.Popen(["firefox", "--no-remote", "--profile", str(profile_dir), auth_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as error:
         result["message"] = f"Could not open clean Firefox OAuth profile automatically: {error}. Copy the auth URL manually."
         result["clean_firefox"] = False
         return result
-    result["message"] = "Opened Gmail authorization in a clean BitBuddy Firefox profile. Approve access there, then return here and check status."
+    result["message"] = "Opened Gmail authorization in a disposable Firefox profile with tracking/fingerprinting protections disabled for this OAuth attempt. Approve access there, then return here and check status."
     result["clean_firefox"] = True
     result["profile_dir"] = str(profile_dir)
     return result
+
+
+def open_gmail_clean_firefox(force: bool = False) -> dict[str, Any]:
+    return open_gmail_clean_browser(force=force)
 
 
 def complete_gmail_callback(*, code: str, state: str, google_error: str = "", google_error_description: str = "", callback_source: str = "") -> None:
@@ -1777,15 +1864,22 @@ def exchange_gmail_code(code: str, state: str) -> None:
         raise ValueError(message)
     config = load_config().email
     client_secret = get_credentials(config.gmail_credentials_ref).get("client_secret", "")
-    if not config.gmail_client_id or not client_secret:
-        raise ValueError("Gmail OAuth client ID/secret is not configured.")
+    if not config.gmail_client_id:
+        raise ValueError("Gmail OAuth client ID is not configured.")
     payload_data = {
         "grant_type": "authorization_code",
         "client_id": config.gmail_client_id,
         "code": code,
         "redirect_uri": flow.get("redirect_uri") or gmail_redirect_uri(config),
-        "client_secret": client_secret,
     }
+    if flow.get("mode") == "desktop_pkce":
+        payload_data["code_verifier"] = flow["verifier"]
+        if client_secret:
+            payload_data["client_secret"] = client_secret
+    elif client_secret:
+        payload_data["client_secret"] = client_secret
+    else:
+        raise ValueError("Gmail OAuth client secret is required for legacy Web Application OAuth. Switch to Desktop app OAuth or enter a client secret.")
     GMAIL_OAUTH_DIAGNOSTICS["last_token_exchange_status"] = "started"
     payload = urlencode(payload_data).encode("utf-8")
     request = urllib.request.Request(GOOGLE_TOKEN_URL, data=payload, headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}, method="POST")

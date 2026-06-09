@@ -88,7 +88,7 @@ def default_tool_registry() -> ToolRegistry:
                 "required": ["pattern"],
                 "additionalProperties": False,
             },
-            max_chars=12000,
+            max_chars=64000,
         ),
         search_text_tool,
     )
@@ -121,7 +121,7 @@ def default_tool_registry() -> ToolRegistry:
                 "required": ["url"],
                 "additionalProperties": False,
             },
-            max_chars=12000,
+            max_chars=64000,
         ),
         web_fetch_tool,
     )
@@ -523,7 +523,7 @@ def default_tool_registry() -> ToolRegistry:
                 "properties": {"include_archived": {"type": "boolean"}},
                 "additionalProperties": False,
             },
-            max_chars=12000,
+            max_chars=64000,
         ),
         list_skills_tool,
     )

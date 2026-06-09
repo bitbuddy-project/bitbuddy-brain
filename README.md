@@ -89,6 +89,25 @@ Defaults are equivalent to:
 bitbuddy web --host 127.0.0.1 --port 5173
 ```
 
+## Self-Hosted Gmail OAuth
+
+BitBuddy does not ship a Google OAuth client ID or client secret. For Gmail access, each self-hosted user creates their own Google OAuth client and stores those credentials locally.
+
+Recommended setup:
+
+1. Create or open a Google Cloud project.
+2. Enable the Gmail API.
+3. Configure Google Auth Platform for external/testing use.
+4. Add your Google account as a test user while the app is in testing mode.
+5. Add the Gmail scope `https://www.googleapis.com/auth/gmail.modify` in Data Access.
+6. Create an OAuth client with application type `Desktop app`.
+7. Paste the Desktop client ID and client secret into BitBuddy Settings -> Email.
+8. Save email settings, then connect Gmail.
+
+The client secret and Gmail tokens are stored in BitBuddy's local secret store under `~/.bitbuddy`; they are not written into `config.yaml` and are not bundled with BitBuddy.
+
+Browser extensions can break Google OAuth before BitBuddy receives a callback. URL-cleaning extensions such as ClearURLs, redirect cleaners, tracking-parameter strippers, and container extensions may remove Google OAuth parameters such as `state`, `code`, `redirect_uri`, or Google warning-page parameters. If OAuth fails with Google's generic "Something went wrong" page, disable those extensions or whitelist `accounts.google.com`, `oauth2.googleapis.com`, `google.com`, `127.0.0.1`, and `localhost`. BitBuddy's clean browser OAuth action opens a disposable browser profile to bypass normal extension/profile state.
+
 ## Troubleshooting
 
 Run BitBuddy Doctor first when setup, startup, storage, the web UI, autonomy, or web search is not behaving:

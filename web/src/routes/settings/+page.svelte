@@ -5,6 +5,7 @@
 	import { chatBehavior, type ReplyAnimation } from '$lib/stores/chat-behavior.svelte';
 	import { refreshContextUsage } from '$lib/stores/chat.svelte';
 	import {
+		clearGmailClientSecret,
 		completeCodexLogin,
 		completeGmailLogin,
 		configureComputerUseLinux,
@@ -20,7 +21,7 @@
 		installComputerUseLinux,
 		logoutCodex,
 		logoutGmail,
-		openGmailCleanFirefox,
+		openGmailCleanBrowser,
 		doctorComputerUseLinux,
 		startCodexLogin,
 		setCalendarPermission,
@@ -240,10 +241,11 @@
 		imap_security: 'ssl',
 		username: '',
 		credentials_ref: '',
+		gmail_oauth_mode: 'desktop_pkce',
 		gmail_client_id: '',
 		gmail_credentials_ref: '',
 		gmail_token_ref: '',
-		gmail_redirect_uri: 'http://localhost:8787/email/gmail/callback',
+		gmail_redirect_uri: 'http://127.0.0.1:8787/email/gmail/callback',
 		default_mailbox: 'INBOX',
 		max_preview_messages: 50,
 		has_password: false,
@@ -271,6 +273,21 @@
 	let emailScopes = $state<string[]>([]);
 	let emailPermissions = $state<Record<string, string> | null>(null);
 	let emailPermError = $state('');
+
+	function gmailTroubleshootingHint(status: GmailOAuthStatus | null): string {
+		if (!status?.diagnostics) return 'Click Check status after a failed attempt to see whether Google reached BitBuddy.';
+		const diagnostics = status.diagnostics;
+		const lastError = diagnostics.last_error ?? '';
+		if (lastError.includes('client_secret is missing')) return 'Google returned a code, but token exchange needs your Google OAuth client_secret. Paste the client_secret from your Desktop OAuth credentials JSON, save, then reconnect.';
+		if (lastError.includes('provided client secret is invalid')) return 'Google rejected the saved client secret. Clear it, then paste the client_secret that belongs to the currently configured client ID.';
+		if (diagnostics.last_callback_seen && diagnostics.last_token_exchange_status === 'http_error:400') return lastError || 'Google returned a code, but token exchange failed. Check that the client ID and secret belong to the same Google OAuth client.';
+		if (lastError) return lastError;
+		if (diagnostics.last_auth_started_at && diagnostics.last_token_exchange_status === 'not_started') {
+			return 'Google authorization opened, but Google has not redirected back to BitBuddy yet. Check URL-cleaning extensions such as ClearURLs, VPN/IP protection, test-user access, Gmail API enablement, and the OAuth Data Access scope.';
+		}
+		if (diagnostics.last_token_exchange_status) return `Token exchange: ${diagnostics.last_token_exchange_status}`;
+		return status.message;
+	}
 
 	onMount(() => {
 		void loadUserContext();
@@ -372,15 +389,15 @@
 		}
 	}
 
-	async function connectGmailCleanFirefox() {
+	async function connectGmailCleanBrowser() {
 		gmailWorking = true;
 		try {
-			gmailStatus = await openGmailCleanFirefox(Boolean(email.gmail_connected || gmailStatus?.connected));
+			gmailStatus = await openGmailCleanBrowser(Boolean(email.gmail_connected || gmailStatus?.connected));
 			emailStatus = gmailStatus.message;
 			gmailManualInput = '';
 			emailError = '';
 		} catch (caught) {
-			emailError = caught instanceof Error ? caught.message : 'Could not open clean Firefox OAuth profile.';
+			emailError = caught instanceof Error ? caught.message : 'Could not open clean browser OAuth profile.';
 			emailStatus = '';
 		} finally {
 			gmailWorking = false;
@@ -395,6 +412,22 @@
 			emailError = '';
 		} catch (caught) {
 			emailError = caught instanceof Error ? caught.message : 'Could not disconnect Gmail.';
+			emailStatus = '';
+		} finally {
+			gmailWorking = false;
+		}
+	}
+
+	async function removeGmailClientSecret() {
+		gmailWorking = true;
+		try {
+			gmailStatus = await clearGmailClientSecret();
+			email.has_gmail_client_secret = false;
+			gmailClientSecret = '';
+			emailStatus = gmailStatus.message;
+			emailError = '';
+		} catch (caught) {
+			emailError = caught instanceof Error ? caught.message : 'Could not clear Gmail client secret.';
 			emailStatus = '';
 		} finally {
 			gmailWorking = false;
@@ -906,8 +939,9 @@
 			imap_host: email.imap_host.trim(),
 			imap_port: Math.max(1, Number(email.imap_port) || 993),
 			username: email.username.trim(),
+			gmail_oauth_mode: email.gmail_oauth_mode === 'web_secret' ? 'web_secret' : 'desktop_pkce',
 			gmail_client_id: email.gmail_client_id.trim(),
-			gmail_redirect_uri: email.gmail_redirect_uri.trim() || 'http://localhost:8787/email/gmail/callback',
+			gmail_redirect_uri: email.gmail_redirect_uri.trim() || 'http://127.0.0.1:8787/email/gmail/callback',
 			default_mailbox: email.default_mailbox.trim() || 'INBOX',
 			max_preview_messages: Math.max(1, Math.min(200, Number(email.max_preview_messages) || 50))
 		};
@@ -2012,7 +2046,7 @@
 							<div class="mock-item toggle-row">
 								<span>
 									Chat nudges
-									<small>Let imminent and conflict reminders also speak up in chat (respects quiet hours and rate limits). Off means notifications only.</small>
+									<small>Post calendar reminders directly into chat as well as the notification overlay. Off means notifications only.</small>
 								</span>
 								<Checkbox bind:checked={calendar.chat_nudges_enabled} disabled={!calendar.enabled} ariaLabel="Chat nudges" />
 							</div>
@@ -2108,7 +2142,7 @@
 
 				{#if emailOpen}
 					<div class="collapsible-panel">
-						<p class="section-intro">BitBuddy can become email-aware through local IMAP or self-hosted Gmail OAuth. Credentials and tokens stay on this machine. Gmail can read/search mail and, with explicit local permission, move messages to Trash. No send, reply, archive, permanent delete, mark-read, or remote image loading.</p>
+						<p class="section-intro">BitBuddy can become email-aware through local IMAP or self-hosted Gmail OAuth. Credentials and tokens stay on this machine. Gmail can read/search mail and, with explicit local permission, perform approved mailbox actions. Sending and other mutating actions should remain behind explicit permission gates.</p>
 						{#if emailError}<div class="inline-error">{emailError}</div>{/if}
 
 						<div class="context-panel">
@@ -2126,19 +2160,21 @@
 								<div class="setup-card">
 									<div>
 										<p class="eyebrow">Self-hosted Gmail setup</p>
-										<h3>Use your own Google Web Application OAuth client</h3>
-										<p>BitBuddy never receives your Gmail credentials. Your OAuth client secret and Gmail tokens are stored locally in BitBuddy secrets.</p>
+										<h3>Use your own Google Desktop OAuth client</h3>
+										<p>BitBuddy ships no Google OAuth credentials. Create your own Desktop OAuth client, then store its client ID and client secret locally in BitBuddy secrets.</p>
 									</div>
 									<ol class="setup-steps">
-										<li><span>Create or open a Google Cloud project.</span></li>
-										<li><span>Configure OAuth consent and add yourself as a test user if the app is in testing mode.</span></li>
-										<li><span>Add Gmail scope <code>https://www.googleapis.com/auth/gmail.modify</code>.</span></li>
-										<li><span>Create OAuth client credentials with application type <strong>Web application</strong> and add redirect URI <code>{email.gmail_redirect_uri || 'http://localhost:8787/email/gmail/callback'}</code>.</span></li>
-										<li><span>Paste the Web Application client ID and client secret below, save settings, then connect Gmail.</span></li>
+										<li><span>Use a Google OAuth client configured as <strong>Desktop app</strong>.</span></li>
+										<li><span>Enable the Gmail API and add Gmail scope <code>https://www.googleapis.com/auth/gmail.modify</code>.</span></li>
+										<li><span>If the OAuth app is still in testing mode, add your Google account as a test user.</span></li>
+										<li><span>Paste the Desktop app client ID and client secret below, save settings, then connect Gmail.</span></li>
 									</ol>
 								</div>
-								<label class="mock-item field-row"><span>Google Web OAuth client ID<small>From your own Google Cloud Web Application OAuth client</small></span><input bind:value={email.gmail_client_id} placeholder="...apps.googleusercontent.com" disabled={!email.enabled} /></label>
-								<label class="mock-item field-row"><span>Google OAuth client secret<small>{email.has_gmail_client_secret ? 'Saved locally. Enter a new value to replace it.' : 'Required for Web Application OAuth. Stored locally outside config.'}</small></span><input type="password" bind:value={gmailClientSecret} placeholder={email.has_gmail_client_secret ? 'Saved' : 'Client secret'} disabled={!email.enabled} /></label>
+								<label class="mock-item field-row"><span>Google OAuth client ID<small>{email.gmail_oauth_mode === 'web_secret' ? 'Legacy Web Application OAuth client' : 'Recommended Desktop app OAuth client'}</small></span><input bind:value={email.gmail_client_id} placeholder="...apps.googleusercontent.com" disabled={!email.enabled} /></label>
+								<label class="mock-item field-row"><span>Google OAuth client secret<small>{email.has_gmail_client_secret ? 'Saved locally. Enter a new value to replace it, or clear it below.' : email.gmail_oauth_mode === 'web_secret' ? 'Required for Web Application OAuth. Stored locally outside config.' : 'Use the client_secret from your Google Desktop OAuth credentials JSON. Stored locally outside config.'}</small></span><input type="password" bind:value={gmailClientSecret} placeholder={email.has_gmail_client_secret ? 'Saved' : 'Client secret'} disabled={!email.enabled} /></label>
+								{#if email.has_gmail_client_secret}
+									<div class="mock-item status-row"><span>Saved client secret<small>Stored locally in BitBuddy secrets, not in config. Clear it if you changed Google OAuth clients.</small></span><div class="provider-actions"><button class="secondary-action" onclick={removeGmailClientSecret} disabled={!email.enabled || gmailWorking}>Clear secret</button></div></div>
+								{/if}
 								<div class="mock-item status-row"><span>Gmail connection<small>{gmailStatus?.message ?? (email.gmail_connected ? 'Connected. Reconnect if you added Trash access after first setup.' : 'Not connected')}</small></span><div class="provider-actions"><button class="secondary-action" onclick={() => connectGmail(Boolean(email.gmail_connected || gmailStatus?.connected))} disabled={!email.enabled || gmailWorking || emailSaving}>{gmailWorking ? 'Working...' : email.gmail_connected || gmailStatus?.connected ? 'Reconnect Gmail' : 'Connect Gmail'}</button><button class="secondary-action" onclick={refreshGmailStatus} disabled={!email.enabled || gmailWorking}>Check status</button><button class="ghost danger" onclick={disconnectGmail} disabled={!email.enabled || gmailWorking || !(email.gmail_connected || gmailStatus?.connected)}>Disconnect</button></div></div>
 
 								<button class="mock-item settings-row mini-row" class:open={emailAdvancedOpen} onclick={() => (emailAdvancedOpen = !emailAdvancedOpen)} aria-expanded={emailAdvancedOpen}>
@@ -2146,7 +2182,8 @@
 									<span class="row-caret"><CaretRightIcon size={18} /></span>
 								</button>
 								{#if emailAdvancedOpen}
-									<label class="mock-item field-row"><span>Redirect URI<small>Add this exact URI to your Google Web Application OAuth client.</small></span><input bind:value={email.gmail_redirect_uri} placeholder="http://localhost:8787/email/gmail/callback" disabled={!email.enabled} /></label>
+									<div class="mock-item field-row"><span>OAuth mode<small>Desktop app uses PKCE and can send your saved local client secret when Google requires it. Web app is a self-hosted legacy fallback.</small></span><div class="select-field"><SelectMenu value={email.gmail_oauth_mode || 'desktop_pkce'} options={[{ value: 'desktop_pkce', label: 'Desktop app (recommended)', description: 'PKCE plus optional local secret' }, { value: 'web_secret', label: 'Web app (legacy)', description: 'Requires client secret and redirect URI' }]} ariaLabel="Gmail OAuth mode" disabled={!email.enabled} onChange={(value) => (email.gmail_oauth_mode = value as EmailConfig['gmail_oauth_mode'])} /></div></div>
+									<label class="mock-item field-row"><span>Redirect URI<small>{email.gmail_oauth_mode === 'web_secret' ? 'Add this exact URI to your Google Web Application OAuth client.' : 'Local 127.0.0.1 loopback callback used by BitBuddy during Google authorization.'}</small></span><input bind:value={email.gmail_redirect_uri} placeholder="http://127.0.0.1:8787/email/gmail/callback" disabled={!email.enabled} /></label>
 									<label class="mock-item field-row"><span>Default mailbox<small>The inbox folder to open first</small></span><input bind:value={email.default_mailbox} placeholder="INBOX" disabled={!email.enabled} /></label>
 									<label class="mock-item field-row"><span>Preview message limit<small>Maximum messages to preview in lightweight inbox views</small></span><input type="number" min="1" max="200" bind:value={email.max_preview_messages} disabled={!email.enabled} /></label>
 								{/if}
@@ -2156,9 +2193,11 @@
 									<span class="row-caret"><CaretRightIcon size={18} /></span>
 								</button>
 								{#if emailTroubleshootingOpen}
-									<div class="mock-item status-row"><span>Google says “Something went wrong”<small>Usually caused by VPN/IP protection, a blocked Google session, or a Google Cloud test-user/scope mismatch. Turn off VPN/IP protection for the OAuth attempt first.</small></span></div>
-									<div class="mock-item status-row"><span>Clean Firefox OAuth<small>Opens Google auth in an isolated normal Firefox profile, not private mode.</small></span><div class="provider-actions"><button class="secondary-action" onclick={connectGmailCleanFirefox} disabled={!email.enabled || gmailWorking || emailSaving}>Open Clean Firefox</button></div></div>
-									<label class="mock-item field-row"><span>Finish in another browser<small>Paste the final callback URL if the browser reaches BitBuddy but cannot complete automatically.</small></span><input bind:value={gmailManualInput} placeholder="http://localhost:8787/email/gmail/callback?code=...&state=..." disabled={!email.enabled || gmailWorking} /></label>
+									<div class="mock-item status-row"><span>OAuth status<small>{gmailTroubleshootingHint(gmailStatus)}</small></span><div class="provider-actions"><button class="secondary-action" onclick={refreshGmailStatus} disabled={!email.enabled || gmailWorking}>Refresh</button></div></div>
+									<div class="mock-item status-row"><span>Browser extensions can break OAuth<small>URL cleaners such as ClearURLs, redirect cleaners, tracking-param strippers, and container extensions can remove Google OAuth parameters before BitBuddy receives a callback. Disable them or whitelist accounts.google.com, oauth2.googleapis.com, google.com, 127.0.0.1, and localhost.</small></span></div>
+									<div class="mock-item status-row"><span>Google says "Something went wrong"<small>This usually happens before BitBuddy receives a callback. Check URL-cleaning extensions first, then VPN/IP protection, Google OAuth test-user access, Gmail API enablement, and the Gmail modify scope in Data Access.</small></span></div>
+									<div class="mock-item status-row"><span>Clean browser OAuth<small>Opens Google auth in a disposable Chromium profile when available, otherwise a hardened Firefox profile. If this works, your normal browser profile or extension setup is the problem.</small></span><div class="provider-actions"><button class="secondary-action" onclick={connectGmailCleanBrowser} disabled={!email.enabled || gmailWorking || emailSaving}>Open Clean Browser</button></div></div>
+									<label class="mock-item field-row"><span>Finish in another browser<small>Paste the final callback URL if the browser reaches BitBuddy but cannot complete automatically.</small></span><input bind:value={gmailManualInput} placeholder="http://127.0.0.1:8787/email/gmail/callback?code=...&state=..." disabled={!email.enabled || gmailWorking} /></label>
 									<div class="mock-item provider-manual-actions"><button class="secondary-action" onclick={finishGmailLogin} disabled={!email.enabled || gmailWorking || !gmailManualInput.trim()}>Finish Gmail authorization</button></div>
 								{/if}
 							{/if}
@@ -2567,6 +2606,14 @@
 			var(--card-glass-sheen),
 			var(--card-bg);
 		box-shadow: inset 0 1px 0 var(--card-inner-line);
+	}
+
+	.context-panel > .mock-item:not(:last-child) {
+		border-bottom-color: color-mix(in srgb, var(--border) 82%, var(--text-soft) 12%);
+	}
+
+	:global(:root.light) .settings-page .context-panel > .mock-item:not(:last-child) {
+		border-bottom-color: var(--border);
 	}
 
 	.setup-card {

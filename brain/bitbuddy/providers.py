@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import base64
+import os
+import sys
 import urllib.error
 import urllib.request
 import uuid
@@ -20,6 +22,8 @@ CODEX_SECRET_REF = "provider:codex:oauth"
 CODEX_BACKEND_URL = "https://chatgpt.com/backend-api/codex/responses"
 CODEX_DEFAULT_MODEL = "gpt-5.5"
 CODEX_CHATGPT_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
+OPENAI_RESPONSES_REASONING_INCLUDE = ["reasoning.encrypted_content"]
+GPT_EVENT_DEBUG_ENV = "BITBUDDY_DEBUG_GPT_EVENTS"
 NO_THINKING_SYSTEM_MESSAGE = (
     "Thinking/reasoning mode is disabled for this request. "
     "Do not emit hidden reasoning, reasoning_content, or <think> blocks; answer directly."
@@ -155,7 +159,7 @@ class ProviderClient:
             yield from self._stream_anthropic(messages, model or self.config.model, should_cancel, thinking_enabled, tools)
             return
         if self.config.type == "codex":
-            yield from self._stream_codex(messages, model or self.config.model, should_cancel)
+            yield from self._stream_codex(messages, model or self.config.model, should_cancel, thinking_enabled, tools, tool_choice)
             return
         raise ValueError("No model provider configured.")
 
@@ -167,9 +171,9 @@ class ProviderClient:
         failure it returns False so callers fall back to the text tool protocol.
         """
         setting = str(getattr(self.config, "native_tools", "auto") or "auto").lower()
-        if setting == "off" or self.config.type not in ("llama.cpp", "ollama", "openai", "anthropic"):
+        if setting == "off" or self.config.type not in ("llama.cpp", "ollama", "openai", "anthropic", "codex"):
             return False
-        if self.config.type in {"openai", "anthropic"}:
+        if self.config.type in {"openai", "anthropic", "codex"}:
             return True
         if setting == "on":
             return True
@@ -487,6 +491,16 @@ class ProviderClient:
             raise ValueError("OpenAI requires a model name.")
         if not self.config.api_key:
             raise ValueError("OpenAI API key is not configured.")
+        if openai_uses_responses_api(self.config.url, model):
+            try:
+                yield from self._stream_openai_responses(messages, model, should_cancel, thinking_enabled, tools, tool_choice)
+                return
+            except urllib.error.HTTPError as error:
+                if provider_image_error(error, messages):
+                    yield StreamChunk("response", image_rejected_message(self.config.type, model, error))
+                    return
+                if error.code not in {400, 404, 422}:
+                    raise
         payload: dict[str, object] = {
             "model": model,
             "messages": openai_messages(provider_messages(messages, thinking_enabled=thinking_enabled)),
@@ -522,6 +536,117 @@ class ProviderClient:
             yield from splitter.flush()
             yield from emit_accumulated_tool_calls(tool_accumulator)
 
+    def _stream_openai_responses(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        should_cancel: Callable[[], bool] | None = None,
+        thinking_enabled: bool = True,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+    ) -> Iterable[StreamChunk]:
+        instructions, input_items = openai_responses_input(provider_messages(messages, thinking_enabled=thinking_enabled))
+        payload: dict[str, object] = {
+            "model": model,
+            "input": input_items,
+            "stream": True,
+            "store": False,
+            "include": OPENAI_RESPONSES_REASONING_INCLUDE,
+            "prompt_cache_key": str(uuid.uuid4()),
+        }
+        if instructions:
+            payload["instructions"] = instructions
+        if thinking_enabled and openai_supports_reasoning_summaries(model):
+            payload["reasoning"] = {"effort": "medium", "summary": "auto"}
+        responses_tools = openai_responses_tools(tools or [])
+        if responses_tools:
+            payload["tools"] = responses_tools
+            payload["tool_choice"] = tool_choice
+
+        function_calls: dict[str, dict[str, str]] = {}
+        output_to_key: dict[int, str] = {}
+        reasoning_delta_seen = False
+        splitter = ThinkingSplitter(emit_thinking=thinking_enabled)
+        for event in post_sse_json(f"{self.config.url.rstrip('/')}/v1/responses", payload, headers=provider_headers(self.config, accept="text/event-stream")):
+            if should_cancel and should_cancel():
+                break
+            event_type = str(event.get("type") or "")
+            debug_gpt_event(event_type)
+            debug_gpt_event_payload(event)
+            if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+                text = str(event.get("delta") or "")
+                if text:
+                    yield from splitter.feed(text)
+                continue
+            if event_type in {"response.reasoning_summary_text.delta", "response.reasoning_text.delta"}:
+                text = str(event.get("delta") or "")
+                if text and thinking_enabled:
+                    reasoning_delta_seen = True
+                    yield StreamChunk("thinking", text)
+                continue
+            if "reasoning" in event_type:
+                text = reasoning_text_from_event(event)
+                if text and thinking_enabled and not reasoning_delta_seen:
+                    yield StreamChunk("thinking", text)
+                continue
+            if event_type == "response.output_item.added":
+                item = event.get("item") if isinstance(event.get("item"), dict) else {}
+                if item.get("type") == "function_call":
+                    output_index = event.get("output_index")
+                    key = str(item.get("call_id") or item.get("id") or output_index or len(function_calls))
+                    if isinstance(output_index, int):
+                        output_to_key[output_index] = key
+                    function_calls[key] = {
+                        "id": str(item.get("call_id") or item.get("id") or ""),
+                        "name": str(item.get("name") or ""),
+                        "arguments": str(item.get("arguments") or ""),
+                    }
+                elif item.get("type") == "reasoning":
+                    text = reasoning_text_from_event(item)
+                    if text and thinking_enabled and not reasoning_delta_seen:
+                        yield StreamChunk("thinking", text)
+                continue
+            if event_type == "response.function_call_arguments.delta":
+                key = response_function_call_key(event, output_to_key, function_calls)
+                if key:
+                    function_calls.setdefault(key, {"id": key, "name": "", "arguments": ""})["arguments"] += str(event.get("delta") or "")
+                continue
+            if event_type == "response.function_call_arguments.done":
+                key = response_function_call_key(event, output_to_key, function_calls)
+                if key and isinstance(event.get("arguments"), str):
+                    function_calls.setdefault(key, {"id": key, "name": "", "arguments": ""})["arguments"] = str(event.get("arguments") or "")
+                continue
+            if event_type == "response.output_item.done":
+                item = event.get("item") if isinstance(event.get("item"), dict) else {}
+                if item.get("type") == "reasoning":
+                    text = reasoning_text_from_event(item)
+                    if text and thinking_enabled and not reasoning_delta_seen:
+                        yield StreamChunk("thinking", text)
+                elif item.get("type") == "function_call":
+                    output_index = event.get("output_index")
+                    key = str(item.get("call_id") or item.get("id") or (output_to_key.get(int(output_index)) if isinstance(output_index, int) else "") or len(function_calls))
+                    slot = function_calls.setdefault(key, {"id": key, "name": "", "arguments": ""})
+                    if item.get("call_id") or item.get("id"):
+                        slot["id"] = str(item.get("call_id") or item.get("id") or "")
+                    if item.get("name"):
+                        slot["name"] = str(item.get("name") or "")
+                    if isinstance(item.get("arguments"), str):
+                        slot["arguments"] = str(item.get("arguments") or "")
+                continue
+            if event_type in {"response.failed", "error"}:
+                error = event.get("error") if isinstance(event.get("error"), dict) else event
+                message = error.get("message") if isinstance(error, dict) else ""
+                raise ValueError(str(message or "OpenAI response failed."))
+            if event_type in {"response.completed", "response.done", "response.incomplete"}:
+                break
+
+        if not should_cancel or not should_cancel():
+            yield from splitter.flush()
+            for key in sorted(function_calls):
+                call = function_calls[key]
+                if call.get("name"):
+                    yield StreamChunk("tool_call", "", StreamToolCall(name=call["name"], arguments=call.get("arguments", "{}") or "{}", call_id=call.get("id", "")))
+
     def _stream_anthropic(
         self,
         messages: list[dict[str, Any]],
@@ -541,6 +666,10 @@ class ProviderClient:
             "stream": True,
             "messages": anthropic_turns,
         }
+        if thinking_enabled and anthropic_supports_extended_thinking(model):
+            budget = reasoning_budget_tokens()
+            thinking_budget = 2048 if budget < 0 else min(3072, max(1024, budget))
+            payload["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
         if system:
             payload["system"] = system
         anthropic_tools = anthropic_tool_schema(tools or [])
@@ -597,6 +726,9 @@ class ProviderClient:
         messages: list[dict[str, Any]],
         model: str,
         should_cancel: Callable[[], bool] | None = None,
+        thinking_enabled: bool = True,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
     ) -> Iterable[StreamChunk]:
         ok, message = codex_health()
         if not ok:
@@ -612,9 +744,14 @@ class ProviderClient:
             "instructions": instructions,
             "input": input_items,
             "text": {"verbosity": "medium"},
-            "include": ["reasoning.encrypted_content"],
+            "reasoning": {"effort": "medium", "summary": "auto"},
+            "include": OPENAI_RESPONSES_REASONING_INCLUDE,
             "prompt_cache_key": str(uuid.uuid4()),
         }
+        responses_tools = openai_responses_tools(tools or [])
+        if responses_tools:
+            payload["tools"] = responses_tools
+            payload["tool_choice"] = tool_choice
         headers = {
             "Authorization": f"Bearer {access_token}",
             "chatgpt-account-id": account_id,
@@ -626,12 +763,61 @@ class ProviderClient:
             "User-Agent": "BitBuddy/0.1",
         }
         try:
+            reasoning_delta_seen = False
+            function_calls: dict[str, dict[str, str]] = {}
+            output_to_key: dict[int, str] = {}
             for event in post_sse_json(CODEX_BACKEND_URL, payload, headers=headers):
                 if should_cancel and should_cancel():
                     break
-                text = codex_event_text(event)
-                if text:
-                    yield StreamChunk("response", text)
+                event_type = str(event.get("type") or "")
+                if event_type == "response.output_item.added":
+                    item = event.get("item") if isinstance(event.get("item"), dict) else {}
+                    if item.get("type") == "function_call":
+                        output_index = event.get("output_index")
+                        key = str(item.get("call_id") or item.get("id") or output_index or len(function_calls))
+                        if isinstance(output_index, int):
+                            output_to_key[output_index] = key
+                        function_calls[key] = {
+                            "id": str(item.get("call_id") or item.get("id") or ""),
+                            "name": str(item.get("name") or ""),
+                            "arguments": str(item.get("arguments") or ""),
+                        }
+                        continue
+                if event_type == "response.function_call_arguments.delta":
+                    key = response_function_call_key(event, output_to_key, function_calls)
+                    if key:
+                        function_calls.setdefault(key, {"id": key, "name": "", "arguments": ""})["arguments"] += str(event.get("delta") or "")
+                    continue
+                if event_type == "response.function_call_arguments.done":
+                    key = response_function_call_key(event, output_to_key, function_calls)
+                    if key and isinstance(event.get("arguments"), str):
+                        function_calls.setdefault(key, {"id": key, "name": "", "arguments": ""})["arguments"] = str(event.get("arguments") or "")
+                    continue
+                if event_type == "response.output_item.done":
+                    item = event.get("item") if isinstance(event.get("item"), dict) else {}
+                    if item.get("type") == "function_call":
+                        output_index = event.get("output_index")
+                        key = str(item.get("call_id") or item.get("id") or (output_to_key.get(int(output_index)) if isinstance(output_index, int) else "") or len(function_calls))
+                        slot = function_calls.setdefault(key, {"id": key, "name": "", "arguments": ""})
+                        if item.get("call_id") or item.get("id"):
+                            slot["id"] = str(item.get("call_id") or item.get("id") or "")
+                        if item.get("name"):
+                            slot["name"] = str(item.get("name") or "")
+                        if isinstance(item.get("arguments"), str):
+                            slot["arguments"] = str(item.get("arguments") or "")
+                        continue
+                chunk = codex_event_chunk(event, emit_reasoning_done=not reasoning_delta_seen)
+                if chunk:
+                    if chunk.kind == "thinking" and not thinking_enabled:
+                        continue
+                    if chunk.kind == "thinking" and event_type in {"response.reasoning_summary_text.delta", "response.reasoning_text.delta"}:
+                        reasoning_delta_seen = True
+                    yield chunk
+            if not should_cancel or not should_cancel():
+                for key in sorted(function_calls):
+                    call = function_calls[key]
+                    if call.get("name"):
+                        yield StreamChunk("tool_call", "", StreamToolCall(name=call["name"], arguments=call.get("arguments", "{}") or "{}", call_id=call.get("id", "")))
         except urllib.error.HTTPError as error:
             raise ValueError(codex_http_error_message(error)) from error
 
@@ -839,6 +1025,139 @@ def openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def openai_uses_responses_api(url: str, model: str) -> bool:
+    host = (url or "").rstrip("/").lower()
+    name = (model or "").lower()
+    if "api.openai.com" not in host:
+        return False
+    return openai_supports_reasoning_summaries(name) or name.startswith("gpt-5")
+
+
+def openai_supports_reasoning_summaries(model: str) -> bool:
+    name = (model or "").lower()
+    return name.startswith("gpt-5") or name.startswith("o3") or name.startswith("o4") or "reasoning" in name
+
+
+def openai_responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    instructions: list[str] = []
+    input_items: list[dict[str, Any]] = []
+    for message in messages:
+        role = str(message.get("role") or "user")
+        content = str(message.get("content") or "")
+        if role == "system":
+            if content.strip():
+                instructions.append(content.strip())
+            continue
+        if role not in {"user", "assistant", "developer"}:
+            role = "user"
+
+        parts: list[dict[str, Any]] = []
+        if content.strip():
+            parts.append({"type": "input_text", "text": content})
+        if role == "user":
+            for image in image_attachments(message):
+                data = str(image.get("data") or "")
+                if not data:
+                    continue
+                mime_type = str(image.get("mime_type") or "image/png")
+                parts.append({"type": "input_image", "detail": "auto", "image_url": f"data:{mime_type};base64,{data}"})
+        if parts:
+            input_items.append({"role": role, "content": parts})
+    if not input_items:
+        input_items.append({"role": "user", "content": [{"type": "input_text", "text": "Hello."}]})
+    return "\n\n".join(instructions), input_items
+
+
+def openai_responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            continue
+        function = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        result.append(
+            {
+                "type": "function",
+                "name": name,
+                "description": str(function.get("description") or ""),
+                "parameters": function.get("parameters") if isinstance(function.get("parameters"), dict) else {"type": "object", "properties": {}},
+            }
+        )
+    return result
+
+
+def response_function_call_key(event: dict[str, Any], output_to_key: dict[int, str], function_calls: dict[str, dict[str, str]]) -> str:
+    output_index = event.get("output_index")
+    if isinstance(output_index, int) and output_index in output_to_key:
+        return output_to_key[output_index]
+    for key_name in ("call_id", "item_id", "id"):
+        value = event.get(key_name)
+        if isinstance(value, str) and value in function_calls:
+            return value
+    if len(function_calls) == 1:
+        return next(iter(function_calls))
+    for key_name in ("call_id", "item_id", "id"):
+        value = event.get(key_name)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def debug_gpt_event(event_type: str) -> None:
+    if os.environ.get(GPT_EVENT_DEBUG_ENV):
+        print(f"BitBuddy GPT stream event: {event_type}", file=sys.stderr)
+
+
+def debug_gpt_event_payload(event: dict[str, Any]) -> None:
+    if not os.environ.get(GPT_EVENT_DEBUG_ENV):
+        return
+    event_type = str(event.get("type") or "")
+    item = event.get("item") if isinstance(event.get("item"), dict) else None
+    if not item:
+        return
+    summary = item.get("summary")
+    content = item.get("content")
+    print(
+        "BitBuddy GPT stream item: "
+        f"event={event_type} type={item.get('type', '')} "
+        f"keys={','.join(sorted(str(key) for key in item.keys()))} "
+        f"summary_items={len(summary) if isinstance(summary, list) else 0} "
+        f"content_items={len(content) if isinstance(content, list) else 0}",
+        file=sys.stderr,
+    )
+
+
+def reasoning_text_from_event(event: Any) -> str:
+    """Extract visible reasoning summary text from Responses-style events/items."""
+    parts: list[str] = []
+
+    def collect(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            if value:
+                parts.append(value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+            return
+        if not isinstance(value, dict):
+            return
+
+        part_type = str(value.get("type") or "")
+        if part_type and not any(marker in part_type for marker in ("reasoning", "summary", "text")):
+            return
+        for key in ("text", "delta", "summary_text", "content", "summary", "parts", "part"):
+            if key in value:
+                collect(value.get(key))
+
+    collect(event)
+    return "".join(parts)
+
+
 def anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     system_parts: list[str] = []
     turns: list[dict[str, Any]] = []
@@ -909,6 +1228,11 @@ def anthropic_tool_schema(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def anthropic_supports_extended_thinking(model: str) -> bool:
+    name = (model or "").lower()
+    return "claude-4" in name or "sonnet-4" in name or "opus-4" in name or "claude-3-7" in name or "claude-3.7" in name
+
+
 def codex_health() -> tuple[bool, str]:
     credentials = get_credentials(CODEX_SECRET_REF)
     if credentials.get("access_token") and credentials.get("refresh_token"):
@@ -953,17 +1277,34 @@ def codex_response_payload(messages: list[dict[str, Any]]) -> tuple[str, list[di
     return "\n\n".join(instructions), input_items
 
 
-def codex_event_text(event: dict[str, Any]) -> str:
+def codex_event_chunk(event: dict[str, Any], *, emit_reasoning_done: bool = True) -> StreamChunk | None:
     event_type = str(event.get("type") or "")
+    debug_gpt_event(event_type)
+    debug_gpt_event_payload(event)
     if event_type in {"response.output_text.delta", "response.refusal.delta"}:
-        return str(event.get("delta") or "")
+        return StreamChunk("response", str(event.get("delta") or ""))
+    if event_type in {"response.reasoning_summary_text.delta", "response.reasoning_text.delta"}:
+        return StreamChunk("thinking", str(event.get("delta") or ""))
+    if "reasoning" in event_type:
+        text = reasoning_text_from_event(event)
+        return StreamChunk("thinking", text) if text and emit_reasoning_done else None
+    if event_type in {"response.output_item.added", "response.output_item.done"}:
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        if item.get("type") == "reasoning":
+            text = reasoning_text_from_event(item)
+            return StreamChunk("thinking", text) if text and emit_reasoning_done else None
     if event_type in {"response.failed", "error"}:
         error = event.get("error") if isinstance(event.get("error"), dict) else event
         message = error.get("message") if isinstance(error, dict) else ""
         raise ValueError(str(message or "Codex response failed."))
     if event_type in {"response.completed", "response.done", "response.incomplete"}:
-        return ""
-    return ""
+        return None
+    return None
+
+
+def codex_event_text(event: dict[str, Any]) -> str:
+    chunk = codex_event_chunk(event)
+    return chunk.text if chunk and chunk.kind == "response" else ""
 
 
 def codex_http_error_message(error: urllib.error.HTTPError) -> str:

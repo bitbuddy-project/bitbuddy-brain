@@ -11,7 +11,7 @@
 	import MarkdownMessage from './MarkdownMessage.svelte';
 	import BitBuddyFace from './BitBuddyFace.svelte';
 
-	let { role, content, attachments = [], mode = 'Chat', buddyName, isTyping = false, showFace = false, autonomyIntroKey = '', typingStorageKey = '', createdAt = '', canManage = false, onDelete, onEdit } = $props<{
+	let { role, content, attachments = [], mode = 'Chat', buddyName, isTyping = false, showFace = false, autonomyIntroKey = '', typingStorageKey = '', createdAt = '', canManage = false, editDisabled = false, onDelete, onEdit, onEditingChange } = $props<{
 		role: 'user' | 'assistant';
 		content: string;
 		attachments?: ChatAttachment[];
@@ -23,8 +23,10 @@
 		typingStorageKey?: string;
 		createdAt?: string;
 		canManage?: boolean;
+		editDisabled?: boolean;
 		onDelete?: () => void | Promise<void>;
 		onEdit?: (content: string) => void | Promise<void>;
+		onEditingChange?: (editing: boolean) => void;
 	}>();
 
 	let visibleContent = $state('');
@@ -185,6 +187,7 @@
 	onDestroy(() => {
 		clearTypeTimer();
 		clearIntroTimer();
+		if (isEditing) onEditingChange?.(false);
 	});
 
 	let displayedContent = $derived.by(() => {
@@ -265,9 +268,22 @@
 		try {
 			await onEdit(editContent);
 			isEditing = false;
+			onEditingChange?.(false);
 		} finally {
 			actionBusy = false;
 		}
+	}
+
+	function beginEdit() {
+		if (actionBusy || editDisabled) return;
+		isEditing = true;
+		onEditingChange?.(true);
+	}
+
+	function cancelEdit() {
+		isEditing = false;
+		editContent = content;
+		onEditingChange?.(false);
 	}
 
 	async function deleteTurn() {
@@ -350,18 +366,18 @@
 			{#if isEditing}
 				<div class="message-actions editing-actions">
 					<span>Editing will remove later messages and rerun from here.</span>
-					<button type="button" onclick={() => { isEditing = false; editContent = content; }} disabled={actionBusy}>Cancel</button>
+					<button type="button" onclick={cancelEdit} disabled={actionBusy}>Cancel</button>
 					<button class="save-rerun-action" type="button" onclick={submitEdit} disabled={actionBusy || (!editContent.trim() && attachments.length === 0)}>
 						{actionBusy ? 'Saving...' : 'Save & rerun'}
 					</button>
 				</div>
 			{:else}
 				<div class="message-actions">
-					<button type="button" onclick={() => (isEditing = true)} disabled={actionBusy} aria-label="Edit message">
+					<button type="button" onclick={beginEdit} disabled={actionBusy || editDisabled} aria-label="Edit message" title={editDisabled ? 'Finish or cancel the current edit first.' : 'Edit message'}>
 						<PencilSimpleIcon size={15} />
 						<span>Edit</span>
 					</button>
-					<button class="danger-action" type="button" onclick={() => (deleteConfirmOpen = true)} disabled={actionBusy} aria-label="Delete message turn">
+					<button class="danger-action" type="button" onclick={() => (deleteConfirmOpen = true)} disabled={actionBusy || editDisabled} aria-label="Delete message turn" title={editDisabled ? 'Finish or cancel the current edit first.' : 'Delete message turn'}>
 						<TrashIcon size={15} />
 						<span>Delete</span>
 					</button>

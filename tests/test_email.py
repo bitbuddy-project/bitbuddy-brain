@@ -4,17 +4,21 @@ import os
 import sqlite3
 import sys
 import tempfile
+import urllib.parse
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "brain"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-email-test-")
 
-from bitbuddy.config import parse_email_config  # noqa: E402
+from bitbuddy.config import parse_email_config, update_email_config, write_config  # noqa: E402
+from bitbuddy.http_api import GMAIL_AUTH_FLOWS, exchange_gmail_code, start_gmail_login  # noqa: E402
+from bitbuddy.calendar.secrets import put_credentials  # noqa: E402
 from bitbuddy.email.permissions import EmailPermissionRequired, all_permissions, permission_state, require_permission, set_permission  # noqa: E402
-from bitbuddy.email.providers.gmail import gmail_message_to_email, normalize_gmail_label  # noqa: E402
+from bitbuddy.email.providers.gmail import gmail_access_token, gmail_message_to_email, normalize_gmail_label  # noqa: E402
 from bitbuddy.email.store import ensure_email_database, list_rules, upsert_rule  # noqa: E402
 from bitbuddy.paths import GLOBAL_DB_PATH  # noqa: E402
 from bitbuddy.prompt_builder import email_capability_context  # noqa: E402
@@ -24,6 +28,7 @@ from bitbuddy.projects.routing import clean_model_thinking_text  # noqa: E402
 class EmailTest(unittest.TestCase):
     def setUp(self) -> None:
         ensure_email_database()
+        GMAIL_AUTH_FLOWS.clear()
         with sqlite3.connect(GLOBAL_DB_PATH) as connection:
             connection.execute("delete from email_permissions")
             connection.execute("delete from email_rules")
@@ -43,6 +48,7 @@ class EmailTest(unittest.TestCase):
                 "enabled": True,
                 "provider": "gmail",
                 "email_address": "me@example.com",
+                "gmail_oauth_mode": "web_secret",
                 "gmail_client_id": "client-id.apps.googleusercontent.com",
                 "gmail_credentials_ref": "email:gmail:me@example.com:client",
                 "gmail_token_ref": "email:gmail:me@example.com:tokens",
@@ -50,9 +56,233 @@ class EmailTest(unittest.TestCase):
         )
 
         self.assertEqual(config.provider, "gmail")
+        self.assertEqual(config.gmail_oauth_mode, "web_secret")
         self.assertEqual(config.gmail_client_id, "client-id.apps.googleusercontent.com")
         self.assertEqual(config.gmail_credentials_ref, "email:gmail:me@example.com:client")
         self.assertEqual(config.gmail_token_ref, "email:gmail:me@example.com:tokens")
+
+    def test_gmail_oauth_mode_defaults_to_desktop_pkce(self) -> None:
+        config = parse_email_config({"provider": "gmail"})
+
+        self.assertEqual(config.gmail_oauth_mode, "desktop_pkce")
+        self.assertEqual(config.gmail_redirect_uri, "http://127.0.0.1:8787/email/gmail/callback")
+
+    def test_gmail_oauth_mode_preserves_legacy_web_secret_config(self) -> None:
+        config = parse_email_config({"provider": "gmail", "gmail_credentials_ref": "email:gmail:me@example.com:client"})
+
+        self.assertEqual(config.gmail_oauth_mode, "web_secret")
+
+    def test_invalid_gmail_oauth_mode_falls_back_to_desktop_pkce(self) -> None:
+        config = parse_email_config({"provider": "gmail", "gmail_oauth_mode": "server_secret"})
+
+        self.assertEqual(config.gmail_oauth_mode, "desktop_pkce")
+
+    def test_desktop_pkce_gmail_login_does_not_require_client_secret(self) -> None:
+        write_config("none", "", "")
+        update_email_config(
+            {
+                "enabled": True,
+                "provider": "gmail",
+                "email_address": "me@example.com",
+                "gmail_oauth_mode": "desktop_pkce",
+                "gmail_client_id": "client-id.apps.googleusercontent.com",
+                "gmail_token_ref": "email:gmail:me@example.com:tokens",
+            }
+        )
+
+        status = start_gmail_login(force=True)
+
+        self.assertTrue(status["ok"])
+        self.assertIn("auth_url", status)
+        self.assertIn("code_challenge=", status["auth_url"])
+        self.assertIn("code_challenge_method=S256", status["auth_url"])
+        self.assertEqual(status["oauth_mode"], "desktop_pkce")
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(status["auth_url"]).query)
+        self.assertEqual(params["redirect_uri"], ["http://127.0.0.1:8787/email/gmail/callback"])
+        self.assertEqual(params["login_hint"], ["me@example.com"])
+        self.assertEqual(params["prompt"], ["consent"])
+
+    def test_legacy_web_gmail_login_requires_client_secret(self) -> None:
+        write_config("none", "", "")
+        update_email_config(
+            {
+                "enabled": True,
+                "provider": "gmail",
+                "email_address": "me@example.com",
+                "gmail_oauth_mode": "web_secret",
+                "gmail_client_id": "client-id.apps.googleusercontent.com",
+                "gmail_credentials_ref": "email:gmail:legacy-login@example.com:client",
+                "gmail_token_ref": "email:gmail:legacy-login@example.com:tokens",
+            }
+        )
+
+        status = start_gmail_login(force=True)
+
+        self.assertFalse(status["ok"])
+        self.assertIn("client secret", status["message"])
+
+    def test_desktop_pkce_gmail_token_refresh_does_not_require_client_secret(self) -> None:
+        config = parse_email_config(
+            {
+                "provider": "gmail",
+                "gmail_oauth_mode": "desktop_pkce",
+                "gmail_client_id": "client-id.apps.googleusercontent.com",
+                "gmail_credentials_ref": "email:gmail:no-secret@example.com:client",
+                "gmail_token_ref": "email:gmail:no-secret@example.com:tokens",
+            }
+        )
+        put_credentials(config.gmail_token_ref, {"access_token": "expired-token", "refresh_token": "refresh-token", "expires_at": "0"})
+        seen: dict[str, str] = {}
+
+        class TokenResponse:
+            def __enter__(self) -> "TokenResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"access_token":"next-token","expires_in":3600}'
+
+        def fake_urlopen(request: object, timeout: int = 0) -> TokenResponse:
+            seen["payload"] = getattr(request, "data", b"").decode("utf-8")
+            seen["timeout"] = str(timeout)
+            return TokenResponse()
+
+        with patch("bitbuddy.email.providers.gmail.urllib.request.urlopen", fake_urlopen):
+            token = gmail_access_token(config)
+
+        self.assertEqual(token, "next-token")
+        payload = urllib.parse.parse_qs(seen["payload"])
+        self.assertEqual(payload["grant_type"], ["refresh_token"])
+        self.assertEqual(payload["client_id"], ["client-id.apps.googleusercontent.com"])
+        self.assertEqual(payload["refresh_token"], ["refresh-token"])
+        self.assertNotIn("client_secret", payload)
+
+    def test_desktop_pkce_gmail_token_refresh_sends_saved_client_secret(self) -> None:
+        config = parse_email_config(
+            {
+                "provider": "gmail",
+                "gmail_oauth_mode": "desktop_pkce",
+                "gmail_client_id": "client-id.apps.googleusercontent.com",
+                "gmail_credentials_ref": "email:gmail:secret@example.com:client",
+                "gmail_token_ref": "email:gmail:secret@example.com:tokens",
+            }
+        )
+        put_credentials(config.gmail_credentials_ref, {"client_secret": "saved-secret"})
+        put_credentials(config.gmail_token_ref, {"access_token": "expired-token", "refresh_token": "refresh-token", "expires_at": "0"})
+        seen: dict[str, str] = {}
+
+        class TokenResponse:
+            def __enter__(self) -> "TokenResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"access_token":"next-token","expires_in":3600}'
+
+        def fake_urlopen(request: object, timeout: int = 0) -> TokenResponse:
+            seen["payload"] = getattr(request, "data", b"").decode("utf-8")
+            return TokenResponse()
+
+        with patch("bitbuddy.email.providers.gmail.urllib.request.urlopen", fake_urlopen):
+            token = gmail_access_token(config)
+
+        self.assertEqual(token, "next-token")
+        payload = urllib.parse.parse_qs(seen["payload"])
+        self.assertEqual(payload["client_secret"], ["saved-secret"])
+
+    def test_desktop_pkce_gmail_code_exchange_sends_saved_client_secret(self) -> None:
+        write_config("none", "", "")
+        update_email_config(
+            {
+                "enabled": True,
+                "provider": "gmail",
+                "email_address": "me@example.com",
+                "gmail_oauth_mode": "desktop_pkce",
+                "gmail_client_id": "client-id.apps.googleusercontent.com",
+                "gmail_credentials_ref": "email:gmail:me@example.com:client",
+                "gmail_token_ref": "email:gmail:me@example.com:tokens",
+            }
+        )
+        put_credentials("email:gmail:me@example.com:client", {"client_secret": "saved-secret"})
+        start_gmail_login(force=True)
+        state = next(iter(GMAIL_AUTH_FLOWS.keys()))
+        verifier = GMAIL_AUTH_FLOWS[state]["verifier"]
+        seen: dict[str, str] = {}
+
+        class TokenResponse:
+            def __enter__(self) -> "TokenResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"access_token":"access-token","refresh_token":"refresh-token","expires_in":3600}'
+
+        def fake_urlopen(request: object, timeout: int = 0) -> TokenResponse:
+            seen["payload"] = getattr(request, "data", b"").decode("utf-8")
+            return TokenResponse()
+
+        with patch("bitbuddy.http_api.urllib.request.urlopen", fake_urlopen):
+            exchange_gmail_code("auth-code", state)
+
+        payload = urllib.parse.parse_qs(seen["payload"])
+        self.assertEqual(payload["code_verifier"], [verifier])
+        self.assertEqual(payload["client_secret"], ["saved-secret"])
+
+    def test_legacy_web_gmail_token_refresh_requires_client_secret(self) -> None:
+        config = parse_email_config(
+            {
+                "provider": "gmail",
+                "gmail_oauth_mode": "web_secret",
+                "gmail_client_id": "client-id.apps.googleusercontent.com",
+                "gmail_credentials_ref": "email:gmail:legacy@example.com:client",
+                "gmail_token_ref": "email:gmail:legacy@example.com:tokens",
+            }
+        )
+        put_credentials(config.gmail_token_ref, {"access_token": "expired-token", "refresh_token": "refresh-token", "expires_at": "0"})
+
+        with self.assertRaisesRegex(ValueError, "client secret"):
+            gmail_access_token(config)
+
+    def test_legacy_web_gmail_token_refresh_sends_saved_client_secret(self) -> None:
+        config = parse_email_config(
+            {
+                "provider": "gmail",
+                "gmail_oauth_mode": "web_secret",
+                "gmail_client_id": "client-id.apps.googleusercontent.com",
+                "gmail_credentials_ref": "email:gmail:web@example.com:client",
+                "gmail_token_ref": "email:gmail:web@example.com:tokens",
+            }
+        )
+        put_credentials(config.gmail_credentials_ref, {"client_secret": "saved-secret"})
+        put_credentials(config.gmail_token_ref, {"access_token": "expired-token", "refresh_token": "refresh-token", "expires_at": "0"})
+        seen: dict[str, str] = {}
+
+        class TokenResponse:
+            def __enter__(self) -> "TokenResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b'{"access_token":"next-token","expires_in":3600}'
+
+        def fake_urlopen(request: object, timeout: int = 0) -> TokenResponse:
+            seen["payload"] = getattr(request, "data", b"").decode("utf-8")
+            return TokenResponse()
+
+        with patch("bitbuddy.email.providers.gmail.urllib.request.urlopen", fake_urlopen):
+            token = gmail_access_token(config)
+
+        self.assertEqual(token, "next-token")
+        payload = urllib.parse.parse_qs(seen["payload"])
+        self.assertEqual(payload["client_secret"], ["saved-secret"])
 
     def test_gmail_message_maps_to_email_message(self) -> None:
         message = gmail_message_to_email(
