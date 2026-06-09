@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from .autonomy.levels import DEFAULT_ACTIVITY_LEVEL, normalize_activity_level, profile_for_level
 from .calendar.secrets import delete_credentials, get_credentials, put_credentials
 from .paths import CONFIG_PATH, PERSONALITY_PATH, ensure_app_dirs
 from .personality import (
@@ -114,15 +115,20 @@ class ChatConfig:
 class AutonomyConfig:
     enabled: bool
     run_after_idle_consolidation: bool
+    activity_level: str
     idle_delay_seconds: float
     repeat_idle_cycles: bool
     idle_backoff_multiplier: float
     idle_max_delay_seconds: float
     max_actions_per_cycle: int
+    max_steps_per_session: int
     max_pending_questions: int
     max_pending_comments: int
     max_new_questions_per_cycle: int
     max_autonomous_deliveries_per_day: int
+    surface_cooldown_minutes: int
+    spontaneous_remark_cooldown_minutes: int
+    min_autonomous_priority: int
     web_search: WebSearchConfig
 
 
@@ -180,6 +186,7 @@ class EmailConfig:
     gmail_full_mail_access: bool = False
     default_mailbox: str = "INBOX"
     max_preview_messages: int = 50
+    tool_message_limit: int = 10
 
 
 @dataclass(frozen=True)
@@ -260,15 +267,14 @@ def default_config(
         "autonomy": {
             "enabled": True,
             "run_after_idle_consolidation": True,
-            "idle_delay_seconds": DEFAULT_AUTONOMY_IDLE_DELAY_SECONDS,
+            # activity_level is the main dial; cadence/depth/volume/cooldown knobs are
+            # derived from it (see LEVEL_PROFILES) unless explicitly set here.
+            "activity_level": DEFAULT_ACTIVITY_LEVEL,
             "repeat_idle_cycles": True,
-            "idle_backoff_multiplier": DEFAULT_AUTONOMY_BACKOFF_MULTIPLIER,
-            "idle_max_delay_seconds": DEFAULT_AUTONOMY_MAX_DELAY_SECONDS,
             "max_actions_per_cycle": 1,
             "max_pending_questions": 12,
             "max_pending_comments": 12,
             "max_new_questions_per_cycle": 1,
-            "max_autonomous_deliveries_per_day": 10,
             "web_search": {
                 "enabled": True,
                 "provider": "searxng",
@@ -309,6 +315,7 @@ def default_config(
             "gmail_full_mail_access": False,
             "default_mailbox": "INBOX",
             "max_preview_messages": 50,
+            "tool_message_limit": 10,
         },
         "mcp": {
             "enabled": False,
@@ -688,19 +695,28 @@ def parse_autonomy_config(raw: Any) -> AutonomyConfig:
         raw = {}
     web_search = raw.get("web_search") if isinstance(raw.get("web_search"), dict) else {}
     max_results = int(web_search.get("max_results", 5)) if isinstance(web_search, dict) else 5
-    idle_delay = float(raw.get("idle_delay_seconds", DEFAULT_AUTONOMY_IDLE_DELAY_SECONDS))
+    # The activity level supplies the default for every cadence/depth/volume knob; an
+    # explicit key in the YAML still overrides the level's value (advanced override).
+    activity_level = normalize_activity_level(raw.get("activity_level", DEFAULT_ACTIVITY_LEVEL))
+    profile = profile_for_level(activity_level)
+    idle_delay = float(raw.get("idle_delay_seconds", profile.idle_delay_seconds))
     return AutonomyConfig(
         enabled=bool(raw.get("enabled", True)),
         run_after_idle_consolidation=bool(raw.get("run_after_idle_consolidation", True)),
+        activity_level=activity_level,
         idle_delay_seconds=idle_delay,
         repeat_idle_cycles=bool(raw.get("repeat_idle_cycles", True)),
-        idle_backoff_multiplier=max(1.0, float(raw.get("idle_backoff_multiplier", DEFAULT_AUTONOMY_BACKOFF_MULTIPLIER))),
-        idle_max_delay_seconds=max(idle_delay, float(raw.get("idle_max_delay_seconds", DEFAULT_AUTONOMY_MAX_DELAY_SECONDS))),
+        idle_backoff_multiplier=max(1.0, float(raw.get("idle_backoff_multiplier", profile.idle_backoff_multiplier))),
+        idle_max_delay_seconds=max(idle_delay, float(raw.get("idle_max_delay_seconds", profile.idle_max_delay_seconds))),
         max_actions_per_cycle=max(1, int(raw.get("max_actions_per_cycle", 1))),
+        max_steps_per_session=max(1, int(raw.get("max_steps_per_session", profile.max_steps_per_session))),
         max_pending_questions=max(1, int(raw.get("max_pending_questions", 12))),
         max_pending_comments=max(1, int(raw.get("max_pending_comments", 12))),
         max_new_questions_per_cycle=max(0, int(raw.get("max_new_questions_per_cycle", 1))),
-        max_autonomous_deliveries_per_day=max(1, int(raw.get("max_autonomous_deliveries_per_day", 10))),
+        max_autonomous_deliveries_per_day=max(1, int(raw.get("max_autonomous_deliveries_per_day", profile.max_autonomous_deliveries_per_day))),
+        surface_cooldown_minutes=max(1, int(raw.get("surface_cooldown_minutes", profile.surface_cooldown_minutes))),
+        spontaneous_remark_cooldown_minutes=max(1, int(raw.get("spontaneous_remark_cooldown_minutes", profile.spontaneous_remark_cooldown_minutes))),
+        min_autonomous_priority=max(1, min(5, int(raw.get("min_autonomous_priority", profile.min_autonomous_priority)))),
         web_search=WebSearchConfig(
             enabled=bool(web_search.get("enabled", True)),
             provider=str(web_search.get("provider") or "searxng"),
@@ -741,6 +757,10 @@ def parse_email_config(raw: Any) -> EmailConfig:
         max_preview = int(raw.get("max_preview_messages", 50))
     except (TypeError, ValueError):
         max_preview = 50
+    try:
+        tool_message_limit = int(raw.get("tool_message_limit", 10))
+    except (TypeError, ValueError):
+        tool_message_limit = 10
     security = str(raw.get("imap_security") or "ssl").strip().lower()
     if security not in {"ssl", "starttls", "none"}:
         security = "ssl"
@@ -768,7 +788,8 @@ def parse_email_config(raw: Any) -> EmailConfig:
         gmail_redirect_uri=str(raw.get("gmail_redirect_uri") or "http://127.0.0.1:8787/email/gmail/callback").strip() or "http://127.0.0.1:8787/email/gmail/callback",
         gmail_full_mail_access=bool(raw.get("gmail_full_mail_access", False)),
         default_mailbox=str(raw.get("default_mailbox") or "INBOX").strip() or "INBOX",
-        max_preview_messages=max(1, min(200, max_preview)),
+        max_preview_messages=max(1, max_preview),
+        tool_message_limit=max(1, tool_message_limit),
     )
 
 
@@ -800,6 +821,7 @@ def update_email_config(email: dict[str, Any]) -> BitBuddyConfig:
         "gmail_full_mail_access",
         "default_mailbox",
         "max_preview_messages",
+        "tool_message_limit",
     ):
         if key in email:
             next_raw[key] = email[key]
@@ -823,6 +845,7 @@ def update_email_config(email: dict[str, Any]) -> BitBuddyConfig:
         "gmail_full_mail_access": parsed.gmail_full_mail_access,
         "default_mailbox": parsed.default_mailbox,
         "max_preview_messages": parsed.max_preview_messages,
+        "tool_message_limit": parsed.tool_message_limit,
     }
     CONFIG_PATH.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     return load_config()
@@ -1136,19 +1159,36 @@ def update_autonomy_config(autonomy: dict[str, Any]) -> BitBuddyConfig:
 
     existing = raw.get("autonomy") if isinstance(raw.get("autonomy"), dict) else {}
     next_raw = {**existing}
-    for key in (
-        "enabled",
-        "run_after_idle_consolidation",
+    # Level-driven knobs are derived from activity_level. When the caller sets a level
+    # (the normal case from the settings UI, which posts the whole object), the level
+    # wins: drop these so the preset fully applies and stale per-field values can't
+    # shadow it. To pin an explicit value, set it directly in config without a level.
+    level_driven_keys = (
         "idle_delay_seconds",
-        "repeat_idle_cycles",
         "idle_backoff_multiplier",
         "idle_max_delay_seconds",
+        "max_steps_per_session",
+        "max_autonomous_deliveries_per_day",
+        "surface_cooldown_minutes",
+        "spontaneous_remark_cooldown_minutes",
+        "min_autonomous_priority",
+    )
+    settable_keys = [
+        "enabled",
+        "run_after_idle_consolidation",
+        "activity_level",
+        "repeat_idle_cycles",
         "max_actions_per_cycle",
         "max_pending_questions",
         "max_pending_comments",
         "max_new_questions_per_cycle",
-        "max_autonomous_deliveries_per_day",
-    ):
+    ]
+    if "activity_level" in autonomy:
+        for key in level_driven_keys:
+            next_raw.pop(key, None)
+    else:
+        settable_keys.extend(level_driven_keys)
+    for key in settable_keys:
         if key in autonomy:
             next_raw[key] = autonomy[key]
 
@@ -1161,15 +1201,20 @@ def update_autonomy_config(autonomy: dict[str, Any]) -> BitBuddyConfig:
     raw["autonomy"] = {
         "enabled": parsed.enabled,
         "run_after_idle_consolidation": parsed.run_after_idle_consolidation,
+        "activity_level": parsed.activity_level,
         "idle_delay_seconds": parsed.idle_delay_seconds,
         "repeat_idle_cycles": parsed.repeat_idle_cycles,
         "idle_backoff_multiplier": parsed.idle_backoff_multiplier,
         "idle_max_delay_seconds": parsed.idle_max_delay_seconds,
         "max_actions_per_cycle": parsed.max_actions_per_cycle,
+        "max_steps_per_session": parsed.max_steps_per_session,
         "max_pending_questions": parsed.max_pending_questions,
         "max_pending_comments": parsed.max_pending_comments,
         "max_new_questions_per_cycle": parsed.max_new_questions_per_cycle,
         "max_autonomous_deliveries_per_day": parsed.max_autonomous_deliveries_per_day,
+        "surface_cooldown_minutes": parsed.surface_cooldown_minutes,
+        "spontaneous_remark_cooldown_minutes": parsed.spontaneous_remark_cooldown_minutes,
+        "min_autonomous_priority": parsed.min_autonomous_priority,
         "web_search": {
             "enabled": parsed.web_search.enabled,
             "provider": parsed.web_search.provider,

@@ -662,8 +662,13 @@ def set_goal_task_state(
     step_index: int = 0,
     blocked_reason: str = "",
     last_cycle_id: str = "",
+    stalled_count: int = 0,
 ) -> Goal:
-    """Persist task continuity state onto a goal (merged into metadata)."""
+    """Persist task continuity state onto a goal (merged into metadata).
+
+    ``stalled_count`` tracks consecutive cycles that failed to advance the plan so the
+    autonomy loop can auto-unstick a task (mark it blocked) instead of grinding forever.
+    """
     clean_status = status if status in GOAL_TASK_STATUSES else "in_progress"
     clean_plan = [str(step).strip()[:300] for step in (plan or []) if str(step).strip()][:20]
     task_state = {
@@ -672,6 +677,7 @@ def set_goal_task_state(
         "step_index": max(0, int(step_index)),
         "blocked_reason": str(blocked_reason).strip()[:500],
         "last_cycle_id": str(last_cycle_id).strip()[:120],
+        "stalled_count": max(0, int(stalled_count)),
         "updated_at": _now_iso(),
     }
     return update_goal(int(goal_id), {"metadata_patch": {"task_state": task_state}})

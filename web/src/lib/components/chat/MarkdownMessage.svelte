@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { parseMarkdownSegments, renderMarkdown } from '$lib/markdown';
+	import { maskHtml, revealMaskedChips } from '$lib/mask';
 	import CodeBlock from './CodeBlock.svelte';
 
 	let { content, compact = false } = $props<{
@@ -14,12 +15,12 @@
 	}
 </script>
 
-<div class:compact class="markdown-message">
+<div class:compact class="markdown-message" use:revealMaskedChips>
 	{#each segments as segment}
 		{#if segment.kind === 'code'}
 			<CodeBlock code={segment.code} language={segment.language} />
 		{:else if segment.content.trim() || segment.content.includes('%%BITBUDDY_CARET%%')}
-			<div class="markdown-fragment">{@html injectCaret(renderMarkdown(segment.content))}</div>
+			<div class="markdown-fragment">{@html injectCaret(maskHtml(renderMarkdown(segment.content)))}</div>
 		{/if}
 	{/each}
 </div>

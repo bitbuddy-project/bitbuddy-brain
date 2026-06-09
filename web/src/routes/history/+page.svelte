@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { goto } from '$app/navigation';
 	import ClockCounterClockwiseIcon from 'phosphor-svelte/lib/ClockCounterClockwiseIcon';
 	import TrashIcon from 'phosphor-svelte/lib/TrashIcon';
@@ -122,16 +124,8 @@
 </svelte:head>
 
 <div class="history-page">
+	<PageHeader icon={ClockCounterClockwiseIcon} eyebrow="Conversation Log" title="History" subtitle={`${allChats.length} conversation${allChats.length === 1 ? '' : 's'} saved locally.`} />
 	<section class="history-panel" aria-label="Chat history">
-		<header class="history-header">
-			<div class="title-mark" aria-hidden="true"><ClockCounterClockwiseIcon size={30} weight="duotone" /></div>
-			<div class="title-copy">
-				<p class="eyebrow">Conversation Log</p>
-				<h1>History</h1>
-				<p>{allChats.length} conversation{allChats.length === 1 ? '' : 's'} saved locally.</p>
-			</div>
-		</header>
-
 		<div class="history-content">
 			<div class="toolbar">
 				<div class="search-wrap">
@@ -177,9 +171,9 @@
 			{#if error}
 				<div class="error-banner">{error}</div>
 			{:else if loading}
-				<div class="loading-state">Loading history...</div>
+				<div class="loading-state"><Skeleton variant="row" count={6} /></div>
 			{:else if filtered.length === 0}
-				<div class="empty-state">
+				<div class="history-empty">
 					{search || modeFilter !== 'all' ? 'No chats match your filters.' : 'No saved chats yet.'}
 				</div>
 			{:else}
@@ -228,6 +222,8 @@
 		height: 100%;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		min-height: 0;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -239,8 +235,7 @@
 
 	.history-panel {
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
@@ -292,17 +287,6 @@
 		text-transform: uppercase;
 	}
 
-	h1 {
-		font-size: 1.65rem;
-		font-weight: 900;
-		letter-spacing: -0.03em;
-		line-height: 1.1;
-	}
-
-	.title-copy p:last-child {
-		margin: 0.15rem 0 0;
-		color: var(--text-soft);
-	}
 
 	.history-content {
 		min-height: 0;
@@ -476,6 +460,15 @@
 		border-color: var(--page-accent);
 		background: var(--page-soft);
 		color: var(--page-accent);
+	}
+
+	.history-empty {
+		padding: 3rem;
+		text-align: center;
+		color: var(--text-soft);
+		font-size: 0.95rem;
+		border: 1px dashed var(--border);
+		border-radius: 1rem;
 	}
 
 	.chat-list {

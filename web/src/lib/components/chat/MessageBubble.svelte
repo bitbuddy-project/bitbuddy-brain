@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { renderPlainText } from '$lib/markdown';
+	import { maskHtml, revealMaskedChips } from '$lib/mask';
 	import type { ChatAttachment } from '$lib/api/bitbuddy';
 	import { chatBehavior, replyAnimationConfig } from '$lib/stores/chat-behavior.svelte';
 	import FileIcon from 'phosphor-svelte/lib/FileIcon';
@@ -195,7 +196,7 @@
 		if (role === 'assistant' && (shouldType || lastTyping) && safeContent.length > 0) text += ' %%BITBUDDY_CARET%%';
 		return text;
 	});
-	let renderedPlainText = $derived(renderPlainText(displayedContent));
+	let renderedPlainText = $derived(maskHtml(renderPlainText(displayedContent)));
 	let timeLabel = $derived(formatTime(createdAt));
 	let showMeta = $derived(
 		!isEditing && !showingAutonomyIntro && !(role === 'assistant' && showFace && !safeContent)
@@ -349,7 +350,7 @@
 				{:else if role === 'assistant'}
 					<MarkdownMessage content={displayedContent} />
 				{:else}
-					{@html renderedPlainText}
+					<span class="plain-text" use:revealMaskedChips>{@html renderedPlainText}</span>
 				{/if}
 			</div>
 			{#if showMeta}

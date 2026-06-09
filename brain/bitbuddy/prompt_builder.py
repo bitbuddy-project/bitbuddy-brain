@@ -18,6 +18,7 @@ from .email.permissions import all_permissions as email_permissions
 from .email.service import email_account_id
 from .autonomy.intentions import list_pending_intentions
 from .librarian import build_advisory_whisper_message
+from .loop_learning import loop_lessons_prompt
 from .personality import build_personality_prompt, load_selected_personality
 from .memory.project import load_project, project_list_context
 from .memory.store import layered_memory_context
@@ -238,6 +239,10 @@ def build_chat_messages(messages: list[dict[str, Any]], mode: str, chat_id: str 
     if skill_catalog:
         system_parts.append(skill_catalog)
 
+    lessons = loop_lessons_prompt(config.provider.type, config.provider.model)
+    if lessons:
+        system_parts.append(lessons)
+
     result: list[dict[str, str]] = [{"role": "system", "content": "\n\n".join(system_parts)}]
 
     registry = default_tool_registry()
@@ -339,11 +344,13 @@ def email_capability_context(config: Any) -> str:
     read_state = permissions.get("read", "ask")
     search_state = permissions.get("search", "ask")
     trash_state = permissions.get("trash", "ask")
+    tool_limit = max(1, int(getattr(email, "tool_message_limit", 10) or 10))
     return (
         "[Email Capability]\n"
         f"Email is connected for {address} via {provider}. Read permission is {read_state}; search permission is {search_state}; trash permission is {trash_state}. "
+        f"Email tools can see or act on at most {tool_limit} message(s) per list/search/auto-trash call by user configuration. "
         "When the user asks about their inbox, email, messages, receipts, appointments, useful emails, or mail-derived calendar items, use email_recent_messages or email_search_messages before answering. "
-        "If the user explicitly asks to delete/clean up spam, use email_trash_message for individual messages or email_create_auto_trash_rule for sender-based cleanup. Trash is recoverable and not permanent delete. "
+        "If the user explicitly asks to delete/clean up spam, use email_trash_message for specific individual messages or email_create_auto_trash_rule for sender-based cleanup. Say that this moves mail to Trash; it is recoverable and not permanent delete. "
         "If permission is ask/denied, let the tool permission flow handle it; do not claim email is unhooked or inaccessible unless the tool reports that. "
         "Never send, reply, permanently delete, archive, mark messages read, or load remote email images."
     )

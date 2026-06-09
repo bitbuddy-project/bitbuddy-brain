@@ -231,27 +231,27 @@ def default_tool_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="email_recent_messages",
-            description="List recent email messages from a mailbox. Use whenever the user asks about inbox/email/messages or asks you to scan mail. Read-only; returns message ids for email_read_message.",
+            description="List recent email messages from a mailbox. Use whenever the user asks about inbox/email/messages or asks you to scan mail. Read-only; returns message ids for email_read_message. The number returned is controlled by the user's configured Email tool message limit.",
             arguments_schema={
                 "type": "object",
-                "properties": {"mailbox": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}},
+                "properties": {"mailbox": {"type": "string"}},
                 "additionalProperties": False,
             },
-            max_chars=8000,
+            max_chars=64000,
         ),
         email_recent_messages_tool,
     )
     registry.register(
         ToolDefinition(
             name="email_search_messages",
-            description="Search email subjects/senders/snippets in a mailbox. Use for email awareness, finding useful messages, receipts, appointments, travel, bills, or calendar-worthy emails. Read-only.",
+            description="Search email subjects/senders/snippets in a mailbox. Use for email awareness, finding useful messages, receipts, appointments, travel, bills, or calendar-worthy emails. Read-only. The number returned is controlled by the user's configured Email tool message limit.",
             arguments_schema={
                 "type": "object",
-                "properties": {"query": {"type": "string"}, "mailbox": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}},
+                "properties": {"query": {"type": "string"}, "mailbox": {"type": "string"}},
                 "required": ["query"],
                 "additionalProperties": False,
             },
-            max_chars=8000,
+            max_chars=64000,
         ),
         email_search_messages_tool,
     )
@@ -272,7 +272,7 @@ def default_tool_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="email_trash_message",
-            description="Move one email message to Trash. Recoverable, not permanent delete. Requires email trash permission and Gmail modify access.",
+            description="Move one specific email message to Trash. Recoverable, not permanent delete. Requires email trash permission and Gmail modify access. Be specific about which message is being trashed.",
             arguments_schema={
                 "type": "object",
                 "properties": {"message_id": {"type": "string"}, "mailbox": {"type": "string"}},
@@ -286,7 +286,7 @@ def default_tool_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="email_create_auto_trash_rule",
-            description="Create a sender rule that automatically moves future matching emails to Trash, optionally applying it to existing matching messages. Requires explicit email trash permission.",
+            description="Create a sender rule that automatically moves future matching emails to Trash, optionally applying it to existing matching messages up to the configured Email tool message limit. This trashes matching messages; it does not permanently delete them. Requires explicit email trash permission.",
             arguments_schema={
                 "type": "object",
                 "properties": {"sender": {"type": "string"}, "apply_existing": {"type": "boolean"}, "mailbox": {"type": "string"}},

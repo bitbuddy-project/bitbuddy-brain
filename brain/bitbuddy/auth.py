@@ -35,6 +35,18 @@ def get_api_token() -> str:
     return token
 
 
+def rotate_api_token() -> str:
+    """Generate a fresh API token, replacing any existing one."""
+    ensure_app_dirs()
+    token = secrets.token_urlsafe(48)
+    tmp_path = API_TOKEN_PATH.with_suffix(".tmp")
+    tmp_path.write_text(token + "\n", encoding="utf-8")
+    os.chmod(tmp_path, 0o600)
+    tmp_path.replace(API_TOKEN_PATH)
+    os.chmod(API_TOKEN_PATH, 0o600)
+    return token
+
+
 def valid_api_token(value: str) -> bool:
     token = get_api_token()
     return bool(value) and secrets.compare_digest(value, token)

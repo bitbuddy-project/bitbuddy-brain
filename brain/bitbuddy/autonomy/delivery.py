@@ -8,7 +8,8 @@ from ..continuity import record_continuity_event
 from ..memory.project import load_project
 from ..providers import ProviderClient
 from .decision import collect_model_text
-from .intentions import Intention, list_pending_intentions, mark_intention_used, mark_intention_shown, next_eligible_intention, record_intention_surface, update_intention_status
+from .levels import resolve_profile
+from .intentions import SURFACE_COOLDOWN_MINUTES, Intention, list_pending_intentions, mark_intention_used, mark_intention_shown, next_eligible_intention, record_intention_surface, update_intention_status
 
 
 def deliver_pending_intention(chat_id: str, model: str | None = None) -> Intention | None:
@@ -41,6 +42,9 @@ def deliver_intention(
     context_lines: list[str] = []
     if intention.reason:
         context_lines.append(f"Reason: {intention.reason}")
+
+    if isinstance(intention.metadata, dict) and intention.metadata.get("excited"):
+        context_lines.append("Tone: she got genuinely excited about this — let it sound warm and enthusiastic, like sharing something cool, while staying grounded and specific.")
 
     project_id = intention.metadata.get("project_id") if isinstance(intention.metadata, dict) else None
     if project_id:
@@ -117,6 +121,9 @@ def select_surfaceable_intention(
     mode: str = "chat",
     quiet_mode: bool = False,
 ) -> Intention | None:
+    # Surfacing inside a live conversation is low-cost, so the in-chat cooldown follows
+    # the activity level (shorter when she's livelier) rather than a fixed 45 minutes.
+    profile = resolve_profile(load_config().autonomy)
     return next_eligible_intention(
         chat_id,
         latest_user_text=latest_user_text,
@@ -124,6 +131,7 @@ def select_surfaceable_intention(
         response_text=response_text,
         mode=mode,
         quiet_mode=quiet_mode,
+        cooldown_minutes=int(getattr(profile, "surface_cooldown_minutes", SURFACE_COOLDOWN_MINUTES)),
     )
 
 

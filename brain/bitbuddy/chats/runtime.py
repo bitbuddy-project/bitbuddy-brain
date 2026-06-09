@@ -25,6 +25,7 @@ from ..continuity import capture_post_chat_episodic_fallback, record_continuity_
 from ..config import load_config
 from ..autonomy.delivery import mark_intention_surfaced, select_surfaceable_intention, surfaced_intention_text
 from ..lifecycle import lifecycle_quiet_mode
+from ..loop_learning import record_loop_incident
 from ..projects.routing import (
     CollectedResponse,
     clean_model_thinking_text,
@@ -68,6 +69,7 @@ ARTIFACT_WRITE_TOOLS = {"write_file", "patch_file", "make_directory"}
 ARTIFACT_BACKING_TOOLS = {*ARTIFACT_WRITE_TOOLS, "run_shell_command"}
 ARTIFACT_EXTENSIONS_RE = re.compile(r"\.(?:svg|png|jpg|jpeg|gif|webp|pdf|txt|md|mdx|rst|json|jsonc|csv|tsv|yaml|yml|toml|ini|cfg|conf|env|xml|html|css|scss|sass|less|js|jsx|mjs|cjs|ts|tsx|svelte|vue|astro|py|sh|bash|zsh|fish|rune|go|rs|rb|java|kt|c|h|cpp|hpp|cc|cs|php|lua|sql|tex|kicad_pro|kicad_sch|kicad_pcb|sch|pcb)\b", re.IGNORECASE)
 ARTIFACT_CREATION_RE = re.compile(r"\b(?:create|created|generate|generated|make|made|save|saved|write|wrote|export|exported|update|updated|edit|edited|modify|modified|tweak|tweaked)\b", re.IGNORECASE)
+STUCK_LOOP_MESSAGE = "The model got stuck trying to use tools, so I stopped the tool loop and summarized what I found."
 
 
 def prompt_has_complete_tool_list(prompt_messages: list[dict[str, str]], registry: Any) -> bool:
@@ -129,6 +131,39 @@ def stream_tool_calls_to_tool_calls(chunks: list[Any]) -> list[ToolCall]:
             continue
         calls.append(ToolCall(tool=stream_call.name, arguments=normalize_tool_arguments(stream_call.name, arguments)))
     return calls
+
+
+def post_result_response_is_nonsense(response_text: str, last_successful_tool_result: ToolResult | None) -> bool:
+    """Return True when a post-tool response is unusable enough to trigger synthesis repair.
+
+    This intentionally stays conservative. Local models sometimes emit tiny
+    fragments, protocol debris, or meta-comments after a useful tool result.
+    We should synthesize from the result instead of showing that as the answer.
+    """
+    if last_successful_tool_result is None:
+        return False
+    clean = (response_text or "").strip()
+    if not clean:
+        return True
+    lowered = clean.lower()
+    if len(clean) < 12 and not any(char.isalnum() for char in clean):
+        return True
+    if lowered in {"done", "ok", "okay", "tool result", "result", "continue", "final"}:
+        return True
+    if contains_tool_call(clean) or contains_unsupported_tool_output(clean):
+        return True
+    return False
+
+
+def recovery_message_from_tool_result(result: ToolResult | None) -> str:
+    if result is None:
+        return STUCK_LOOP_MESSAGE + " I do not have a usable tool result yet, so please try again or give me a little more direction."
+    summary = result.summary.strip() or f"{result.tool} completed"
+    content = result.content.strip()
+    if content:
+        clipped = content[:FALLBACK_TOOL_RESULT_CONTENT_CHARS].rstrip()
+        return f"{STUCK_LOOP_MESSAGE}\n\n{summary}\n\n{clipped}"
+    return f"{STUCK_LOOP_MESSAGE}\n\n{summary}"
 
 
 def return_greeting_context_message(greeting_text: str) -> dict[str, str] | None:
@@ -1092,6 +1127,32 @@ def start_chat_run(run: ActiveChatRun) -> None:
                 """Return a last-resort error after model synthesis repair fails."""
                 return final_tool_fallback_message(last_successful_tool_result)
 
+            def recover_stuck_loop(reason: str, *, tools: list[str] | None = None, detail: str = "") -> None:
+                """Stop a non-progressing tool loop with a useful user-facing recovery."""
+                clean_tools = tools or ([last_successful_tool_result.tool] if last_successful_tool_result is not None else [])
+                record_loop_incident(
+                    provider=config.provider.type,
+                    model=run.model or config.provider.model,
+                    mode=run.mode,
+                    reason=reason,
+                    tools=clean_tools,
+                    recovery="synthesize_from_last_successful_tool" if last_successful_tool_result is not None else "friendly_stop",
+                    chat_id=run.chat_id,
+                    run_id=run.run_id,
+                    metadata={
+                        "detail": detail[:500],
+                        "tool_rounds": tool_rounds,
+                        "malformed_tool_rounds": malformed_tool_rounds,
+                        "unsupported_tool_rounds": unsupported_tool_rounds,
+                        "duplicate_tool_rounds": duplicate_tool_rounds,
+                    },
+                )
+                if last_successful_tool_result is not None:
+                    if not emit_synthesis_from_last_successful_tool(reason):
+                        emit_text(recovery_message_from_tool_result(last_successful_tool_result))
+                    return
+                emit_text(recovery_message_from_tool_result(None))
+
             def emit_synthesis_from_last_successful_tool(reason: str) -> bool:
                 """Ask the model to synthesize from the last successful tool result.
 
@@ -1240,6 +1301,9 @@ def start_chat_run(run: ActiveChatRun) -> None:
                         ),
                     }
                 )
+                if duplicate_tool_rounds >= 2:
+                    recover_stuck_loop("duplicate_tool_call", tools=[call.tool for call in tool_calls], detail="duplicate parsed tool calls")
+                    return "stop"
                 return "continue"
 
             def run_memory_broker_after_turn(assistant_answer: str) -> None:
@@ -1409,9 +1473,7 @@ def start_chat_run(run: ActiveChatRun) -> None:
                                 break
 
                             if malformed_tool_rounds >= 2:
-                                emit_text(
-                                    f"I couldn’t parse the model’s tool call: {shown_error}. It needs to use one or more `tool_call: {{...}}` JSON lines with no prose around them."
-                                )
+                                recover_stuck_loop("malformed_tool_call", detail=str(shown_error))
                                 break
 
                             messages.append(
@@ -1451,9 +1513,7 @@ def start_chat_run(run: ActiveChatRun) -> None:
                         )
 
                         if unsupported_tool_rounds >= 2:
-                            emit_text(
-                                "I couldn’t parse the model’s tool syntax. It needs to use the regular `tool_call: {...}` JSON-line format shown in the instructions."
-                            )
+                            recover_stuck_loop("unsupported_tool_syntax", detail=response_text[:500])
                             break
 
                         messages.append(
@@ -1522,10 +1582,25 @@ def start_chat_run(run: ActiveChatRun) -> None:
                         messages.append(artifact_creation_repair_message(initial_latest_user_text, response_text))
                         continue
 
+                    if post_result_response_is_nonsense(response_text, last_successful_tool_result):
+                        recover_stuck_loop("post_result_nonsense", detail=response_text[:500])
+                        break
+
                     emit_collected_response(response)
                     break
 
                 if tool_rounds >= max_tool_rounds:
+                    record_loop_incident(
+                        provider=config.provider.type,
+                        model=run.model or config.provider.model,
+                        mode=run.mode,
+                        reason="tool_round_limit",
+                        tools=[result.tool for result in all_successful_tool_results[-4:]],
+                        recovery="synthesize_from_completed_results",
+                        chat_id=run.chat_id,
+                        run_id=run.run_id,
+                        metadata={"tool_rounds": tool_rounds, "max_tool_rounds": max_tool_rounds},
+                    )
                     messages.append(
                         {
                             "role": "system",
@@ -1600,6 +1675,9 @@ def start_chat_run(run: ActiveChatRun) -> None:
                                 ),
                             }
                         )
+                        if duplicate_tool_rounds >= 2:
+                            recover_stuck_loop("duplicate_tool_call", tools=[tool_call.tool], detail="duplicate executable tool call")
+                            break
                         continue
 
                     called_tools_signatures.add(signature)
@@ -1718,6 +1796,10 @@ def start_chat_run(run: ActiveChatRun) -> None:
                     if result.arguments_summary:
                         arguments_summary = result.arguments_summary
                 except ToolParseError as error:
+                    malformed_tool_rounds += 1
+                    if malformed_tool_rounds >= 2:
+                        recover_stuck_loop("missing_required_args", detail=str(error))
+                        break
                     result = invalid_tool_result(str(error))
                     tool_event = create_runtime_tool_event(run.chat_id, result.tool, {}, "Invalid tool call.", mode=run.mode)
                     broadcast_tool_event("tool_call", tool_event)

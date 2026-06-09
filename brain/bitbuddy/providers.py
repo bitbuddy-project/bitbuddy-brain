@@ -660,16 +660,17 @@ class ProviderClient:
         if not self.config.api_key:
             raise ValueError("Anthropic API key is not configured.")
         system, anthropic_turns = anthropic_messages(provider_messages(messages, thinking_enabled=thinking_enabled))
+        max_tokens = 4096
         payload: dict[str, object] = {
             "model": model,
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
             "stream": True,
             "messages": anthropic_turns,
         }
-        if thinking_enabled and anthropic_supports_extended_thinking(model):
-            budget = reasoning_budget_tokens()
-            thinking_budget = 2048 if budget < 0 else min(3072, max(1024, budget))
-            payload["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+        if thinking_enabled:
+            thinking_config = anthropic_thinking_payload(model, max_tokens)
+            if thinking_config:
+                payload["thinking"] = thinking_config
         if system:
             payload["system"] = system
         anthropic_tools = anthropic_tool_schema(tools or [])
@@ -1228,9 +1229,55 @@ def anthropic_tool_schema(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def anthropic_uses_adaptive_thinking(model: str) -> bool:
+    """Models that take thinking={"type": "adaptive"} instead of enabled+budget_tokens.
+
+    On Opus 4.7/4.8 the enabled+budget_tokens form is rejected with a 400, so these
+    must use adaptive thinking. Opus 4.5/4.6 and Sonnet 4.6 also prefer adaptive.
+    """
+    name = (model or "").lower()
+    return (
+        "opus-4-8" in name
+        or "opus-4-7" in name
+        or "opus-4-6" in name
+        or "opus-4-5" in name
+        or "sonnet-4-6" in name
+    )
+
+
+def anthropic_thinking_omits_content(model: str) -> bool:
+    """Opus 4.7+ omit thinking text unless display=summarized is requested."""
+    name = (model or "").lower()
+    return "opus-4-7" in name or "opus-4-8" in name
+
+
 def anthropic_supports_extended_thinking(model: str) -> bool:
     name = (model or "").lower()
-    return "claude-4" in name or "sonnet-4" in name or "opus-4" in name or "claude-3-7" in name or "claude-3.7" in name
+    return (
+        anthropic_uses_adaptive_thinking(model)
+        or "claude-4" in name
+        or "sonnet-4" in name
+        or "opus-4" in name
+        or "haiku-4" in name
+        or "claude-3-7" in name
+        or "claude-3.7" in name
+    )
+
+
+def anthropic_thinking_payload(model: str, max_tokens: int) -> dict[str, object] | None:
+    """Build the Anthropic `thinking` request field for a model, or None if unsupported."""
+    if not anthropic_supports_extended_thinking(model):
+        return None
+    if anthropic_uses_adaptive_thinking(model):
+        thinking: dict[str, object] = {"type": "adaptive"}
+        if anthropic_thinking_omits_content(model):
+            # 4.7+ omit thinking text by default; opt back in so it streams to the UI.
+            thinking["display"] = "summarized"
+        return thinking
+    budget = reasoning_budget_tokens()
+    ceiling = max(1024, max_tokens - 1024)
+    thinking_budget = 2048 if budget < 0 else min(ceiling, max(1024, budget))
+    return {"type": "enabled", "budget_tokens": thinking_budget}
 
 
 def codex_health() -> tuple[bool, str]:

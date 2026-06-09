@@ -13,7 +13,25 @@ from ..toolbox.base import ToolCall, ToolExecutor, ToolParseError, ToolRegistry,
 from ..utils import log_activity
 
 
-DEFAULT_SUBAGENT_TOOLS = {"glob_files", "list_directory", "search_text", "read_file", "read_file_range", "get_project_brief", "get_project_memory", "web_search", "web_fetch", "calendar_view_events", "calendar_find_free_time"}
+DEFAULT_SUBAGENT_TOOLS = {
+    "glob_files",
+    "list_directory",
+    "search_text",
+    "read_file",
+    "read_file_range",
+    "get_project_brief",
+    "get_project_memory",
+    "web_search",
+    "web_fetch",
+    "calendar_view_events",
+    "calendar_find_free_time",
+    "email_list_mailboxes",
+    "email_recent_messages",
+    "email_search_messages",
+    "email_read_message",
+    "email_trash_message",
+    "email_create_auto_trash_rule",
+}
 
 
 @dataclass(frozen=True)
@@ -133,8 +151,10 @@ def run_subagent(
 def selected_tool_names(registry: ToolRegistry, requested: list[str] | None) -> set[str]:
     available = {definition.name for definition in registry.definitions() if definition.name != "run_subagent"}
     if not requested:
-        return available.intersection(DEFAULT_SUBAGENT_TOOLS)
-    return {name for name in requested if name in available and name != "run_subagent"}
+        names = available.intersection(DEFAULT_SUBAGENT_TOOLS)
+    else:
+        names = {name for name in requested if name in available and name != "run_subagent"}
+    return {name for name in names if not is_desktop_control_tool(registry.definition(name), name)}
 
 
 def filtered_registry(registry: ToolRegistry, allowed: set[str]) -> ToolRegistry:
@@ -145,6 +165,13 @@ def filtered_registry(registry: ToolRegistry, allowed: set[str]) -> ToolRegistry
         if definition is not None and handler is not None:
             result.register(definition, handler)
     return result
+
+
+def is_desktop_control_tool(definition: Any, tool_name: str = "") -> bool:
+    annotations = getattr(definition, "annotations", None)
+    if isinstance(annotations, dict) and str(annotations.get("mcp_server") or "") == "computer_use_linux":
+        return True
+    return str(tool_name or "").startswith("mcp_computer_use_linux_")
 
 
 def default_project_arguments(arguments: dict[str, object], project_id: str) -> dict[str, object]:

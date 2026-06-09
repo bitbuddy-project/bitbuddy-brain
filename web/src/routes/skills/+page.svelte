@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import BookOpenIcon from 'phosphor-svelte/lib/BookOpenIcon';
 	import ArchiveIcon from 'phosphor-svelte/lib/ArchiveIcon';
 	import MarkdownMessage from '$lib/components/chat/MarkdownMessage.svelte';
@@ -76,26 +78,22 @@
 </svelte:head>
 
 <div class="skills-page">
+	<PageHeader icon={BookOpenIcon} eyebrow="Playbooks" title="Skills" subtitle={`${activeSkills.length} active · ${archivedSkills.length} archived reusable workflow${activeSkills.length + archivedSkills.length === 1 ? '' : 's'}.`}>
+		{#snippet action()}
+				{#if archivedSkills.length > 0}
+					<button class="toggle-archived" type="button" onclick={() => { showArchived = !showArchived; }}>
+						{showArchived ? 'Hide archived' : 'Show archived'}
+					</button>
+				{/if}
+			{/snippet}
+	</PageHeader>
 	<section class="skills-panel" aria-label="Skill catalog">
-		<header class="skills-header">
-			<div class="title-mark" aria-hidden="true"><BookOpenIcon size={30} weight="duotone" /></div>
-			<div class="title-copy">
-				<p class="eyebrow">Playbooks</p>
-				<h1>Skills</h1>
-				<p>{activeSkills.length} active · {archivedSkills.length} archived reusable workflow{activeSkills.length + archivedSkills.length === 1 ? '' : 's'}.</p>
-			</div>
-			{#if archivedSkills.length > 0}
-				<button class="toggle-archived" type="button" onclick={() => { showArchived = !showArchived; }}>
-					{showArchived ? 'Hide archived' : 'Show archived'}
-				</button>
-			{/if}
-		</header>
 
 		<div class="skills-content">
 			{#if error}
 				<div class="error-banner">{error}</div>
 			{:else if loadingList}
-				<div class="loading-state">Loading skills...</div>
+				<div class="loading-state"><Skeleton variant="row" count={6} /></div>
 			{:else if displaySkills.length === 0}
 				<div class="empty-state">No skills yet. Ask BitBuddy to create one.</div>
 			{:else}
@@ -122,7 +120,7 @@
 
 			<div class="skill-detail">
 				{#if loadingDetail}
-					<div class="detail-loading">Loading…</div>
+					<div class="detail-loading"><Skeleton variant="line" count={5} /></div>
 				{:else if selectedSkill}
 					<div class="detail-header">
 						<div class="detail-title-row">
@@ -173,6 +171,8 @@
 		height: 100%;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		min-height: 0;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -184,8 +184,7 @@
 
 	.skills-panel {
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
@@ -200,55 +199,6 @@
 		overflow: hidden;
 	}
 
-	.skills-header {
-		flex: 0 0 auto;
-		padding: 1.35rem 1.5rem;
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		border-bottom: 1px solid var(--border);
-		background:
-			linear-gradient(135deg, var(--page-soft), transparent 70%),
-			var(--header-bg);
-	}
-
-	.title-mark {
-		width: 3.5rem;
-		height: 3.5rem;
-		display: grid;
-		place-items: center;
-		border-radius: 1.1rem;
-		background: var(--surface-glass);
-		border: 1px solid var(--page-border);
-		color: var(--page-accent);
-		box-shadow: 0 0 20px var(--page-soft);
-		flex: 0 0 auto;
-	}
-
-	.title-copy {
-		min-width: 0;
-		flex: 1;
-	}
-
-	.eyebrow {
-		color: var(--page-accent);
-		font-size: 0.72rem;
-		font-weight: 800;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-	}
-
-	h1 {
-		font-size: 1.65rem;
-		font-weight: 900;
-		letter-spacing: -0.03em;
-		line-height: 1.1;
-	}
-
-	.title-copy p:last-child {
-		margin: 0.15rem 0 0;
-		color: var(--text-soft);
-	}
 
 	.toggle-archived {
 		padding: 0.4rem 0.85rem;
@@ -489,16 +439,6 @@
 	@media (max-width: 640px) {
 		.skills-page {
 			padding: 0;
-		}
-
-		.skills-header {
-			align-items: flex-start;
-			flex-wrap: wrap;
-		}
-
-		.title-mark {
-			width: 3rem;
-			height: 3rem;
 		}
 
 		.toggle-archived {

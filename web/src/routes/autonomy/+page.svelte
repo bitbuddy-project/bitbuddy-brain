@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import {
 		dismissIntention,
 		getActivity,
@@ -152,30 +154,24 @@
 </script>
 
 <div class="autonomy-page">
-	<div class="autonomy-card">
-		<header class="autonomy-header">
-			<div class="title-mark" aria-hidden="true">
-				<SparkleIcon size={30} weight="duotone" />
-			</div>
-			<div class="title-copy">
-				<p class="eyebrow">System Activity</p>
-				<h1>Autonomy</h1>
-				<p>Agent logs and project monitoring activity.</p>
-			</div>
-			<div
-				class="monitor-status"
-				class:running={autonomyStatus?.state === 'running'}
-				class:scheduled={autonomyStatus?.state === 'scheduled'}
-				class:paused={autonomyStatus?.state === 'disabled' || autonomyStatus?.state === 'blocked_by_lifecycle'}
-				title={autonomySubline()}
-			>
-				<span class="status-dot"></span>
-				<div class="monitor-copy">
-					<span>{autonomyHeadline()}</span>
-					{#if autonomySubline()}<small>{autonomySubline()}</small>{/if}
+	<PageHeader icon={SparkleIcon} eyebrow="System Activity" title="Autonomy" subtitle="Agent logs and project monitoring activity.">
+		{#snippet action()}
+				<div
+					class="monitor-status"
+					class:running={autonomyStatus?.state === 'running'}
+					class:scheduled={autonomyStatus?.state === 'scheduled'}
+					class:paused={autonomyStatus?.state === 'disabled' || autonomyStatus?.state === 'blocked_by_lifecycle'}
+					title={autonomySubline()}
+				>
+					<span class="status-dot"></span>
+					<div class="monitor-copy">
+						<span>{autonomyHeadline()}</span>
+						{#if autonomySubline()}<small>{autonomySubline()}</small>{/if}
+					</div>
 				</div>
-			</div>
-		</header>
+			{/snippet}
+	</PageHeader>
+	<div class="autonomy-card">
 
 		<div class="autonomy-tabs" aria-label="Autonomy sections">
 			<button class="tab-button" class:active={activeTab === 'timeline'} type="button" onclick={() => (activeTab = 'timeline')}>
@@ -196,10 +192,7 @@
 
 		<div class="card-content">
 			{#if loading}
-				<div class="loading-state">
-					<div class="spinner"></div>
-					<span>Loading activity...</span>
-				</div>
+				<Skeleton variant="row" count={5} />
 			{:else if activeTab === 'timeline'}
 				<section class="timeline-panel" aria-label="Autonomy cycle timeline">
 					<div class="timeline-heading">
@@ -387,6 +380,8 @@
 		height: 100%;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		min-height: 0;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -403,8 +398,7 @@
 		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
 
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
@@ -455,13 +449,6 @@
 		font-weight: 800;
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
-	}
-
-	h1 {
-		font-size: 1.65rem;
-		font-weight: 900;
-		letter-spacing: -0.03em;
-		line-height: 1.1;
 	}
 
 	.title-copy p:last-child {

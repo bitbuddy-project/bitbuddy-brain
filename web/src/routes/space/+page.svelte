@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import HouseLineIcon from 'phosphor-svelte/lib/HouseLineIcon';
 	import ArchiveIcon from 'phosphor-svelte/lib/ArchiveIcon';
 	import TargetIcon from 'phosphor-svelte/lib/TargetIcon';
@@ -113,16 +115,8 @@
 </svelte:head>
 
 <div class="space-page">
+	<PageHeader icon={HouseLineIcon} eyebrow="Workspace" title="AI Space" subtitle={`${documents.length} document${documents.length === 1 ? '' : 's'} · ${selfGoals.length} active goal${selfGoals.length === 1 ? '' : 's'}`} />
 	<section class="space-panel" aria-label="AI workspace">
-		<header class="space-header">
-			<div class="title-mark" aria-hidden="true"><HouseLineIcon size={30} weight="duotone" /></div>
-			<div class="title-copy">
-				<p class="eyebrow">Workspace</p>
-				<h1>AI Space</h1>
-				<p>{documents.length} document{documents.length === 1 ? '' : 's'} · {selfGoals.length} active goal{selfGoals.length === 1 ? '' : 's'}</p>
-			</div>
-		</header>
-
 		<div class="space-content">
 			{#if selfGoals.length > 0}
 				<section class="goals-strip" aria-label="Current AI goals">
@@ -143,7 +137,7 @@
 			{#if error}
 				<div class="error-banner">{error}</div>
 			{:else if loadingList}
-				<div class="loading-state">Loading workspace...</div>
+				<div class="loading-state"><Skeleton variant="card" count={3} /></div>
 			{:else if documents.length === 0}
 				<div class="empty-state">This workspace is empty for now. BitBuddy will leave notes, drafts, and research here while working on goals.</div>
 			{:else}
@@ -234,6 +228,8 @@
 		height: 100%;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		min-height: 0;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -245,8 +241,7 @@
 
 	.space-panel {
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
@@ -261,54 +256,6 @@
 		overflow: hidden;
 	}
 
-	.space-header {
-		flex: 0 0 auto;
-		padding: 1.35rem 1.5rem;
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		border-bottom: 1px solid var(--border);
-		background:
-			linear-gradient(135deg, var(--page-soft), transparent 70%),
-			var(--header-bg);
-	}
-
-	.title-mark {
-		width: 3.5rem;
-		height: 3.5rem;
-		display: grid;
-		place-items: center;
-		border-radius: 1.1rem;
-		background: var(--surface-glass);
-		border: 1px solid var(--page-border);
-		color: var(--page-accent);
-		box-shadow: 0 0 20px var(--page-soft);
-		flex: 0 0 auto;
-	}
-
-	.title-copy {
-		min-width: 0;
-	}
-
-	.eyebrow {
-		color: var(--page-accent);
-		font-size: 0.72rem;
-		font-weight: 800;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-	}
-
-	h1 {
-		font-size: 1.65rem;
-		font-weight: 900;
-		letter-spacing: -0.03em;
-		line-height: 1.1;
-	}
-
-	.title-copy p:last-child {
-		margin: 0.15rem 0 0;
-		color: var(--text-soft);
-	}
 
 	.space-content {
 		flex: 1 1 auto;
@@ -584,13 +531,5 @@
 			padding: 0;
 		}
 
-		.space-header {
-			align-items: flex-start;
-		}
-
-		.title-mark {
-			width: 3rem;
-			height: 3rem;
-		}
 	}
 </style>

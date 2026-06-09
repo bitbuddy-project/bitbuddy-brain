@@ -1,4 +1,5 @@
 <script lang="ts">
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import DevicesIcon from 'phosphor-svelte/lib/DevicesIcon';
 	import MicrophoneIcon from 'phosphor-svelte/lib/MicrophoneIcon';
 	import EyeIcon from 'phosphor-svelte/lib/EyeIcon';
@@ -13,16 +14,12 @@
 </script>
 
 <div class="devices-page">
+	<PageHeader icon={DevicesIcon} eyebrow="Physical Presence" title="Devices" subtitle="Not phone sync. Something more personal is being built here.">
+		{#snippet action()}
+				<span class="status-pill">Coming soon</span>
+			{/snippet}
+	</PageHeader>
 	<section class="devices-panel" aria-label="BitBuddy devices">
-		<header class="devices-header">
-			<div class="title-mark" aria-hidden="true"><DevicesIcon size={30} weight="duotone" /></div>
-			<div class="title-copy">
-				<p class="eyebrow">Physical Presence</p>
-				<h1>Devices</h1>
-				<p>Not phone sync. Something more personal is being built here.</p>
-			</div>
-			<span class="status-pill">Coming soon</span>
-		</header>
 
 		<div class="devices-content">
 			<section class="coming-card">
@@ -69,6 +66,8 @@
 		height: 100%;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		min-height: 0;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -80,8 +79,7 @@
 
 	.devices-panel {
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
@@ -95,38 +93,12 @@
 		overflow: hidden;
 	}
 
-	.devices-header {
-		flex: 0 0 auto;
-		padding: 1.35rem 1.5rem;
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		border-bottom: 1px solid var(--card-border, var(--border));
-		background:
-			linear-gradient(135deg, var(--page-soft), transparent 70%),
-			var(--panel-header, var(--header-bg));
-	}
-
-	.title-mark,
 	.signal-chip {
 		display: grid;
 		place-items: center;
 		border: 1px solid var(--page-border);
 		background: var(--chip-bg, var(--surface-glass));
 		color: var(--page-accent);
-	}
-
-	.title-mark {
-		width: 3.5rem;
-		height: 3.5rem;
-		border-radius: 1.1rem;
-		box-shadow: 0 0 20px var(--page-soft);
-		flex: 0 0 auto;
-	}
-
-	.title-copy {
-		min-width: 0;
-		flex: 1;
 	}
 
 	.eyebrow {
@@ -137,23 +109,13 @@
 		text-transform: uppercase;
 	}
 
-	h1,
 	h2 {
 		letter-spacing: -0.04em;
 		line-height: 1.05;
-	}
-
-	h1 {
-		font-size: 1.65rem;
-		font-weight: 900;
-	}
-
-	h2 {
 		font-size: clamp(2.2rem, 6vw, 4.8rem);
 		font-weight: 950;
 	}
 
-	.title-copy p:last-child,
 	.coming-copy p,
 	.teaser-card p {
 		color: var(--text-soft);
@@ -287,11 +249,6 @@
 	@media (max-width: 640px) {
 		.devices-page {
 			padding: 0;
-		}
-
-		.devices-header {
-			align-items: flex-start;
-			flex-wrap: wrap;
 		}
 
 		.coming-card {

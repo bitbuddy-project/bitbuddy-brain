@@ -244,10 +244,7 @@ def email_list_mailboxes_tool(arguments: dict[str, object], definition: ToolDefi
 
 def email_recent_messages_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
     mailbox = str(arguments.get("mailbox") or "").strip()
-    try:
-        limit = int(arguments.get("limit", 10))
-    except (TypeError, ValueError):
-        limit = 10
+    limit = email_tool_limit()
     try:
         messages = email_list_messages(mailbox=mailbox, limit=limit)
     except EmailPermissionRequired as error:
@@ -255,7 +252,7 @@ def email_recent_messages_tool(arguments: dict[str, object], definition: ToolDef
     except ValueError as error:
         return invalid_tool_result(str(error))
     content, truncated = cap_text(_format_email_messages(messages), definition.max_chars)
-    return ToolResult(tool=definition.name, ok=True, content=content, summary=f"Found {len(messages)} email messages.", arguments_summary={"mailbox": mailbox or "default"}, truncated=truncated)
+    return ToolResult(tool=definition.name, ok=True, content=content, summary=f"Found {len(messages)} email messages. Tool visibility limit is {limit} message(s).", arguments_summary={"mailbox": mailbox or "default", "limit": limit}, truncated=truncated)
 
 
 def email_search_messages_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
@@ -263,10 +260,7 @@ def email_search_messages_tool(arguments: dict[str, object], definition: ToolDef
     mailbox = str(arguments.get("mailbox") or "").strip()
     if not query:
         return invalid_tool_result("query is required.")
-    try:
-        limit = int(arguments.get("limit", 10))
-    except (TypeError, ValueError):
-        limit = 10
+    limit = email_tool_limit()
     try:
         messages = email_search_messages(query=query, mailbox=mailbox, limit=limit)
     except EmailPermissionRequired as error:
@@ -274,7 +268,7 @@ def email_search_messages_tool(arguments: dict[str, object], definition: ToolDef
     except ValueError as error:
         return invalid_tool_result(str(error))
     content, truncated = cap_text(_format_email_messages(messages), definition.max_chars)
-    return ToolResult(tool=definition.name, ok=True, content=content, summary=f"Found {len(messages)} matching email messages.", arguments_summary={"query": query, "mailbox": mailbox or "default"}, truncated=truncated)
+    return ToolResult(tool=definition.name, ok=True, content=content, summary=f"Found {len(messages)} matching email messages. Tool visibility limit is {limit} message(s).", arguments_summary={"query": query, "mailbox": mailbox or "default", "limit": limit}, truncated=truncated)
 
 
 def email_read_message_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
@@ -305,7 +299,15 @@ def email_trash_message_tool(arguments: dict[str, object], definition: ToolDefin
         return _email_permission_result(definition, error)
     except ValueError as error:
         return invalid_tool_result(str(error))
-    return ToolResult(tool=definition.name, ok=True, content=f"Moved '{message.subject or message.id}' to Trash.", summary=f"Moved email '{message.subject or message.id}' to Trash.", arguments_summary={"message_id": message.id, "mailbox": mailbox or message.mailbox}, truncated=False)
+    subject = message.subject or message.id
+    return ToolResult(
+        tool=definition.name,
+        ok=True,
+        content=f"Moved email '{subject}' to Trash. This is a trash action, not permanent deletion; the user can still empty Trash later from their mail account or BitBuddy Trash UI.",
+        summary=f"Moved email '{subject}' to Trash, not permanently deleted.",
+        arguments_summary={"message_id": message.id, "mailbox": mailbox or message.mailbox, "action": "trash_not_permanent_delete"},
+        truncated=False,
+    )
 
 
 def email_create_auto_trash_rule_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
@@ -322,8 +324,14 @@ def email_create_auto_trash_rule_tool(arguments: dict[str, object], definition: 
         return invalid_tool_result(str(error))
     content = f"Auto-trash rule enabled for sender {rule.value}."
     if apply_existing:
-        content += f" Moved {applied} existing matching email{'s' if applied != 1 else ''} to Trash."
-    return ToolResult(tool=definition.name, ok=True, content=content, summary=f"Enabled auto-trash sender rule for {rule.value}.", arguments_summary={"sender": rule.value, "apply_existing": apply_existing}, truncated=False)
+        content += f" Moved {applied} existing matching email{'s' if applied != 1 else ''} to Trash, not permanent deletion."
+    return ToolResult(tool=definition.name, ok=True, content=content, summary=f"Enabled auto-trash sender rule for {rule.value}.", arguments_summary={"sender": rule.value, "apply_existing": apply_existing, "applied": applied, "action": "trash_not_permanent_delete"}, truncated=False)
+
+
+def email_tool_limit(value: object = None) -> int:
+    from ..config import load_config
+
+    return max(1, int(load_config().email.tool_message_limit))
 
 
 def calendar_view_events_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:

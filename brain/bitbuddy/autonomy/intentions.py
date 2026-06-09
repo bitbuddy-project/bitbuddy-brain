@@ -409,6 +409,77 @@ def record_intention_surface(chat_id: str, intention_id: int, run_id: str = "", 
         )
 
 
+def has_intention_with_metadata(
+    *,
+    source_activity: str = "",
+    metadata_key: str = "",
+    metadata_value: Any = None,
+    within_hours: float | None = None,
+    now: datetime | None = None,
+    limit: int = 200,
+) -> bool:
+    """Whether any intention (any status) matches the given metadata filters.
+
+    Used for once-per-day / once-per-document gating (e.g. show-and-tell) without a
+    schema migration — the intentions table itself is the ledger of what she has raised.
+    """
+    ensure_intentions_database()
+    current = now or datetime.now(timezone.utc)
+    cutoff = current - timedelta(hours=within_hours) if within_hours is not None else None
+    with db_connection(GLOBAL_DB_PATH) as connection:
+        rows = connection.execute(
+            "select created_at, metadata from intentions order by created_at desc limit ?",
+            (int(limit),),
+        ).fetchall()
+    for created_at, metadata_text in rows:
+        if cutoff is not None:
+            created = parse_timestamp(str(created_at or ""))
+            if created is not None and created < cutoff:
+                break
+        try:
+            meta = json.loads(metadata_text or "{}")
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        if source_activity and str(meta.get("source_activity") or "") != source_activity:
+            continue
+        if metadata_key and str(meta.get(metadata_key) or "") != str(metadata_value):
+            continue
+        return True
+    return False
+
+
+def recent_spontaneous_remark(*, now: datetime | None = None, cooldown_minutes: int = SURFACE_COOLDOWN_MINUTES) -> bool:
+    """True if a spontaneous (queued-while-working) remark was created within the window.
+
+    Gates the social channel so she can speak up while working without flooding the
+    queue, independent of how fast the work loop runs.
+    """
+    if cooldown_minutes <= 0:
+        return False
+    ensure_intentions_database()
+    current = now or datetime.now(timezone.utc)
+    cutoff = current - timedelta(minutes=int(cooldown_minutes))
+    with db_connection(GLOBAL_DB_PATH) as connection:
+        rows = connection.execute(
+            "select created_at, metadata from intentions order by created_at desc limit 25"
+        ).fetchall()
+    for created_at, metadata_text in rows:
+        created = parse_timestamp(str(created_at or ""))
+        if created is None:
+            continue
+        if created < cutoff:
+            break  # rows are newest-first; nothing older can be in-window
+        try:
+            meta = json.loads(metadata_text or "{}")
+        except (ValueError, TypeError):
+            meta = {}
+        if isinstance(meta, dict) and meta.get("spontaneous"):
+            return True
+    return False
+
+
 def recent_intention_surface_for_chat(chat_id: str, *, now: datetime | None = None, cooldown_minutes: int = SURFACE_COOLDOWN_MINUTES) -> bool:
     if not chat_id:
         return False

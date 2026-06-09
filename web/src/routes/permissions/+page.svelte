@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { getPermissionActivity, type ActivityItem } from '$lib/api/bitbuddy';
 	import ActivityList from '$lib/components/activity/ActivityList.svelte';
 	import ShieldCheck from 'phosphor-svelte/lib/ShieldCheck';
@@ -28,21 +30,15 @@
 </script>
 
 <div class="permissions-page">
+	<PageHeader icon={ShieldCheck} eyebrow="Security & Control" title="Permissions" subtitle="Review and audit tool permission requests.">
+		{#snippet action()}
+				<div class="log-status">
+					<ClockCounterClockwise size={18} />
+					<span>Audit Log</span>
+				</div>
+			{/snippet}
+	</PageHeader>
 	<div class="permissions-card">
-		<header class="permissions-header">
-			<div class="title-mark" aria-hidden="true">
-				<ShieldCheck size={30} weight="duotone" />
-			</div>
-			<div class="title-copy">
-				<p class="eyebrow">Security & Control</p>
-				<h1>Permissions</h1>
-				<p>Review and audit tool permission requests.</p>
-			</div>
-			<div class="log-status">
-				<ClockCounterClockwise size={18} />
-				<span>Audit Log</span>
-			</div>
-		</header>
 
 		<div class="activity-toolbar">
 			<span>Permission Logs</span>
@@ -50,10 +46,7 @@
 
 		<div class="card-content">
 			{#if loading}
-				<div class="loading-state">
-					<div class="spinner"></div>
-					<span>Loading activity...</span>
-				</div>
+				<Skeleton variant="row" count={5} />
 			{:else if !error && activity.length === 0}
 				<div class="center-state empty-state">
 					<div class="empty-icon" aria-hidden="true">
@@ -77,6 +70,8 @@
 		height: 100%;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		min-height: 0;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -93,8 +88,7 @@
 		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
 
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
@@ -109,54 +103,6 @@
 		overflow: hidden;
 	}
 
-	.permissions-header {
-		flex: 0 0 auto;
-		padding: 1.35rem 1.5rem;
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		border-bottom: 1px solid var(--border);
-		background:
-			linear-gradient(135deg, var(--page-soft), transparent 70%),
-			var(--header-bg);
-	}
-
-	.title-mark {
-		width: 3.5rem;
-		height: 3.5rem;
-		display: grid;
-		place-items: center;
-		border-radius: 1.1rem;
-		background: var(--surface-glass);
-		border: 1px solid var(--page-border);
-		color: var(--page-accent);
-		box-shadow: 0 0 20px var(--page-soft);
-		flex: 0 0 auto;
-	}
-
-	.title-copy {
-		min-width: 0;
-		flex: 1 1 auto;
-	}
-
-	.eyebrow {
-		color: var(--page-accent);
-		font-size: 0.72rem;
-		font-weight: 800;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-	}
-
-	h1 {
-		font-size: 1.65rem;
-		font-weight: 900;
-		letter-spacing: -0.03em;
-		line-height: 1.1;
-	}
-
-	.title-copy p:last-child {
-		color: var(--text-soft);
-	}
 
 	.log-status,
 	.activity-toolbar {
@@ -223,44 +169,11 @@
 		color: var(--page-accent);
 	}
 
-	.loading-state {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		gap: 1rem;
-		padding: 4rem;
-		color: var(--text-soft);
-	}
-
-	.spinner {
-		width: 2rem;
-		height: 2rem;
-		border: 2px solid var(--border);
-		border-top-color: var(--page-accent);
-		border-radius: 50%;
-		animation: spin 1s linear infinite;
-	}
-
-	@keyframes spin {
-		to { transform: rotate(360deg); }
-	}
-
 	@media (max-width: 760px) {
 		.permissions-page,
 		.permissions-card {
 			height: auto;
 			max-height: none;
-		}
-
-		.permissions-header {
-			align-items: flex-start;
-			flex-wrap: wrap;
-		}
-
-		.title-mark {
-			width: 3rem;
-			height: 3rem;
 		}
 
 		.log-status {

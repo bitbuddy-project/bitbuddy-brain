@@ -12,10 +12,16 @@ from ..memory.project import ARCHITECTURE_FIELDS, PROJECT_OVERVIEW_FIELDS, list_
 from ..memory.store import MemoryRecord, create_memory, search_memories
 from ..providers import ProviderClient
 from ..self_model import add_self_journal, create_goal, get_goal, get_recent_conversation_signals, get_self_state, goal_task_state, list_goals, set_goal_task_state, update_goal, update_self_state, upsert_personality_evolution
-from ..workspace import append_to_workspace_document, latest_document_for_goal, write_workspace_document
+from ..workspace import append_to_workspace_document, latest_document_for_goal, list_workspace_documents, write_workspace_document
 from .decision import AutonomyActivityType, AutonomyDecision, collect_model_text, extract_json_object
-from .intentions import create_intention, intention_to_json
+from .intentions import create_intention, has_intention_with_metadata, intention_to_json, recent_spontaneous_remark
+from .levels import resolve_profile
 from .log import log_autonomy
+
+# Consecutive no-progress cycles before an in-progress task auto-blocks itself.
+GOAL_STALL_THRESHOLD = 3
+# Show-and-tell surfaces at most one proud workspace doc per this many hours.
+SHOW_AND_TELL_INTERVAL_HOURS = 24
 from .memory import record_autonomy_self_memory
 from .web_search import safe_web_search, search_results_to_text
 
@@ -147,6 +153,7 @@ def project_familiarization(cycle_id: str, client: ProviderClient, decision: Aut
         parse_intentions_from_mapping(updates),
         cycle_id=cycle_id,
         source_activity="project_familiarization",
+        spontaneous=True,
         metadata={"project_id": project.id},
     )
     applied: list[dict[str, Any]] = []
@@ -180,6 +187,49 @@ def project_familiarization(cycle_id: str, client: ProviderClient, decision: Aut
     )
 
 
+def maybe_open_rabbit_hole(parsed: dict[str, Any], *, query: str, cycle_id: str) -> Any:
+    """When curiosity gets genuinely excited, open a small self-goal so the next cycle keeps digging.
+
+    This is what lets her follow a rabbit hole across cycles instead of restarting cold:
+    pursue_goal picks it up and the in-progress task cadence keeps it warm. Bounded — only
+    one open rabbit-hole goal at a time, and only when the reflection asked for it.
+    """
+    if not parsed.get("excited"):
+        return None
+    spec = parsed.get("rabbit_hole")
+    if not isinstance(spec, dict):
+        return None
+    title = str(spec.get("title") or "").strip()
+    next_action = str(spec.get("next_action") or "").strip()
+    if not title or not next_action:
+        return None
+    try:
+        open_rabbit_holes = [
+            goal for goal in list_goals(include_done=False, limit=20)
+            if goal.status == "active"
+            and isinstance(goal.metadata, dict)
+            and goal.metadata.get("rabbit_hole")
+            and goal_task_state(goal).get("status") == "in_progress"
+        ]
+        if open_rabbit_holes:
+            return None  # already chasing one; don't fan out
+        if any(goal.title.strip().lower() == title.lower() for goal in list_goals(include_done=False, limit=40)):
+            return None
+        return create_goal(
+            title[:120],
+            why=str(spec.get("why") or f"A curiosity thread worth chasing (from {query!r}).")[:500],
+            owner="self",
+            horizon="week",
+            risk_level=1,
+            autonomy_allowed=True,
+            next_action=next_action[:500],
+            metadata={"rabbit_hole": True, "source_query": query, "source_cycle_id": cycle_id},
+        )
+    except Exception as error:
+        log_autonomy("rabbit_hole_skip", "Could not open a rabbit-hole goal", {"cycle_id": cycle_id, "query": query, "error": str(error)})
+        return None
+
+
 def web_curiosity(cycle_id: str, client: ProviderClient, decision: AutonomyDecision, model: str | None = None) -> AutonomyActivityResult:
     config = load_config()
     query = str(decision.inputs.get("query") or "").strip()
@@ -193,12 +243,20 @@ def web_curiosity(cycle_id: str, client: ProviderClient, decision: AutonomyDecis
     reflection = collect_model_text(
         client,
         [
-            {"role": "system", "content": "Reflect briefly on these web search snippets. Return JSON: {\"summary\":\"...\",\"worth_remembering\":true,false,\"intention\":null}. Only include an intention object if there is a specific, useful finding or question worth interrupting Dustin later; never queue generic curiosity receipts. If included, intention must include kind, content, reason, importance 1-5, and playfulness 0-5."},
+            {"role": "system", "content": "\n".join([
+                "Reflect briefly on these web search snippets.",
+                'Return JSON: {"summary":"...","worth_remembering":true|false,"intention":null,"excited":true|false,"rabbit_hole":null}.',
+                "Only include an intention object if there is a specific, useful finding or question worth interrupting Dustin later; never queue generic curiosity receipts.",
+                "If included, intention must include kind, content, reason, importance 1-5, and playfulness 0-5.",
+                "Set excited true only when this genuinely pulled you in and you want to keep digging; an excited intention reads as warm and enthusiastic (not silly), so keep playfulness low.",
+                'Only when excited and there is a clear thread worth chasing across future cycles, set rabbit_hole to {"title":"short goal title","why":"why it interests you","next_action":"the next concrete dig"}; otherwise null.',
+            ])},
             {"role": "user", "content": f"Query: {query}\n\n{search_results_to_text(results)}"},
         ],
         model=model,
     )
     parsed = parse_reflection_json(reflection)
+    maybe_open_rabbit_hole(parsed, query=query, cycle_id=cycle_id)
     if parsed.get("worth_remembering") and parsed.get("summary"):
         create_memory(
             layer=MemoryLayer.SEMANTIC,
@@ -224,10 +282,13 @@ def web_curiosity(cycle_id: str, client: ProviderClient, decision: AutonomyDecis
         except Exception as error:
             log_autonomy("workspace_write_failed", "Could not save curiosity research note", {"cycle_id": cycle_id, "query": query, "error": str(error)})
     intention = parsed.get("intention") if isinstance(parsed.get("intention"), dict) else None
+    if intention is not None and parsed.get("excited"):
+        intention["excited"] = True
     created_intentions = create_autonomy_intentions(
         [intention] if intention else [],
         cycle_id=cycle_id,
         source_activity="web_curiosity",
+        spontaneous=True,
         metadata={"query": query},
     )
     if parsed.get("worth_remembering") and self_relevant_curiosity(query, str(parsed.get("summary") or "")):
@@ -348,10 +409,75 @@ def select_actionable_goal(decision: AutonomyDecision) -> Any:
 
 
 def pursue_goal(cycle_id: str, client: ProviderClient, decision: AutonomyDecision, model: str | None = None) -> AutonomyActivityResult:
+    """Advance a self-goal, taking up to ``max_steps_per_session`` safe steps this cycle.
+
+    Going several steps deep in one sitting (driven by the activity level) is the core
+    "she actually does something" change; the loop stops early when the task finishes,
+    blocks, or stops making progress.
+    """
     goal = select_actionable_goal(decision)
     if goal is None:
         return AutonomyActivityResult(decision.activity, "skipped", "No autonomy-allowed goal with a concrete next action to pursue.")
 
+    config = load_config()
+    max_steps = max(1, int(getattr(resolve_profile(config.autonomy), "max_steps_per_session", 1)))
+    steps_done = 0
+    documents: list[dict[str, Any]] = []
+    created_intentions: list[Any] = []
+    final_task_status = ""
+    final_action = ""
+    for _ in range(max_steps):
+        outcome = pursue_goal_step(goal, cycle_id, client, decision, model=model, config=config)
+        if outcome["status"] != "completed":
+            if steps_done == 0:
+                return AutonomyActivityResult(decision.activity, "skipped", outcome["summary"], outcome.get("metadata", {}))
+            break
+        steps_done += 1
+        final_task_status = outcome["task_status"]
+        final_action = outcome["action"]
+        if outcome.get("document"):
+            documents.append(outcome["document"])
+        created_intentions.extend(outcome.get("intentions", []))
+        if outcome["task_status"] in {"done", "blocked"}:
+            break
+        if not outcome["advanced"]:
+            break  # no plan progress this step — don't spin in place within one cycle
+        goal = get_goal(goal.id)  # reload updated next_action / task_state before the next step
+
+    last_doc = documents[-1] if documents else {}
+    summary = (
+        f"Advanced goal {goal.title!r} over {steps_done} step(s) via {final_action} "
+        f"and saved \"{last_doc.get('title', 'a note')}\" to AI Space."
+    )
+    return AutonomyActivityResult(
+        decision.activity,
+        "completed",
+        summary,
+        {
+            "goal_id": goal.id,
+            "action": final_action,
+            "steps_done": steps_done,
+            "task_status": final_task_status,
+            "documents": documents,
+            "document_id": last_doc.get("id", ""),
+            "document_kind": last_doc.get("kind", ""),
+            "rel_path": last_doc.get("rel_path", ""),
+            "intentions": [intention_to_json(item) for item in created_intentions],
+            "cycle_id": cycle_id,
+        },
+    )
+
+
+def pursue_goal_step(
+    goal: Any,
+    cycle_id: str,
+    client: ProviderClient,
+    decision: AutonomyDecision,
+    *,
+    model: str | None = None,
+    config: Any = None,
+) -> dict[str, Any]:
+    """Take ONE safe step toward a goal; persist continuity and return a structured outcome."""
     latest = latest_document_for_goal(str(goal.id))
     progress_note = f"Existing workspace doc: \"{latest.title}\" ({latest.kind}, id {latest.id})." if latest is not None else "No workspace doc yet for this goal."
 
@@ -399,7 +525,7 @@ def pursue_goal(cycle_id: str, client: ProviderClient, decision: AutonomyDecisio
     rationale = str(plan.get("rationale") or "").strip()
     evidence_block = ""
     evidence_label = ""
-    config = load_config()
+    config = config or load_config()
 
     if action == "research":
         query = str(plan.get("query") or goal.title).strip()
@@ -433,7 +559,8 @@ def pursue_goal(cycle_id: str, client: ProviderClient, decision: AutonomyDecisio
                             "Ground it in the provided evidence and what is already known. Do not invent facts or fabricate sources.",
                             "Structure longer notes as tl;dr, then detail, then open questions/caveats.",
                             "Only include comment when there is a specific useful finding, tradeoff, risk, or good question worth surfacing. Otherwise set comment to empty string.",
-                            'Return only JSON: {"kind":"notes|drafts|research|journal","title":"...","summary":"one line","body":"markdown","tags":["..."],"comment":"short optional message to Dustin"}',
+                            "Set excited true only when you genuinely got pulled into this and want to share it; then the comment may have a warm, enthusiastic voice (still grounded, never spammy).",
+                            'Return only JSON: {"kind":"notes|drafts|research|journal","title":"...","summary":"one line","body":"markdown","tags":["..."],"comment":"short optional message to Dustin","excited":true|false}',
                         ]
                     ),
                 },
@@ -453,7 +580,7 @@ def pursue_goal(cycle_id: str, client: ProviderClient, decision: AutonomyDecisio
     body = str(authored.get("body") or "").strip()
     title = str(authored.get("title") or goal.title).strip()
     if not body:
-        return AutonomyActivityResult(decision.activity, "skipped", "Goal step produced no usable note.", {"goal_id": goal.id, "action": action})
+        return {"status": "skipped", "summary": "Goal step produced no usable note.", "metadata": {"goal_id": goal.id, "action": action}}
 
     kind = str(authored.get("kind") or ("research" if action == "research" else "notes")).strip()
     summary = str(authored.get("summary") or "").strip()
@@ -490,64 +617,55 @@ def pursue_goal(cycle_id: str, client: ProviderClient, decision: AutonomyDecisio
     new_plan = [str(step) for step in plan.get("plan", []) if str(step).strip()] if isinstance(plan.get("plan"), list) else existing_plan
     raw_status = str(plan.get("task_status") or "").strip()
     task_status = raw_status if raw_status in {"in_progress", "blocked", "done"} else ("in_progress" if new_plan else "")
+    advanced = False
     if task_status:
-        next_step_index = int(plan.get("step_index") if isinstance(plan.get("step_index"), int) else step_index)
+        model_index = int(plan.get("step_index")) if isinstance(plan.get("step_index"), int) else step_index
+        next_step_index = model_index
         if task_status == "in_progress":
             # Advance past the step just completed unless the model pinned a specific index.
-            next_step_index = max(next_step_index, step_index + 1)
+            next_step_index = max(model_index, step_index + 1)
+        advanced = next_step_index > step_index  # drives the multi-step loop
+        # Anti-stuck: if the task is "in_progress" yet the model has run off the end of its
+        # own plan, it is spinning. Count those cycles and auto-block once it grinds too long.
+        plan_exhausted = bool(new_plan) and model_index >= len(new_plan)
+        stalled_count = int(task_state.get("stalled_count") or 0) + 1 if (task_status == "in_progress" and plan_exhausted) else 0
+        blocked_reason = str(plan.get("blocked_reason") or "")
+        if task_status == "in_progress" and stalled_count >= GOAL_STALL_THRESHOLD:
+            task_status = "blocked"
+            blocked_reason = blocked_reason or f"Auto-unstuck: spun past the plan for {stalled_count} cycles."
         set_goal_task_state(
             goal.id,
             status=task_status,
             plan=new_plan,
             step_index=next_step_index,
-            blocked_reason=str(plan.get("blocked_reason") or ""),
+            blocked_reason=blocked_reason,
             last_cycle_id=cycle_id,
+            stalled_count=stalled_count,
         )
         if task_status == "done":
             update_goal(goal.id, {"status": "completed"})
 
     created_intentions: list[Any] = []
-    if bool(plan.get("queue_comment")):
-        comment = str(authored.get("comment") or "").strip()
-        if not comment:
-            return AutonomyActivityResult(
-                decision.activity,
-                "completed",
-                f"Advanced goal {goal.title!r} via {action} and saved \"{document.title}\" to AI Space.",
-                {
-                    "goal_id": goal.id,
-                    "action": action,
-                    "document_id": document.id,
-                    "document_kind": document.kind,
-                    "rel_path": document.rel_path,
-                    "next_action_updated": bool(next_action_update),
-                    "intentions": [],
-                    "cycle_id": cycle_id,
-                    "comment_skipped": "queue_comment was true but no useful comment was authored.",
-                },
-            )
+    comment = str(authored.get("comment") or "").strip()
+    if bool(plan.get("queue_comment")) and comment:
         created_intentions = create_autonomy_intentions(
-            [{"kind": "comment", "content": comment, "reason": f"High-signal progress on self-goal {goal.id}", "importance": 4, "playfulness": 0}],
+            [{"kind": "comment", "content": comment, "reason": f"High-signal progress on self-goal {goal.id}", "importance": 4, "playfulness": 0, "excited": bool(authored.get("excited"))}],
             cycle_id=cycle_id,
             source_activity="pursue_goal",
+            spontaneous=True,
             metadata={"goal_id": str(goal.id), "document_id": document.id},
         )
 
-    return AutonomyActivityResult(
-        decision.activity,
-        "completed",
-        f"Advanced goal {goal.title!r} via {action} and saved \"{document.title}\" to AI Space.",
-        {
-            "goal_id": goal.id,
-            "action": action,
-            "document_id": document.id,
-            "document_kind": document.kind,
-            "rel_path": document.rel_path,
-            "next_action_updated": bool(next_action_update),
-            "intentions": [intention_to_json(item) for item in created_intentions],
-            "cycle_id": cycle_id,
-        },
-    )
+    return {
+        "status": "completed",
+        "summary": f"Advanced goal {goal.title!r} via {action} and saved \"{document.title}\" to AI Space.",
+        "action": action,
+        "task_status": task_status,
+        "advanced": advanced,
+        "next_action_updated": bool(next_action_update),
+        "document": {"id": document.id, "kind": document.kind, "rel_path": document.rel_path, "title": document.title},
+        "intentions": created_intentions,
+    }
 
 
 
@@ -644,14 +762,66 @@ def salient_question_terms(text: str) -> list[str]:
     # Preserve order while deduping so the FTS query remains compact and stable.
     return list(dict.fromkeys(terms))[:10]
 
+def maybe_queue_show_and_tell(cycle_id: str) -> Any:
+    """Once in a while, proudly bring a workspace doc to Dustin: "hey, look what I made."
+
+    Picks a notable self-authored doc she hasn't shown yet (pinned first, else most
+    recent with a real summary), at most once per SHOW_AND_TELL_INTERVAL_HOURS. Routed
+    through the social channel so the normal cadence/cooldown guards still apply.
+    """
+    if has_intention_with_metadata(source_activity="show_and_tell", within_hours=SHOW_AND_TELL_INTERVAL_HOURS):
+        return None
+    try:
+        docs = list_workspace_documents(status="active", limit=30)
+    except Exception:
+        return None
+    candidates = [
+        doc for doc in docs
+        if doc.source.startswith("autonomy")
+        and doc.summary.strip()
+        and not has_intention_with_metadata(metadata_key="show_and_tell_doc_id", metadata_value=doc.id)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda doc: (0 if doc.pinned else 1, doc.updated_at), reverse=False)
+    pinned = [doc for doc in candidates if doc.pinned]
+    doc = pinned[0] if pinned else max(candidates, key=lambda d: d.updated_at)
+    content = (
+        f"I made something in my space I'm a little proud of — \"{doc.title}\": {doc.summary.strip()[:200]} "
+        "Want to take a look? It's in Her Space."
+    )
+    created = create_autonomy_intentions(
+        [{"kind": "comment", "content": content, "reason": f"Sharing workspace doc {doc.id}", "importance": 3, "playfulness": 2}],
+        cycle_id=cycle_id,
+        source_activity="show_and_tell",
+        spontaneous=True,
+        metadata={"show_and_tell_doc_id": doc.id, "document_id": doc.id},
+    )
+    return created[0] if created else None
+
+
 def create_autonomy_intentions(
     intentions: list[dict[str, Any] | None],
     *,
     cycle_id: str,
     source_activity: str,
     metadata: dict[str, Any] | None = None,
+    spontaneous: bool = False,
 ) -> list[Any]:
     config = load_config()
+    # Social channel: a remark she pipes up with WHILE working has its own gentle
+    # cooldown (driven by the activity level), independent of the work cadence, so she
+    # can speak up without flooding the queue. The deliberate generate_user_prompts
+    # channel is not gated here.
+    if spontaneous and any(isinstance(item, dict) and str(item.get("content") or "").strip() for item in intentions):
+        cooldown = int(getattr(resolve_profile(config.autonomy), "spontaneous_remark_cooldown_minutes", 90))
+        if recent_spontaneous_remark(cooldown_minutes=cooldown):
+            log_autonomy(
+                "spontaneous_remark_suppressed",
+                "Held a spontaneous remark — within the social cooldown window",
+                {"cycle_id": cycle_id, "source_activity": source_activity, "cooldown_minutes": cooldown},
+            )
+            return []
     created = []
     question_count = 0
     comment_count = 0
@@ -702,7 +872,7 @@ def create_autonomy_intentions(
                     content,
                     str(item.get("reason") or ""),
                     source_cycle_id=cycle_id,
-                    metadata={"source_activity": source_activity, "quality": quality, "priority": quality["importance"], **(metadata or {})},
+                    metadata={"source_activity": source_activity, "quality": quality, "priority": quality["importance"], "spontaneous": bool(spontaneous), "excited": bool(item.get("excited")), **(metadata or {})},
                 )
             )
         except ValueError as error:

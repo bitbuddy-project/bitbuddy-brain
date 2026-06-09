@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import BrainIcon from 'phosphor-svelte/lib/BrainIcon';
 	import SparkleIcon from 'phosphor-svelte/lib/SparkleIcon';
 	import TargetIcon from 'phosphor-svelte/lib/TargetIcon';
@@ -110,25 +112,21 @@
 </svelte:head>
 
 <div class="goals-page">
+	<PageHeader icon={TargetIcon} eyebrow="Self Direction" title="Goals" subtitle={selfState.identity ?? 'A local companion-agent learning to grow through bounded autonomy.'}>
+		{#snippet action()}
+				<div class="header-stats">
+					<div class="hero-stat accent-stat">
+						<span>Goals</span>
+						<strong>{activeGoals.length}</strong>
+					</div>
+					<div class="hero-stat evolution-stat">
+						<span>Traits</span>
+						<strong>{stableEvolution.length}</strong>
+					</div>
+				</div>
+			{/snippet}
+	</PageHeader>
 	<section class="goals-panel" aria-label="Goals and self direction">
-		<header class="goals-header">
-			<div class="title-mark" aria-hidden="true"><TargetIcon size={30} weight="duotone" /></div>
-			<div class="title-copy">
-				<p class="eyebrow">Self Direction</p>
-				<h1>Goals</h1>
-				<p>{selfState.identity ?? 'A local companion-agent learning to grow through bounded autonomy.'}</p>
-			</div>
-			<div class="header-stats">
-				<div class="hero-stat accent-stat">
-					<span>Goals</span>
-					<strong>{activeGoals.length}</strong>
-				</div>
-				<div class="hero-stat evolution-stat">
-					<span>Traits</span>
-					<strong>{stableEvolution.length}</strong>
-				</div>
-			</div>
-		</header>
 
 		<div class="goals-content">
 			{#if error}
@@ -192,10 +190,7 @@
 
 					<div class="goal-list">
 						{#if loading}
-							<div class="loading-state inline-loading">
-								<div class="spinner"></div>
-								<span>Loading BitBuddy's goals...</span>
-							</div>
+							<Skeleton variant="card" count={3} />
 						{:else}
 							{#each activeGoals as goal}
 								<article class="goal-card">
@@ -292,6 +287,8 @@
 		height: 100%;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		min-height: 0;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -303,8 +300,7 @@
 
 	.goals-panel {
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
@@ -320,36 +316,6 @@
 		container-type: inline-size;
 	}
 
-	.goals-header {
-		flex: 0 0 auto;
-		padding: 1.35rem 1.5rem;
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		border-bottom: 1px solid var(--border);
-		background:
-			linear-gradient(135deg, var(--page-soft), transparent 70%),
-			var(--header-bg);
-	}
-
-	.title-mark {
-		width: 3.5rem;
-		height: 3.5rem;
-		display: grid;
-		place-items: center;
-		border-radius: 1.1rem;
-		background: var(--surface-glass);
-		border: 1px solid var(--page-border);
-		color: var(--page-accent);
-		box-shadow: 0 0 20px var(--page-soft);
-		flex: 0 0 auto;
-	}
-
-	.title-copy {
-		flex: 1;
-		min-width: 0;
-	}
-
 	.eyebrow {
 		color: var(--page-accent);
 		font-size: 0.72rem;
@@ -358,19 +324,6 @@
 		text-transform: uppercase;
 	}
 
-	h1 {
-		font-size: 1.65rem;
-		font-weight: 900;
-		letter-spacing: -0.03em;
-		line-height: 1.1;
-	}
-
-	.title-copy p:last-child {
-		margin: 0.15rem 0 0;
-		max-width: 46rem;
-		color: var(--text-soft);
-		overflow-wrap: anywhere;
-	}
 
 	.header-stats {
 		display: grid;
@@ -764,27 +717,6 @@
 		border-radius: 1rem;
 	}
 
-	.loading-state.inline-loading {
-		display: flex;
-		align-items: center;
-		gap: 0.65rem;
-		padding: 1rem;
-		color: var(--text-muted);
-	}
-
-	.spinner {
-		width: 1.05rem;
-		height: 1.05rem;
-		border-radius: 999px;
-		border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
-		border-top-color: var(--accent);
-		animation: spin 0.7s linear infinite;
-	}
-
-	@keyframes spin {
-		to { transform: rotate(360deg); }
-	}
-
 	.dreams-panel .mini-row {
 		display: flex;
 		gap: 0.65rem;
@@ -843,10 +775,6 @@
 	}
 
 	@media (max-width: 760px) {
-		.goals-header {
-			flex-wrap: wrap;
-		}
-
 		.header-stats {
 			width: 100%;
 			grid-template-columns: repeat(2, minmax(0, 1fr));

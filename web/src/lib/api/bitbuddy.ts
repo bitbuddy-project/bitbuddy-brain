@@ -156,18 +156,25 @@ export type ChatConfig = {
 	max_tool_rounds: number;
 };
 
+export type ActivityLevel = 'low' | 'medium' | 'high';
+
 export type AutonomyConfig = {
 	enabled: boolean;
 	run_after_idle_consolidation: boolean;
+	activity_level: ActivityLevel;
 	idle_delay_seconds: number;
 	repeat_idle_cycles: boolean;
 	idle_backoff_multiplier: number;
 	idle_max_delay_seconds: number;
 	max_actions_per_cycle: number;
+	max_steps_per_session: number;
 	max_pending_questions: number;
 	max_pending_comments: number;
 	max_new_questions_per_cycle: number;
 	max_autonomous_deliveries_per_day: number;
+	surface_cooldown_minutes: number;
+	spontaneous_remark_cooldown_minutes: number;
+	min_autonomous_priority: number;
 	web_search: {
 		enabled: boolean;
 		provider: string;
@@ -912,6 +919,7 @@ export type EmailConfig = {
 	gmail_full_mail_access: boolean;
 	default_mailbox: string;
 	max_preview_messages: number;
+	tool_message_limit: number;
 	has_password?: boolean;
 	has_gmail_client_secret?: boolean;
 	gmail_connected?: boolean;

@@ -31,6 +31,7 @@ def email_overview() -> dict[str, object]:
         "gmail_full_mail_access": config.gmail_full_mail_access,
         "default_mailbox": config.default_mailbox,
         "max_preview_messages": config.max_preview_messages,
+        "tool_message_limit": config.tool_message_limit,
         "has_password": bool(config.credentials_ref),
         "has_gmail_client_secret": bool(get_credentials(config.gmail_credentials_ref).get("client_secret")),
         "gmail_connected": bool(get_credentials(config.gmail_token_ref).get("refresh_token")),
@@ -144,7 +145,7 @@ def create_sender_trash_rule(*, sender: str, apply_existing: bool = False, mailb
     if not clean_sender:
         raise ValueError("sender is required.")
     rule = upsert_rule(email_account_id(config), kind="sender", value=clean_sender, action="trash", enabled=True)
-    applied = apply_trash_rules(config=config, provider=get_provider(config), limit=100, mailbox=mailbox) if apply_existing else 0
+    applied = apply_trash_rules(config=config, provider=get_provider(config), limit=config.tool_message_limit, mailbox=mailbox) if apply_existing else 0
     return rule, applied
 
 
@@ -164,7 +165,7 @@ def apply_trash_rules(*, config: EmailConfig | None = None, provider: object | N
     if not rules:
         return 0
     email_provider = provider or get_provider(cfg)
-    messages = email_provider.list_messages(mailbox=mailbox or cfg.default_mailbox or "INBOX", limit=max(1, min(100, limit)))
+    messages = email_provider.list_messages(mailbox=mailbox or cfg.default_mailbox or "INBOX", limit=max(1, limit))
     applied = 0
     for message in messages:
         if not any(rule_matches_message(rule, message) for rule in rules):
@@ -182,7 +183,7 @@ def should_auto_apply_rules(mailbox: str) -> bool:
 
 
 def clamp_email_limit(limit: int) -> int:
-    return max(1, min(100, limit))
+    return max(1, limit)
 
 
 def rule_matches_message(rule: EmailRule, message: EmailMessage) -> bool:

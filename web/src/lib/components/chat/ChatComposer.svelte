@@ -801,9 +801,11 @@
 		box-sizing: border-box;
 		display: flex;
 		align-items: center;
-		justify-content: center;
+		justify-content: flex-start;
 		min-width: 0;
-		padding: 0;
+		/* Mirror .inline-actions-wrap so the plus icon sits the same distance from
+		   the left edge as the send button does from the right edge. */
+		padding: 0.35rem 0.25rem 0.35rem 0.9rem;
 
 		background: var(--composer-edge-bg);
 
@@ -1073,11 +1075,6 @@
 		border-color: transparent;
 		color: rgba(255, 255, 255, 0.9);
 		box-shadow: none;
-		margin-left: 0.32rem;
-	}
-
-	.bottom-controls .plus-button {
-		margin-left: 0;
 	}
 
 	.plus-button :global(svg) {

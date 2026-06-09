@@ -8,6 +8,8 @@ BitBuddy is your local companion that learns your projects, grows with you, and 
 
 ## Setup
 
+Requirements: Python 3.11+ and, for the web UI, Node.js 18+ (LTS recommended) with npm.
+
 Install the Python package in editable mode:
 
 ```bash
@@ -98,6 +100,19 @@ Defaults are equivalent to:
 ```bash
 bitbuddy web --host 127.0.0.1 --port 5173
 ```
+
+## Remote Access and the API Token
+
+By default the backend binds to `127.0.0.1` (loopback only), so it is reachable only from the same machine. On first run BitBuddy generates a local API token at `~/.bitbuddy/api_token` (file permissions `0600`). The web UI uses it automatically through the tokenized localhost URL; any other client must send it as the `X-BitBuddy-Token` header.
+
+Print or rotate the token:
+
+```bash
+bitbuddy auth token     # print the current token (creates one if missing)
+bitbuddy auth rotate    # generate a new token, invalidating the old one
+```
+
+To reach BitBuddy from another device on your network, start the backend with `--allow-lan` (`bitbuddy serve --allow-lan`). LAN access requires the API token. For exposure beyond your LAN, put BitBuddy behind a reverse proxy that terminates TLS (for example nginx or Caddy) and forwards to the loopback port — do not expose the plain HTTP port directly to the internet.
 
 ## Self-Hosted Gmail OAuth
 

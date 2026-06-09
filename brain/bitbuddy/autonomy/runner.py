@@ -17,6 +17,7 @@ from ..self_model import goal_task_state, list_goals
 from .activities import run_autonomy_activity
 from .context import build_autonomy_context
 from .decision import AutonomyActivityType, AutonomyDecision, choose_autonomy_activity
+from .levels import resolve_profile
 from .log import log_autonomy
 from .memory import record_autonomy_self_memory
 
@@ -308,6 +309,13 @@ def run_autonomy_cycle(
         project_id=str(result.metadata.get("project_id") or "") if isinstance(result.metadata, dict) else "",
         metadata={"activity": result.activity.value, "status": result.status, **result.metadata},
     )
+    if result.status == "completed":
+        try:
+            from .activities import maybe_queue_show_and_tell
+
+            maybe_queue_show_and_tell(cycle_id)
+        except Exception as error:
+            log_autonomy("show_and_tell_failed", "Failed to consider a show-and-tell from the workspace", {"chat_id": chat_id, "cycle_id": cycle_id, "error": str(error)})
     try:
         from .delivery_scheduler import schedule_intention_delivery
 
@@ -403,8 +411,9 @@ def schedule_next_idle_autonomy(job: AutonomyJob) -> str | None:
 
 
 def idle_autonomy_delay(autonomy_config: Any, repeat_index: int = 0) -> float:
-    base_delay = max(0.0, float(getattr(autonomy_config, "idle_delay_seconds", 300)))
-    multiplier = max(1.0, float(getattr(autonomy_config, "idle_backoff_multiplier", 2.0)))
-    max_delay = max(base_delay, float(getattr(autonomy_config, "idle_max_delay_seconds", 3600)))
+    profile = resolve_profile(autonomy_config)
+    base_delay = max(0.0, float(profile.idle_delay_seconds))
+    multiplier = max(1.0, float(profile.idle_backoff_multiplier))
+    max_delay = max(base_delay, float(profile.idle_max_delay_seconds))
     delay = base_delay * (multiplier ** max(0, int(repeat_index)))
     return min(delay, max_delay)

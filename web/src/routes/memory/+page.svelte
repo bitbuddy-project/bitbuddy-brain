@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import BrainIcon from 'phosphor-svelte/lib/BrainIcon';
 	import {
 		archiveMemory,
@@ -284,24 +286,15 @@
 </script>
 
 <div class="memory-page">
+	<PageHeader
+		icon={BrainIcon}
+		eyebrow={activeTab === 'project' ? 'Project Memory' : layerTitle(activeTab)}
+		title={activeTab === 'project' ? 'Projects' : layerHeading(activeTab)}
+		subtitle={activeTab === 'project'
+			? 'Structured project context built by the librarian, with canonical project-layer links where useful.'
+			: (activeLayerInfo()?.description ?? 'Canonical durable memory layer.')}
+	/>
 	<section class="memory-panel" aria-label="Project memories">
-		<header class="memory-header">
-			<div class="title-mark" aria-hidden="true">
-				<BrainIcon size={30} weight="duotone" />
-			</div>
-			<div class="title-copy">
-				{#if activeTab === 'project'}
-					<p class="eyebrow">Project Memory</p>
-					<h1>Projects</h1>
-					<p>Structured project context built by the librarian, with canonical project-layer links where useful.</p>
-				{:else}
-					<p class="eyebrow">{layerTitle(activeTab)}</p>
-					<h1>{layerHeading(activeTab)}</h1>
-					<p>{activeLayerInfo()?.description ?? 'Canonical durable memory layer.'}</p>
-				{/if}
-			</div>
-		</header>
-
 		<div class="memory-tabs">
 			{#each MEMORY_TABS as tab}
 				<button class="tab-button" class:active={activeTab === tab} onclick={() => activeTab = tab}>
@@ -313,10 +306,7 @@
 		<div class="memory-content">
 			{#if activeTab === 'project'}
 				{#if loadingProjects}
-					<div class="center-state">
-						<div class="spinner"></div>
-						<p>Loading project memories...</p>
-					</div>
+					<Skeleton variant="row" count={5} />
 				{:else if projectError && projects.length === 0}
 					<div class="center-state error-state">
 						<h2>Could not load memories</h2>
@@ -349,10 +339,7 @@
 				{/if}
 
 				{#if loadingMemory}
-					<div class="center-state compact">
-						<div class="spinner"></div>
-						<p>Loading selected project memory...</p>
-					</div>
+					<Skeleton variant="card" count={2} />
 				{:else if memory && selectedProject()}
 					<div class="memory-grid">
 						<section class="overview-card wide-card">
@@ -539,10 +526,7 @@
 				</section>
 
 				{#if loadingLayerMemories}
-					<div class="center-state">
-						<div class="spinner"></div>
-						<p>Loading {activeTab} memories...</p>
-					</div>
+					<Skeleton variant="row" count={5} />
 				{:else if layerError}
 					<div class="center-state error-state">
 						<h2>Could not load memories</h2>
@@ -631,6 +615,8 @@
 		height: 100%;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		min-height: 0;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -647,8 +633,7 @@
 		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
 
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		display: flex;
 		min-height: 0;
 		flex-direction: column;
@@ -663,36 +648,6 @@
 		overflow: hidden;
 	}
 
-	.memory-header {
-		flex: 0 0 auto;
-		padding: 1.35rem 1.5rem;
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		border-bottom: 1px solid var(--border);
-		background:
-			linear-gradient(135deg, var(--page-soft), transparent 70%),
-			var(--header-bg);
-	}
-
-	.title-mark {
-		width: 3.5rem;
-		height: 3.5rem;
-		display: grid;
-		place-items: center;
-		border-radius: 1.1rem;
-		background: var(--surface-glass);
-		border: 1px solid var(--page-border);
-		color: var(--page-accent);
-		box-shadow: 0 0 20px var(--page-soft);
-		flex: 0 0 auto;
-	}
-
-	.title-copy {
-		min-width: 0;
-	}
-
-	.eyebrow,
 	.section-kicker {
 		color: var(--page-accent);
 		font-size: 0.72rem;
@@ -701,14 +656,6 @@
 		text-transform: uppercase;
 	}
 
-	h1 {
-		font-size: 1.65rem;
-		font-weight: 900;
-		letter-spacing: -0.03em;
-		line-height: 1.1;
-	}
-
-	.title-copy p:last-child,
 	.path-line,
 	.center-state p,
 	.memory-section p,
@@ -1277,10 +1224,6 @@
 		text-align: center;
 	}
 
-	.center-state.compact {
-		min-height: 14rem;
-	}
-
 	.empty-icon {
 		width: 5rem;
 		height: 5rem;
@@ -1289,19 +1232,6 @@
 		border-radius: 1.5rem;
 		background: var(--page-soft);
 		color: var(--page-accent);
-	}
-
-	.spinner {
-		width: 2rem;
-		height: 2rem;
-		border: 2px solid var(--border);
-		border-top-color: var(--page-accent);
-		border-radius: 50%;
-		animation: spin 1s linear infinite;
-	}
-
-	@keyframes spin {
-		to { transform: rotate(360deg); }
 	}
 
 	.inline-error {
@@ -1345,10 +1275,6 @@
 			padding: 0;
 		}
 
-		.memory-header {
-			align-items: flex-start;
-		}
-
 		.memory-tabs {
 			justify-content: flex-start;
 			padding: 0 0.75rem;
@@ -1357,11 +1283,6 @@
 
 		.tab-button {
 			padding: 0.75rem 0.85rem;
-		}
-
-		.title-mark {
-			width: 3rem;
-			height: 3rem;
 		}
 
 		.project-strip {

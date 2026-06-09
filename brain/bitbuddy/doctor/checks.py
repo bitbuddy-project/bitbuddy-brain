@@ -56,6 +56,8 @@ EXPECTED_TABLES = {
     "self_state": "db.init",
     "goals": "db.init",
     "personality_evolution": "db.init",
+    "loop_incidents": "db.init",
+    "loop_lessons": "db.init",
 }
 
 

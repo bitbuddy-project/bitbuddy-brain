@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import { setTimePreferences } from '$lib/stores/time.svelte';
 	import { theme, type ThemeVariant } from '$lib/stores/theme.svelte';
 	import { chatBehavior, type ReplyAnimation } from '$lib/stores/chat-behavior.svelte';
@@ -163,15 +164,20 @@
 	let autonomy = $state<AutonomyConfig>({
 		enabled: true,
 		run_after_idle_consolidation: true,
+		activity_level: 'medium',
 		idle_delay_seconds: 300,
 		repeat_idle_cycles: true,
 		idle_backoff_multiplier: 1.5,
 		idle_max_delay_seconds: 1800,
 		max_actions_per_cycle: 1,
+		max_steps_per_session: 2,
 		max_pending_questions: 12,
 		max_pending_comments: 12,
 		max_new_questions_per_cycle: 1,
 		max_autonomous_deliveries_per_day: 10,
+		surface_cooldown_minutes: 45,
+		spontaneous_remark_cooldown_minutes: 90,
+		min_autonomous_priority: 3,
 		web_search: {
 			enabled: true,
 			provider: 'searxng',
@@ -249,6 +255,7 @@
 		gmail_full_mail_access: false,
 		default_mailbox: 'INBOX',
 		max_preview_messages: 50,
+		tool_message_limit: 10,
 		has_password: false,
 		has_gmail_client_secret: false,
 		gmail_connected: false
@@ -456,7 +463,7 @@
 			pendingAddedProviderKey = '';
 			if (providers.some((provider) => provider.type === 'codex')) void refreshCodexStatus();
 			if (config.autonomy) {
-				autonomy = config.autonomy;
+				autonomy = { ...config.autonomy, activity_level: config.autonomy.activity_level ?? 'medium' };
 			}
 			if (config.dreaming) {
 				dreaming = config.dreaming;
@@ -944,7 +951,8 @@
 			gmail_client_id: email.gmail_client_id.trim(),
 			gmail_redirect_uri: email.gmail_redirect_uri.trim() || 'http://127.0.0.1:8787/email/gmail/callback',
 			default_mailbox: email.default_mailbox.trim() || 'INBOX',
-			max_preview_messages: Math.max(1, Math.min(200, Number(email.max_preview_messages) || 50))
+			max_preview_messages: Math.max(1, Number(email.max_preview_messages) || 50),
+			tool_message_limit: Math.max(1, Number(email.tool_message_limit) || 10)
 		};
 		emailSaving = true;
 		try {
@@ -1161,7 +1169,9 @@
 		autonomySaving = true;
 		try {
 			const config = await updateAutonomyConfig(next);
-			autonomy = config.autonomy ?? next;
+			const saved = config.autonomy ?? next;
+			// Keep the chosen level visible even if an older backend echoes a config without it.
+			autonomy = { ...saved, activity_level: saved.activity_level ?? next.activity_level ?? 'medium' };
 			autonomyStatus = 'Autonomy settings saved. New idle cycles will use these limits and gates.';
 			autonomyError = '';
 		} catch (caught) {
@@ -1174,16 +1184,8 @@
 </script>
 
 <div class="settings-page">
+	<PageHeader icon={GearSixIcon} eyebrow="Configuration" title="Settings" subtitle="Appearance, model runtime, autonomy, and desktop control." />
 	<section class="settings-panel" aria-label="Settings">
-		<header class="settings-header">
-			<div class="title-mark" aria-hidden="true"><GearSixIcon size={30} weight="duotone" /></div>
-			<div class="title-copy">
-				<p class="eyebrow">Configuration</p>
-				<h1>Settings</h1>
-				<p>Appearance, model runtime, autonomy, and desktop control.</p>
-			</div>
-		</header>
-
 		<div class="settings-content">
 		<section class="settings-section">
 			<h2>Appearance</h2>
@@ -1739,6 +1741,35 @@
 						{/if}
 
 						<div class="context-panel">
+							<div class="mock-item field-row">
+								<span>
+									Activity level
+									<small>
+										{#if autonomy.activity_level === 'low'}Calm companion — slow cycles, light work, only speaks up rarely.
+										{:else if autonomy.activity_level === 'high'}Very active — fast cycles, deep multi-step work, chases rabbit holes, more frequent messages.
+										{:else}Balanced — steady cycles and a moderate amount of self-directed work and messages.{/if}
+									</small>
+								</span>
+								<div class="select-field">
+									<SelectMenu
+										value={autonomy.activity_level}
+										options={[
+											{ value: 'low', label: 'Low', description: 'Calm — minimal activity and messages' },
+											{ value: 'medium', label: 'Medium', description: 'Balanced default' },
+											{ value: 'high', label: 'Very active', description: 'Lively — deeper work, more messages' }
+										]}
+										ariaLabel="Activity level"
+										onChange={(value) => (autonomy.activity_level = value as AutonomyConfig['activity_level'])}
+									/>
+								</div>
+							</div>
+							{#if autonomy.activity_level === 'high' && (modelRuntime.provider.type === 'openai' || modelRuntime.provider.type === 'anthropic')}
+								<div class="inline-error" role="note">
+									Heads up: "Very active" pairs a lot of background work with a cloud API provider
+									({providerLabel(modelRuntime.provider.type)}). On metered API or smaller plans this can run up a real bill.
+									BitBuddy is local-first by design — consider a local provider at this level, or lower the activity level while using cloud models.
+								</div>
+							{/if}
 							<div class="mock-item toggle-row">
 								<span>
 									Enable autonomy
@@ -2151,6 +2182,7 @@
 							<div class="mock-item field-row"><span>Provider<small>Use generic IMAP or Google's Gmail API</small></span><div class="select-field"><SelectMenu value={email.provider} options={emailProviderOptions} ariaLabel="Email provider" disabled={!email.enabled} onChange={(value) => (email.provider = value as EmailConfig['provider'])} /></div></div>
 							<label class="mock-item field-row"><span>Email address<small>The account BitBuddy should know about</small></span><input bind:value={email.email_address} placeholder="you@example.com" disabled={!email.enabled} /></label>
 							<label class="mock-item field-row"><span>Account label<small>A local display name, such as Personal or Work</small></span><input bind:value={email.account_label} placeholder="Personal" disabled={!email.enabled} /></label>
+							<label class="mock-item field-row"><span>BitBuddy email tool limit<small>Maximum messages BitBuddy tools and subagents can list, search, or apply auto-trash rules to in one call. Default is low. Higher values expose more mail to the model, use more context/provider tokens, slow searches, and make broad trash rules affect more messages at once. Trash rules move mail to Trash only; they do not permanently delete it.</small></span><input type="number" min="1" bind:value={email.tool_message_limit} disabled={!email.enabled} /></label>
 							{#if email.provider === 'imap'}
 								<label class="mock-item field-row"><span>IMAP host<small>Your provider's incoming mail server</small></span><input bind:value={email.imap_host} placeholder="imap.example.com" disabled={!email.enabled} /></label>
 								<label class="mock-item field-row"><span>IMAP port<small>Usually 993 for SSL</small></span><input type="number" min="1" bind:value={email.imap_port} disabled={!email.enabled} /></label>
@@ -2187,7 +2219,7 @@
 									<div class="mock-item field-row"><span>OAuth mode<small>Desktop app uses PKCE and can send your saved local client secret when Google requires it. Web app is a self-hosted legacy fallback.</small></span><div class="select-field"><SelectMenu value={email.gmail_oauth_mode || 'desktop_pkce'} options={[{ value: 'desktop_pkce', label: 'Desktop app (recommended)', description: 'PKCE plus optional local secret' }, { value: 'web_secret', label: 'Web app (legacy)', description: 'Requires client secret and redirect URI' }]} ariaLabel="Gmail OAuth mode" disabled={!email.enabled} onChange={(value) => (email.gmail_oauth_mode = value as EmailConfig['gmail_oauth_mode'])} /></div></div>
 									<label class="mock-item field-row"><span>Redirect URI<small>{email.gmail_oauth_mode === 'web_secret' ? 'Add this exact URI to your Google Web Application OAuth client.' : 'Local 127.0.0.1 loopback callback used by BitBuddy during Google authorization.'}</small></span><input bind:value={email.gmail_redirect_uri} placeholder="http://127.0.0.1:8787/email/gmail/callback" disabled={!email.enabled} /></label>
 									<label class="mock-item field-row"><span>Default mailbox<small>The inbox folder to open first</small></span><input bind:value={email.default_mailbox} placeholder="INBOX" disabled={!email.enabled} /></label>
-									<label class="mock-item field-row"><span>Preview message limit<small>Maximum messages to preview in lightweight inbox views</small></span><input type="number" min="1" max="200" bind:value={email.max_preview_messages} disabled={!email.enabled} /></label>
+									<label class="mock-item field-row"><span>Preview message limit<small>Maximum messages to preview in lightweight inbox views. This affects the dashboard, not BitBuddy's tool limit.</small></span><input type="number" min="1" bind:value={email.max_preview_messages} disabled={!email.enabled} /></label>
 								{/if}
 
 								<button class="mock-item settings-row mini-row" class:open={emailTroubleshootingOpen} onclick={() => (emailTroubleshootingOpen = !emailTroubleshootingOpen)} aria-expanded={emailTroubleshootingOpen}>
@@ -2205,7 +2237,7 @@
 							{/if}
 							{#if email.provider !== 'gmail'}
 								<label class="mock-item field-row"><span>Default mailbox<small>The inbox folder to open first</small></span><input bind:value={email.default_mailbox} placeholder="INBOX" disabled={!email.enabled} /></label>
-								<label class="mock-item field-row"><span>Preview message limit<small>Maximum messages to preview in lightweight inbox views</small></span><input type="number" min="1" max="200" bind:value={email.max_preview_messages} disabled={!email.enabled} /></label>
+								<label class="mock-item field-row"><span>Preview message limit<small>Maximum messages to preview in lightweight inbox views. This affects the dashboard, not BitBuddy's tool limit.</small></span><input type="number" min="1" bind:value={email.max_preview_messages} disabled={!email.enabled} /></label>
 							{/if}
 						</div>
 
@@ -2257,12 +2289,6 @@
 		--page-soft: color-mix(in srgb, var(--accent-soft) 72%, transparent);
 		--page-border: color-mix(in srgb, var(--accent) 20%, var(--border));
 		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
-		--card-glass-sheen: none;
-		--card-inner-line: transparent;
-		--card-shadow: none;
-		--card-top-edge: transparent;
-		--card-top-light: transparent;
-		--shadow-panel: none;
 
 		box-sizing: border-box;
 		width: 100%;
@@ -2273,6 +2299,8 @@
 		padding: 0 1rem;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
 
@@ -2282,9 +2310,15 @@
 	}
 
 	.settings-panel {
+		--card-glass-sheen: none;
+		--card-inner-line: transparent;
+		--card-shadow: none;
+		--card-top-edge: transparent;
+		--card-top-light: transparent;
+		--shadow-panel: none;
+
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
@@ -2333,18 +2367,6 @@
 		font-weight: 800;
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
-	}
-
-	h1 {
-		font-size: 1.65rem;
-		font-weight: 900;
-		letter-spacing: -0.03em;
-		line-height: 1.1;
-	}
-
-	.title-copy p:last-child {
-		margin: 0.15rem 0 0;
-		color: var(--text-soft);
 	}
 
 	.settings-content {

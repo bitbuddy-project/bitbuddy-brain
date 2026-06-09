@@ -172,6 +172,12 @@ def transition_lifecycle(
         pass
     if state == "Awake" and current.state != "Awake":
         try:
+            from .autonomy.morning_brief import queue_morning_brief
+
+            queue_morning_brief()
+        except Exception:
+            pass
+        try:
             from .autonomy.delivery_scheduler import schedule_intention_delivery
 
             schedule_intention_delivery("lifecycle_awake")

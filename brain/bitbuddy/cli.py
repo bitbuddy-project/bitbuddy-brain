@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from .activity import list_activity, log_activity
-from .auth import API_TOKEN_HEADER, get_api_token, is_loopback_host
+from .auth import API_TOKEN_HEADER, api_token_path, get_api_token, is_loopback_host, rotate_api_token
 from .chats.repository import delete_chat, get_chat, list_recent_chats
 from .config import ProviderConfig, load_config, update_calendar_config, update_email_config, update_mcp_config, update_model_runtime_config, upsert_mcp_server, validate_timezone, write_config
 from .database import db_connection
@@ -245,7 +245,34 @@ def build_parser() -> argparse.ArgumentParser:
     lib_test.add_argument("query", help="Test query string.", nargs="?")
     lib_test.set_defaults(handler=librarian_test_whisper_command)
 
+    # Auth / local API token
+    auth_parser = subparsers.add_parser("auth", help="Manage the local API token used to authorize the web UI and LAN access.")
+    auth_subparsers = auth_parser.add_subparsers(dest="auth_command", metavar="command")
+
+    auth_token = auth_subparsers.add_parser("token", help="Print the local API token (creating one if needed).")
+    auth_token.set_defaults(handler=auth_token_command)
+
+    auth_rotate = auth_subparsers.add_parser("rotate", help="Generate a new local API token, invalidating the old one.")
+    auth_rotate.set_defaults(handler=auth_rotate_command)
+
+    auth_parser.set_defaults(handler=auth_token_command)
+
     return parser
+
+
+def auth_token_command(_args: argparse.Namespace) -> int:
+    token = get_api_token()
+    print(token)
+    print(f"Stored at: {api_token_path()}", file=sys.stderr)
+    print(f"Send it as the {API_TOKEN_HEADER} header (used by the web UI and required for LAN access).", file=sys.stderr)
+    return 0
+
+
+def auth_rotate_command(_args: argparse.Namespace) -> int:
+    token = rotate_api_token()
+    print(token)
+    print("Rotated the local API token. Existing browser sessions and LAN clients must use the new token.", file=sys.stderr)
+    return 0
 
 
 def run_setup(_args: argparse.Namespace) -> int:

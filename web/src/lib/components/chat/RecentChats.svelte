@@ -48,7 +48,7 @@
 			</div>
 			<div class="chat-list">
 				{#if chats.length === 0}
-					<p class="empty-state">No saved chats yet.</p>
+					<p class="recent-empty">No saved chats yet.</p>
 				{:else}
 					{#each chats as chat}
 						<div class="chat-row">
@@ -286,7 +286,7 @@
 		margin-top: 0.1rem;
 	}
 
-	.empty-state {
+	.recent-empty {
 		padding: 2rem;
 		text-align: center;
 		color: var(--text-soft);

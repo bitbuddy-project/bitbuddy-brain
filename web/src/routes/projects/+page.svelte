@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import BlueprintIcon from 'phosphor-svelte/lib/BlueprintIcon';
 	import FolderOpenIcon from 'phosphor-svelte/lib/FolderOpenIcon';
 	import PlusIcon from 'phosphor-svelte/lib/PlusIcon';
@@ -83,32 +85,26 @@
 </script>
 
 <div class="projects-page">
+	<PageHeader icon={BlueprintIcon} eyebrow="Workspace Map" title="Projects" subtitle="Registered read-only project paths BitBuddy can use for memory and context.">
+		{#snippet action()}
+				<button
+					class="add-project-button"
+					class:active={addOpen}
+					type="button"
+					aria-label={addOpen ? 'Close add project form' : 'Add project'}
+					aria-expanded={addOpen}
+					onclick={() => (addOpen = !addOpen)}
+				>
+					<span class="icon-wrap plus-icon" class:hidden={addOpen}>
+						<PlusIcon size={22} weight="bold" />
+					</span>
+					<span class="icon-wrap x-icon" class:hidden={!addOpen}>
+						<XIcon size={22} weight="bold" />
+					</span>
+				</button>
+			{/snippet}
+	</PageHeader>
 	<section class="projects-panel" aria-label="Registered projects">
-		<header class="projects-header">
-			<div class="title-mark" aria-hidden="true">
-				<BlueprintIcon size={30} weight="duotone" />
-			</div>
-			<div class="title-copy">
-				<p class="eyebrow">Workspace Map</p>
-				<h1>Projects</h1>
-				<p>Registered read-only project paths BitBuddy can use for memory and context.</p>
-			</div>
-			<button
-				class="add-project-button"
-				class:active={addOpen}
-				type="button"
-				aria-label={addOpen ? 'Close add project form' : 'Add project'}
-				aria-expanded={addOpen}
-				onclick={() => (addOpen = !addOpen)}
-			>
-				<span class="icon-wrap plus-icon" class:hidden={addOpen}>
-					<PlusIcon size={22} weight="bold" />
-				</span>
-				<span class="icon-wrap x-icon" class:hidden={!addOpen}>
-					<XIcon size={22} weight="bold" />
-				</span>
-			</button>
-		</header>
 
 		<div class="projects-content">
 			{#if addOpen}
@@ -135,10 +131,7 @@
 			{/if}
 
 			{#if loading}
-				<div class="center-state">
-					<div class="spinner"></div>
-					<p>Loading projects...</p>
-				</div>
+				<Skeleton variant="card" count={3} />
 			{:else if error && projects.length === 0}
 				<div class="center-state error-state">
 					<h2>Could not load projects</h2>
@@ -202,6 +195,8 @@
 		height: 100%;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		min-height: 0;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -218,8 +213,7 @@
 		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
 
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
@@ -234,35 +228,6 @@
 		overflow: hidden;
 	}
 
-	.projects-header {
-		flex: 0 0 auto;
-		padding: 1.35rem 1.5rem;
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		border-bottom: 1px solid var(--border);
-		background:
-			linear-gradient(135deg, var(--page-soft), transparent 70%),
-			var(--header-bg);
-	}
-
-	.title-mark {
-		width: 3.5rem;
-		height: 3.5rem;
-		display: grid;
-		place-items: center;
-		border-radius: 1.1rem;
-		background: var(--surface-glass);
-		border: 1px solid var(--page-border);
-		color: var(--page-accent);
-		box-shadow: 0 0 20px var(--page-soft);
-		flex: 0 0 auto;
-	}
-
-	.title-copy {
-		min-width: 0;
-		flex: 1 1 auto;
-	}
 
 	.add-project-button {
 		width: 2.75rem;
@@ -318,22 +283,6 @@
 		opacity: 1;
 	}
 
-	.eyebrow {
-		color: var(--page-accent);
-		font-size: 0.72rem;
-		font-weight: 800;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-	}
-
-	h1 {
-		font-size: 1.65rem;
-		font-weight: 900;
-		letter-spacing: -0.03em;
-		line-height: 1.1;
-	}
-
-	.title-copy p:last-child,
 	.center-state p,
 	.project-copy p {
 		color: var(--text-soft);
@@ -543,18 +492,6 @@
 		color: var(--danger);
 	}
 
-	.spinner {
-		width: 2rem;
-		height: 2rem;
-		border: 2px solid var(--border);
-		border-top-color: var(--page-accent);
-		border-radius: 50%;
-		animation: spin 1s linear infinite;
-	}
-
-	@keyframes spin {
-		to { transform: rotate(360deg); }
-	}
 
 	@media (max-width: 900px) {
 		.projects-page,
@@ -565,15 +502,6 @@
 	}
 
 	@media (max-width: 640px) {
-		.projects-header {
-			align-items: flex-start;
-		}
-
-		.title-mark {
-			width: 3rem;
-			height: 3rem;
-		}
-
 		.form-grid {
 			grid-template-columns: 1fr;
 		}

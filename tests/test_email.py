@@ -18,17 +18,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "brain"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-email-test-")
 
-from bitbuddy.config import parse_email_config, update_email_config, write_config  # noqa: E402
+from bitbuddy.config import load_config, parse_email_config, update_email_config, write_config  # noqa: E402
 from bitbuddy.auth import API_TOKEN_HEADER, get_api_token  # noqa: E402
 from bitbuddy.http_api import BitBuddyRequestHandler, GMAIL_AUTH_FLOWS, exchange_gmail_code, start_gmail_login  # noqa: E402
 from bitbuddy.calendar.secrets import put_credentials  # noqa: E402
 from bitbuddy.email.permissions import EmailPermissionRequired, all_permissions, permission_state, require_permission, set_permission  # noqa: E402
-from bitbuddy.email.models import mailbox_to_json, message_page_to_json  # noqa: E402
+from bitbuddy.email.models import EmailMessage, mailbox_to_json, message_page_to_json  # noqa: E402
 from bitbuddy.email.providers.gmail import GmailProvider, gmail_access_token, gmail_message_to_email, normalize_gmail_label  # noqa: E402
 from bitbuddy.email.store import ensure_email_database, list_rules, upsert_rule  # noqa: E402
 from bitbuddy.paths import GLOBAL_DB_PATH  # noqa: E402
 from bitbuddy.prompt_builder import email_capability_context  # noqa: E402
 from bitbuddy.projects.routing import clean_model_thinking_text  # noqa: E402
+from bitbuddy.toolbox.base import ToolDefinition  # noqa: E402
+from bitbuddy.toolbox.handlers import email_recent_messages_tool, email_tool_limit, email_trash_message_tool  # noqa: E402
 
 
 class EmailTest(unittest.TestCase):
@@ -47,6 +49,59 @@ class EmailTest(unittest.TestCase):
         self.assertEqual(config.imap_port, 993)
         self.assertEqual(config.imap_security, "ssl")
         self.assertEqual(config.default_mailbox, "INBOX")
+        self.assertEqual(config.tool_message_limit, 10)
+
+    def test_email_config_allows_large_preview_and_tool_limits(self) -> None:
+        config = parse_email_config({"max_preview_messages": 5000, "tool_message_limit": 750})
+
+        self.assertEqual(config.max_preview_messages, 5000)
+        self.assertEqual(config.tool_message_limit, 750)
+
+    def test_update_email_config_persists_tool_message_limit(self) -> None:
+        write_config("none", "", "")
+        update_email_config({"enabled": True, "provider": "imap", "tool_message_limit": 25, "max_preview_messages": 250})
+
+        config = load_config().email
+
+        self.assertEqual(config.tool_message_limit, 25)
+        self.assertEqual(config.max_preview_messages, 250)
+
+    def test_email_tool_limit_returns_configured_limit(self) -> None:
+        write_config("none", "", "")
+        update_email_config({"enabled": True, "provider": "imap", "tool_message_limit": 3})
+
+        self.assertEqual(email_tool_limit(99), 3)
+        self.assertEqual(email_tool_limit(2), 3)
+        self.assertEqual(email_tool_limit(), 3)
+
+    def test_email_recent_messages_tool_uses_configured_limit(self) -> None:
+        write_config("none", "", "")
+        update_email_config({"enabled": True, "provider": "imap", "tool_message_limit": 2})
+        seen: dict[str, int] = {}
+
+        def fake_list_messages(*, mailbox: str = "", limit: int = 20) -> list[EmailMessage]:
+            seen["limit"] = limit
+            return [EmailMessage(id=str(index), mailbox="INBOX", subject=f"Message {index}", from_addr="a@example.com", to_addrs=[], date="", snippet="") for index in range(limit)]
+
+        definition = ToolDefinition("email_recent_messages", "", {"type": "object"}, max_chars=4000)
+        with patch("bitbuddy.toolbox.handlers.email_list_messages", fake_list_messages):
+            result = email_recent_messages_tool({"limit": 99}, definition)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(seen["limit"], 2)
+        self.assertIn("Tool visibility limit is 2", result.summary)
+
+    def test_email_trash_message_tool_says_trash_not_delete(self) -> None:
+        message = EmailMessage(id="msg-1", mailbox="INBOX", subject="Old mail", from_addr="a@example.com", to_addrs=[], date="", snippet="")
+        definition = ToolDefinition("email_trash_message", "", {"type": "object"}, max_chars=4000)
+
+        with patch("bitbuddy.toolbox.handlers.email_trash_message", return_value=message):
+            result = email_trash_message_tool({"message_id": "msg-1", "mailbox": "INBOX"}, definition)
+
+        self.assertTrue(result.ok)
+        self.assertIn("to Trash", result.content)
+        self.assertIn("not permanent deletion", result.content)
+        self.assertEqual(result.arguments_summary["action"], "trash_not_permanent_delete")
 
     def test_email_config_parses_gmail_oauth_fields(self) -> None:
         config = parse_email_config(
@@ -522,6 +577,28 @@ class EmailTest(unittest.TestCase):
         context = email_capability_context(config)
 
         self.assertIn("Email is enabled with provider gmail", context)
+
+    def test_prompt_email_context_mentions_tool_limit_and_trash_semantics(self) -> None:
+        config = type(
+            "Config",
+            (),
+            {
+                "email": parse_email_config(
+                    {
+                        "enabled": True,
+                        "provider": "imap",
+                        "email_address": "me@example.com",
+                        "tool_message_limit": 7,
+                    }
+                )
+            },
+        )()
+
+        context = email_capability_context(config)
+
+        self.assertIn("at most 7 message(s)", context)
+        self.assertIn("moves mail to Trash", context)
+        self.assertIn("not permanent delete", context)
 
     def test_email_permissions_default_to_ask(self) -> None:
         self.assertEqual(permission_state("me@example.com", "read"), "ask")

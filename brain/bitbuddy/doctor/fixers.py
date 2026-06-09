@@ -17,6 +17,7 @@ from ..config import CONFIG_PATH, write_config
 from ..continuity import ensure_continuity_database
 from ..dreaming.runtime import ensure_dream_database
 from ..lifecycle import ensure_lifecycle_database
+from ..loop_learning import ensure_loop_learning_database
 from ..memory.episodic import ensure_episodic_memory_database
 from ..memory.project_registry import ensure_global_database
 from ..memory.store import ensure_memory_database
@@ -120,6 +121,7 @@ def fix_db_init() -> DoctorFixResult:
     ensure_continuity_database()
     ensure_calendar_database()
     ensure_subagent_database()
+    ensure_loop_learning_database()
     seed_builtin_personality_files()
     return DoctorFixResult("db.init", True, "Initialized missing SQLite tables and built-in personality files.")
 

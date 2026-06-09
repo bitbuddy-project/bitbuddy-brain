@@ -886,3 +886,38 @@ body :is(.calendar-panel.calendar-panel, .email-panel.email-panel) > :is(.calend
     inset 0 1px 0 var(--card-inner-line),
     var(--card-shadow);
 }
+
+/* Sensitive-info masking chips (shared by chat + email) */
+.masked-chip {
+  cursor: pointer;
+  display: inline;
+  padding: 0 0.32em;
+  border-radius: var(--radius-sm, 6px);
+  background: color-mix(in srgb, var(--surface-inset) 70%, transparent);
+  color: var(--text-muted);
+  border: 1px dashed color-mix(in srgb, var(--border-strong, var(--border)) 80%, transparent);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.masked-chip:hover,
+.masked-chip:focus-visible {
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+  color: var(--text);
+  outline: none;
+}
+
+.masked-chip.revealed {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--text);
+  letter-spacing: normal;
+}
+
+/* Skeleton loading "ghosts" */
+@keyframes bitbuddy-skeleton-pulse {
+  0% { opacity: 0.55; }
+  50% { opacity: 1; }
+  100% { opacity: 0.55; }
+}

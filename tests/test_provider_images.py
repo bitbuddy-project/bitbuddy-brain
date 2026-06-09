@@ -93,7 +93,7 @@ class ProviderImageTest(unittest.TestCase):
         self.assertEqual(payloads[0]["reasoning_budget_tokens"], -1)
         self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("thinking", "plan"), ("response", "answer")])
 
-    def test_anthropic_thinking_enabled_requests_extended_thinking_for_supported_models(self) -> None:
+    def test_anthropic_thinking_enabled_uses_adaptive_for_sonnet_4_6(self) -> None:
         client = ProviderClient(ProviderConfig(type="anthropic", url="https://anthropic.test", model="claude-sonnet-4-6", api_key="key"))
         payloads = []
 
@@ -105,12 +105,90 @@ class ProviderImageTest(unittest.TestCase):
                 {"type": "message_stop"},
             ])
 
+        with patch("bitbuddy.providers.post_anthropic_sse", side_effect=fake_post_anthropic_sse):
+            chunks = list(client.stream_chat([{"role": "user", "content": "Hi"}], thinking_enabled=True))
+
+        self.assertEqual(payloads[0]["thinking"], {"type": "adaptive"})
+        self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("thinking", "plan"), ("response", "answer")])
+
+    def test_anthropic_thinking_enabled_requests_summarized_display_for_opus_4_8(self) -> None:
+        client = ProviderClient(ProviderConfig(type="anthropic", url="https://anthropic.test", model="claude-opus-4-8", api_key="key"))
+        payloads = []
+
+        def fake_post_anthropic_sse(_url, payload, headers):
+            payloads.append(payload)
+            return iter([
+                {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "plan"}},
+                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "answer"}},
+                {"type": "message_stop"},
+            ])
+
+        with patch("bitbuddy.providers.post_anthropic_sse", side_effect=fake_post_anthropic_sse):
+            chunks = list(client.stream_chat([{"role": "user", "content": "Hi"}], thinking_enabled=True))
+
+        # Opus 4.7/4.8 reject enabled+budget_tokens (400) and omit thinking text unless
+        # display=summarized is requested.
+        self.assertEqual(payloads[0]["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("thinking", "plan"), ("response", "answer")])
+
+    def test_anthropic_thinking_enabled_uses_budget_for_older_models(self) -> None:
+        client = ProviderClient(ProviderConfig(type="anthropic", url="https://anthropic.test", model="claude-haiku-4-5", api_key="key"))
+        payloads = []
+
+        def fake_post_anthropic_sse(_url, payload, headers):
+            payloads.append(payload)
+            return iter([
+                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "answer"}},
+                {"type": "message_stop"},
+            ])
+
         with patch("bitbuddy.providers.post_anthropic_sse", side_effect=fake_post_anthropic_sse), \
                 patch("bitbuddy.providers.reasoning_budget_tokens", return_value=-1):
             chunks = list(client.stream_chat([{"role": "user", "content": "Hi"}], thinking_enabled=True))
 
         self.assertEqual(payloads[0]["thinking"], {"type": "enabled", "budget_tokens": 2048})
-        self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("thinking", "plan"), ("response", "answer")])
+        self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("response", "answer")])
+
+    def test_anthropic_tool_use_accumulates_fragmented_input_json(self) -> None:
+        client = ProviderClient(ProviderConfig(type="anthropic", url="https://anthropic.test", model="claude-opus-4-8", api_key="key"))
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get the weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                },
+            }
+        ]
+        payloads = []
+
+        def fake_post_anthropic_sse(_url, payload, headers):
+            payloads.append(payload)
+            return iter([
+                {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "checking"}},
+                {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "get_weather"}},
+                {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"city": '}},
+                {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '"Paris"}'}},
+                {"type": "content_block_stop", "index": 1},
+                {"type": "message_stop"},
+            ])
+
+        with patch("bitbuddy.providers.post_anthropic_sse", side_effect=fake_post_anthropic_sse):
+            chunks = list(client.stream_chat([{"role": "user", "content": "Weather?"}], thinking_enabled=True, tools=tools))
+
+        # Tools are converted to Anthropic's input_schema shape.
+        self.assertEqual(payloads[0]["tools"][0]["name"], "get_weather")
+        self.assertEqual(payloads[0]["tools"][0]["input_schema"], {"type": "object", "properties": {"city": {"type": "string"}}})
+        self.assertEqual(payloads[0]["tool_choice"], {"type": "auto"})
+
+        thinking_chunks = [c for c in chunks if c.kind == "thinking"]
+        tool_chunks = [c for c in chunks if c.kind == "tool_call"]
+        self.assertEqual([c.text for c in thinking_chunks], ["checking"])
+        self.assertEqual(len(tool_chunks), 1)
+        self.assertEqual(tool_chunks[0].tool_call.name, "get_weather")
+        self.assertEqual(tool_chunks[0].tool_call.arguments, '{"city": "Paris"}')
+        self.assertEqual(tool_chunks[0].tool_call.call_id, "toolu_1")
 
     def test_anthropic_thinking_enabled_does_not_request_extended_thinking_for_unknown_models(self) -> None:
         client = ProviderClient(ProviderConfig(type="anthropic", url="https://anthropic.test", model="claude-test", api_key="key"))

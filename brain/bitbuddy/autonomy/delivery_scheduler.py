@@ -13,6 +13,7 @@ from ..lifecycle import get_lifecycle_state
 from ..notifications import notify_user
 from ..paths import GLOBAL_DB_PATH
 from .delivery import deliver_intention
+from .levels import resolve_profile
 from .intentions import (
     Intention,
     cleanup_intention_queue,
@@ -33,6 +34,8 @@ RETRY_DELIVERY_DELAY_SECONDS = 300.0
 COOLDOWN_RETRY_DELAY_SECONDS = 900.0
 MIN_AUTONOMOUS_PRIORITY = 3
 AUTONOMOUS_DELIVERY_COOLDOWN_MINUTES = 45
+# Anti-starvation never drops below the historical floor so low-signal items still don't leak.
+ANTI_STARVATION_FLOOR = 3
 _DELIVERY_LOCK = threading.Lock()
 _DELIVERY_TIMER: threading.Timer | None = None
 
@@ -142,7 +145,7 @@ def run_intention_delivery_check(
         log_autonomy("delivery_skipped", "Skipped queued intention delivery due to daily cap", {"reason": reason, "chat_id": target_chat_id})
         maybe_reschedule_pending_delivery("retry_after_daily_cap", chat_id=target_chat_id, model=model, enabled=reschedule_on_pending, delay_seconds=COOLDOWN_RETRY_DELAY_SECONDS)
         return None
-    if recent_intention_surface_for_chat(target_chat_id, now=current, cooldown_minutes=AUTONOMOUS_DELIVERY_COOLDOWN_MINUTES):
+    if recent_intention_surface_for_chat(target_chat_id, now=current, cooldown_minutes=autonomous_delivery_cooldown_minutes()):
         log_autonomy("delivery_skipped", "Skipped queued intention delivery due to per-chat cooldown", {"reason": reason, "chat_id": target_chat_id})
         maybe_reschedule_pending_delivery("retry_after_chat_cooldown", chat_id=target_chat_id, model=model, enabled=reschedule_on_pending, delay_seconds=COOLDOWN_RETRY_DELAY_SECONDS)
         return None
@@ -200,6 +203,8 @@ def maybe_reschedule_pending_delivery(
 
 def select_autonomous_intention(chat_id: str, *, quiet_mode: bool = False, now: datetime | None = None) -> Intention | None:
     current = now or datetime.now(timezone.utc)
+    profile = autonomy_profile()
+    min_priority = effective_min_autonomous_priority(profile, autonomous_deliveries_in_last_24h(now=current))
     candidates = []
     for intention in list_pending_intentions(limit=50):
         if intention_is_expired(intention, current):
@@ -207,7 +212,7 @@ def select_autonomous_intention(chat_id: str, *, quiet_mode: bool = False, now: 
         if not intention_quality_allows_surface(intention):
             continue
         priority = intention_priority(intention)
-        if priority < MIN_AUTONOMOUS_PRIORITY:
+        if priority < min_priority:
             continue
         if quiet_mode and priority < 4:
             continue
@@ -250,8 +255,17 @@ def intention_project_matches_active_context(intention: Intention) -> bool:
     return project_id == str(continuity_state().get("active_project_id") or "")
 
 
+def autonomy_profile():
+    """Effective activity-level profile (cadence / cooldowns / daily budget / floor)."""
+    return resolve_profile(load_config().autonomy)
+
+
+def autonomous_delivery_cooldown_minutes() -> int:
+    return int(getattr(autonomy_profile(), "surface_cooldown_minutes", AUTONOMOUS_DELIVERY_COOLDOWN_MINUTES))
+
+
 def global_delivery_cooldown_active(*, now: datetime) -> bool:
-    cutoff = now - timedelta(minutes=AUTONOMOUS_DELIVERY_COOLDOWN_MINUTES)
+    cutoff = now - timedelta(minutes=autonomous_delivery_cooldown_minutes())
     with db_connection(GLOBAL_DB_PATH) as connection:
         rows = connection.execute("select surfaced_at from intention_surfaces order by surfaced_at desc limit 10").fetchall()
     for row in rows:
@@ -261,9 +275,7 @@ def global_delivery_cooldown_active(*, now: datetime) -> bool:
     return False
 
 
-def autonomous_daily_cap_reached(*, now: datetime) -> bool:
-    config = load_config()
-    daily_cap = config.autonomy.max_autonomous_deliveries_per_day
+def autonomous_deliveries_in_last_24h(*, now: datetime) -> int:
     cutoff = now - timedelta(hours=24)
     with db_connection(GLOBAL_DB_PATH) as connection:
         rows = connection.execute("select surfaced_at from intention_surfaces order by surfaced_at desc limit 50").fetchall()
@@ -272,7 +284,28 @@ def autonomous_daily_cap_reached(*, now: datetime) -> bool:
         surfaced_at = parse_timestamp(str(row[0] or ""))
         if surfaced_at is not None and surfaced_at >= cutoff:
             count += 1
-    return count >= daily_cap
+    return count
+
+
+def autonomous_daily_cap_reached(*, now: datetime) -> bool:
+    return autonomous_deliveries_in_last_24h(now=now) >= autonomy_profile().max_autonomous_deliveries_per_day
+
+
+def effective_min_autonomous_priority(profile, delivered_today: int) -> int:
+    """Adaptive background-push floor: looser on a quiet day, stricter as the daily budget fills.
+
+    Resolves the user's "deliver more often, but don't overwhelm" tension: when few
+    messages have gone out in the last 24h, drop the bar by one (never below the
+    historical floor) so a quiet day still surfaces a couple; as deliveries approach
+    the daily budget, raise the bar by one to taper off.
+    """
+    floor = int(getattr(profile, "min_autonomous_priority", MIN_AUTONOMOUS_PRIORITY))
+    cap = max(1, int(getattr(profile, "max_autonomous_deliveries_per_day", 8)))
+    if delivered_today <= max(1, cap // 3):
+        return max(ANTI_STARVATION_FLOOR, floor - 1)
+    if delivered_today >= (cap * 2) // 3:
+        return min(5, floor + 1)
+    return floor
 
 
 def delivery_delay(reason: str, override: float | None) -> float:

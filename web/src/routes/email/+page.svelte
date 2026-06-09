@@ -3,6 +3,17 @@
 	import ArrowClockwiseIcon from 'phosphor-svelte/lib/ArrowClockwiseIcon';
 	import EnvelopeSimpleIcon from 'phosphor-svelte/lib/EnvelopeSimpleIcon';
 	import TrashIcon from 'phosphor-svelte/lib/TrashIcon';
+	import TrayIcon from 'phosphor-svelte/lib/TrayIcon';
+	import StarIcon from 'phosphor-svelte/lib/StarIcon';
+	import PushPinIcon from 'phosphor-svelte/lib/PushPinIcon';
+	import PaperPlaneTiltIcon from 'phosphor-svelte/lib/PaperPlaneTiltIcon';
+	import NoteIcon from 'phosphor-svelte/lib/NoteIcon';
+	import WarningIcon from 'phosphor-svelte/lib/WarningIcon';
+	import FolderIcon from 'phosphor-svelte/lib/FolderIcon';
+	import TagIcon from 'phosphor-svelte/lib/TagIcon';
+	import UserCircleIcon from 'phosphor-svelte/lib/UserCircleIcon';
+	import MagnifyingGlassIcon from 'phosphor-svelte/lib/MagnifyingGlassIcon';
+	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import {
 		createSenderTrashRule,
 		deleteEmailMessage,
@@ -17,6 +28,11 @@
 		type EmailMailbox,
 		type EmailMessage
 	} from '$lib/api/bitbuddy';
+	import { escapeHtml } from '$lib/markdown';
+	import { maskHtml, revealMaskedChips } from '$lib/mask';
+	import Skeleton from '$lib/components/Skeleton.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
+	import { emailCache, pageKey, cacheIsFresh, invalidateMailbox } from '$lib/stores/email.svelte';
 
 	type EmailOverview = EmailConfig & { permissions?: Record<string, string>; account_id?: string };
 
@@ -37,6 +53,8 @@
 	let actionStatus = $state('');
 	let nextPageToken = $state('');
 	let resultSizeEstimate = $state<number | null>(null);
+	let mobilePane = $state<'messages' | 'preview'>('messages');
+	let mailboxOverlayOpen = $state(false);
 	let messageRequestId = 0;
 	const pageSize = 50;
 
@@ -54,6 +72,21 @@
 	const hiddenGmailLabels = new Set(['CHAT', 'YELLOW_STAR', 'CATEGORY_FORUMS', 'CATEGORY_UPDATES', 'CATEGORY_PERSONAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL']);
 	const systemMailboxIds = new Set(mailboxOrder);
 
+	const mailboxIcons: Record<string, typeof TrayIcon> = {
+		INBOX: TrayIcon,
+		STARRED: StarIcon,
+		IMPORTANT: PushPinIcon,
+		UNREAD: EnvelopeSimpleIcon,
+		SENT: PaperPlaneTiltIcon,
+		DRAFT: NoteIcon,
+		SPAM: WarningIcon,
+		TRASH: TrashIcon
+	};
+
+	function mailboxIcon(name: string): typeof TrayIcon {
+		return mailboxIcons[name] ?? FolderIcon;
+	}
+
 	let primaryMailboxes = $derived(
 		mailboxes
 			.filter((mailbox) => systemMailboxIds.has(mailbox.name) && !hiddenGmailLabels.has(mailbox.name))
@@ -70,25 +103,44 @@
 	});
 
 	async function load() {
-		loading = true;
+		// Paint instantly from cache, then revalidate in the background.
+		const hydrated = hydrateFromCache();
+		loading = !hydrated;
 		try {
 			overview = await getEmailOverview();
-			selectedMailbox = overview.default_mailbox || 'INBOX';
+			emailCache.overview = overview;
+			if (!selectedMailbox) selectedMailbox = overview.default_mailbox || 'INBOX';
 			if (overview.enabled && (overview.provider !== 'gmail' || overview.gmail_connected)) {
 				await loadMailboxData();
 			}
+			emailCache.fetchedAt = Date.now();
 			error = '';
 		} catch (caught) {
-			error = caught instanceof Error ? caught.message : 'Could not load email status.';
+			if (!hydrated) error = caught instanceof Error ? caught.message : 'Could not load email status.';
 		} finally {
 			loading = false;
 		}
 	}
 
+	function hydrateFromCache(): boolean {
+		if (!emailCache.overview) return false;
+		overview = emailCache.overview;
+		mailboxes = emailCache.mailboxes;
+		selectedMailbox = emailCache.selectedMailbox || overview.default_mailbox || 'INBOX';
+		const cachedPage = emailCache.pages[pageKey(selectedMailbox, '')];
+		if (cachedPage) {
+			messages = cachedPage.messages;
+			nextPageToken = cachedPage.nextPageToken;
+			resultSizeEstimate = cachedPage.resultSizeEstimate;
+		}
+		return true;
+	}
+
 	async function loadMailboxData() {
-		mailboxLoading = true;
+		mailboxLoading = mailboxes.length === 0;
 		try {
 			mailboxes = await getEmailMailboxes();
+			emailCache.mailboxes = mailboxes;
 			if (!selectedMailbox) selectedMailbox = overview?.default_mailbox || mailboxes[0]?.name || 'INBOX';
 			await loadMessages();
 		} finally {
@@ -101,13 +153,22 @@
 		const mailbox = selectedMailbox;
 		const searchQuery = query.trim();
 		const pageToken = options.append ? nextPageToken : '';
-		messageLoading = !options.append;
+		const cached = !options.append ? emailCache.pages[pageKey(mailbox, searchQuery)] : undefined;
+		// Show cached results immediately if we have them; otherwise show a skeleton.
+		messageLoading = !options.append && !cached;
 		loadingMore = Boolean(options.append);
-		if (options.clear) {
-			messages = [];
-			selectedMessage = null;
-			nextPageToken = '';
-			resultSizeEstimate = null;
+		if (!options.append) {
+			emailCache.selectedMailbox = mailbox;
+			if (cached) {
+				messages = cached.messages;
+				nextPageToken = cached.nextPageToken;
+				resultSizeEstimate = cached.resultSizeEstimate;
+			} else if (options.clear) {
+				messages = [];
+				selectedMessage = null;
+				nextPageToken = '';
+				resultSizeEstimate = null;
+			}
 		}
 		try {
 			const page = searchQuery
@@ -117,7 +178,12 @@
 			messages = options.append ? [...messages, ...page.messages] : page.messages;
 			nextPageToken = page.next_page_token || '';
 			resultSizeEstimate = page.result_size_estimate ?? selectedMailboxCount();
-			if (!options.append) selectedMessage = null;
+			if (!options.append && !cached) selectedMessage = null;
+			emailCache.pages[pageKey(mailbox, searchQuery)] = {
+				messages,
+				nextPageToken,
+				resultSizeEstimate
+			};
 			error = '';
 		} catch (caught) {
 			if (requestId !== messageRequestId) return;
@@ -136,6 +202,8 @@
 	}
 
 	async function chooseMailbox(mailbox: string) {
+		mobilePane = 'messages';
+		mailboxOverlayOpen = false;
 		if (mailbox === selectedMailbox && !query.trim()) return;
 		selectedMailbox = mailbox;
 		query = '';
@@ -144,6 +212,7 @@
 	}
 
 	async function openMessage(message: EmailMessage) {
+		mobilePane = 'preview';
 		messageLoading = true;
 		ruleConfirm = false;
 		actionStatus = '';
@@ -163,13 +232,15 @@
 		try {
 			if (selectedMailbox === 'TRASH') {
 				await deleteEmailMessage(selectedMessage.id, selectedMessage.mailbox || selectedMailbox);
-				actionStatus = 'Permanently deleted.';
+				actionStatus = `Permanently deleted "${selectedMessage.subject || selectedMessage.id}" from Trash.`;
 			} else {
 				await trashEmailMessage(selectedMessage.id, selectedMessage.mailbox || selectedMailbox);
-				actionStatus = 'Moved to Trash.';
+				actionStatus = `Moved "${selectedMessage.subject || selectedMessage.id}" to Trash. This is not permanent deletion.`;
 			}
 			messages = messages.filter((message) => message.id !== selectedMessage?.id);
 			selectedMessage = null;
+			invalidateMailbox(selectedMailbox);
+			invalidateMailbox('TRASH');
 			error = '';
 		} catch (caught) {
 			error = caught instanceof Error ? caught.message : 'Could not move email to Trash.';
@@ -194,8 +265,10 @@
 			nextPageToken = '';
 			resultSizeEstimate = 0;
 			emptyTrashConfirm = false;
+			invalidateMailbox('TRASH');
 			mailboxes = mailboxes.map((mailbox) => mailbox.name === 'TRASH' ? { ...mailbox, messages_total: 0, messages_unread: 0, threads_total: 0, threads_unread: 0 } : mailbox);
-			void getEmailMailboxes().then((next) => (mailboxes = next)).catch(() => undefined);
+			emailCache.mailboxes = mailboxes;
+			void getEmailMailboxes().then((next) => { mailboxes = next; emailCache.mailboxes = next; }).catch(() => undefined);
 			error = '';
 		} catch (caught) {
 			error = caught instanceof Error ? caught.message : 'Could not empty Trash.';
@@ -210,10 +283,11 @@
 		try {
 			const result = await createSenderTrashRule(selectedMessage.from_addr, { mailbox: selectedMailbox, applyExisting });
 			actionStatus = applyExisting
-				? `Auto-trash enabled. Moved ${result.applied} existing matching email${result.applied === 1 ? '' : 's'}.`
-				: 'Auto-trash enabled for future emails from this sender.';
+				? `Auto-trash enabled. Moved ${result.applied} existing matching email${result.applied === 1 ? '' : 's'} to Trash, not permanently deleted.`
+				: 'Auto-trash enabled for future emails from this sender. Matching mail will move to Trash, not permanent deletion.';
 			ruleConfirm = false;
 			selectedMessage = null;
+			invalidateMailbox(selectedMailbox);
 			await loadMessages({ clear: true });
 			error = '';
 		} catch (caught) {
@@ -285,22 +359,17 @@
 </svelte:head>
 
 <div class="email-page">
-	<section class="email-panel" aria-label="Email inbox">
-		<header class="email-header">
-			<div class="title-mark" aria-hidden="true"><EnvelopeSimpleIcon size={30} weight="duotone" /></div>
-			<div class="title-copy">
-				<p class="eyebrow">Inbox</p>
-				<h1>Email</h1>
-				<p>Read-only mail awareness will live here. Account setup is in Settings.</p>
-			</div>
+	<PageHeader icon={EnvelopeSimpleIcon} eyebrow="Inbox" title="Email" subtitle="Read-only mail awareness will live here. Account setup is in Settings.">
+		{#snippet action()}
 			<a class="settings-link" href="/settings">Email settings</a>
-		</header>
-
+		{/snippet}
+	</PageHeader>
+	<section class="email-panel" aria-label="Email inbox">
 		<div class="email-content">
 			{#if error}
 				<div class="notice danger">{error}</div>
 			{:else if loading}
-				<div class="empty-card">Loading email status...</div>
+				<div class="empty-card"><Skeleton variant="card" count={2} /></div>
 			{:else if !overview?.enabled}
 				<section class="empty-card primary-empty">
 					<div class="empty-icon"><EnvelopeSimpleIcon size={28} weight="duotone" /></div>
@@ -322,22 +391,34 @@
 					<a href="/settings">Open Settings</a>
 				</section>
 			{:else}
-				<section class="inbox-shell">
+				<section class="inbox-shell" data-pane={mobilePane} class:overlay-open={mailboxOverlayOpen}>
+					<div class="mobile-pane-switch">
+						<button type="button" class="mailbox-toggle" class:active={mailboxOverlayOpen} aria-expanded={mailboxOverlayOpen} onclick={() => (mailboxOverlayOpen = !mailboxOverlayOpen)}>Mailboxes</button>
+						<div class="pane-tabs" role="tablist" aria-label="Email view">
+							<button type="button" role="tab" aria-selected={mobilePane === 'messages'} class:active={mobilePane === 'messages'} onclick={() => (mobilePane = 'messages')}>Messages</button>
+							<button type="button" role="tab" aria-selected={mobilePane === 'preview'} class:active={mobilePane === 'preview'} onclick={() => (mobilePane = 'preview')}>Preview</button>
+						</div>
+					</div>
+					<button type="button" class="mailbox-backdrop" aria-label="Close mailboxes" onclick={() => (mailboxOverlayOpen = false)}></button>
 					<aside class="inbox-rail">
+						<button type="button" class="drawer-close" aria-label="Close mailboxes" onclick={() => (mailboxOverlayOpen = false)}>
+							<XIcon size={18} weight="bold" />
+						</button>
 						<div class="rail-heading">
-							<p class="eyebrow">Account</p>
+							<p class="eyebrow"><EnvelopeSimpleIcon size={13} weight="bold" /> Account</p>
 							<strong>{overview.account_label || overview.email_address || 'Email account'}</strong>
 							<small>{overview.provider.toUpperCase()} · read-only</small>
 						</div>
 						<div class="mailbox-list" aria-label="Mailboxes">
 							{#if mailboxLoading && mailboxes.length === 0}
-								<div class="mailbox-pill muted">Loading...</div>
+								<Skeleton variant="row" count={5} gap="0.4rem" />
 							{:else}
 								<div class="mailbox-section">
-									<p>Mailboxes</p>
+									<p><TrayIcon size={13} weight="bold" /> Mailboxes</p>
 									{#each primaryMailboxes as mailbox (mailbox.name)}
+										{@const MailboxGlyph = mailboxIcon(mailbox.name)}
 										<button class="mailbox-pill folder" class:active={selectedMailbox === mailbox.name} type="button" onclick={() => chooseMailbox(mailbox.name)}>
-											<span class="mailbox-glyph" aria-hidden="true"></span>
+											<MailboxGlyph class="mailbox-icon" size={17} weight={selectedMailbox === mailbox.name ? 'fill' : 'regular'} />
 											<span class="mailbox-name">{mailboxLabel(mailbox)}</span>
 											{#if mailboxBadgeValue(mailbox) !== null}
 												<span class="mailbox-badge" class:unread={mailboxBadgeKind(mailbox) === 'unread'}>{mailboxBadgeLabel(mailbox)}</span>
@@ -347,10 +428,10 @@
 								</div>
 								{#if labelMailboxes.length > 0}
 									<div class="mailbox-section">
-										<p>Labels</p>
+										<p><TagIcon size={13} weight="bold" /> Labels</p>
 										{#each labelMailboxes as mailbox (mailbox.name)}
 											<button class="mailbox-pill label" class:active={selectedMailbox === mailbox.name} type="button" onclick={() => chooseMailbox(mailbox.name)}>
-												<span class="mailbox-glyph" aria-hidden="true"></span>
+												<TagIcon class="mailbox-icon" size={16} weight={selectedMailbox === mailbox.name ? 'fill' : 'regular'} />
 												<span class="mailbox-name">{mailboxLabel(mailbox)}</span>
 												{#if mailboxBadgeValue(mailbox) !== null}
 													<span class="mailbox-badge" class:unread={mailboxBadgeKind(mailbox) === 'unread'}>{mailboxBadgeLabel(mailbox)}</span>
@@ -372,7 +453,7 @@
 							{/if}
 							<button type="submit" class:icon-only={!query.trim()} aria-label={query.trim() ? 'Search email' : 'Refresh inbox'} disabled={messageLoading}>
 								{#if query.trim()}
-									Search
+									<MagnifyingGlassIcon size={16} weight="bold" /> Search
 								{:else}
 									<ArrowClockwiseIcon size={18} weight="bold" />
 								{/if}
@@ -387,15 +468,15 @@
 
 						<div class="message-list">
 							{#if messageLoading && messages.length === 0}
-								<div class="empty-list">Loading messages...</div>
+								<div class="empty-list"><Skeleton variant="row" count={6} /></div>
 							{:else if messages.length === 0}
 								<div class="empty-list">No messages found in {selectedMailboxLabel()}.</div>
 							{:else}
 								{#each messages as message (message.mailbox + ':' + message.id)}
 									<button class="message-row" class:active={selectedMessage?.id === message.id} type="button" onclick={() => openMessage(message)}>
 										<span class="message-topline"><strong>{message.subject || '(no subject)'}</strong><time>{formatDate(message.date)}</time></span>
-										<span class="sender">{message.from_addr || 'Unknown sender'}</span>
-										<span class="snippet">{message.snippet}</span>
+										<span class="sender"><UserCircleIcon size={14} weight="bold" /> {message.from_addr || 'Unknown sender'}</span>
+										<span class="snippet" use:revealMaskedChips>{@html maskHtml(escapeHtml(message.snippet ?? ''))}</span>
 									</button>
 								{/each}
 								{#if nextPageToken}
@@ -423,7 +504,7 @@
 										<div class="trash-scope-note">Gmail requires the full mail scope to permanently delete Trash. Enable Full Gmail access in Settings, add <code>https://mail.google.com/</code> in Google Cloud Data Access, then reconnect Gmail.</div>
 									{:else}
 										<button class="trash-action" type="button" onclick={trashSelectedMessage} disabled={messageAction}>
-											<TrashIcon size={15} weight="bold" /> {selectedMailbox === 'TRASH' ? 'Delete permanently' : 'Move to Trash'}
+											<TrashIcon size={15} weight="bold" /> {selectedMailbox === 'TRASH' ? 'Delete permanently from Trash' : 'Move selected email to Trash'}
 										</button>
 										{#if selectedMailbox !== 'TRASH'}<button class="secondary-preview-action" type="button" onclick={() => (ruleConfirm = !ruleConfirm)} disabled={messageAction}>Auto-trash sender</button>{/if}
 									{/if}
@@ -433,11 +514,11 @@
 										<p>Automatically move future emails from this sender to Trash?</p>
 										<div>
 											<button type="button" onclick={() => autoTrashSender(false)} disabled={messageAction}>Future only</button>
-											<button type="button" onclick={() => autoTrashSender(true)} disabled={messageAction}>Also existing</button>
+											<button type="button" onclick={() => autoTrashSender(true)} disabled={messageAction}>Also move existing to Trash</button>
 										</div>
 									</div>
 								{/if}
-								<pre>{selectedMessage.body || selectedMessage.snippet || 'No readable body found.'}</pre>
+								<pre use:revealMaskedChips>{@html maskHtml(escapeHtml(selectedMessage.body || selectedMessage.snippet || 'No readable body found.'))}</pre>
 							</div>
 						{:else}
 							<EnvelopeSimpleIcon size={22} weight="duotone" />
@@ -466,6 +547,8 @@
 		height: 100%;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		min-height: 0;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -477,8 +560,7 @@
 
 	.email-panel {
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
@@ -493,37 +575,10 @@
 		overflow: hidden;
 	}
 
-	.email-header {
-		flex: 0 0 auto;
-		padding: 1.35rem 1.5rem;
+	.eyebrow {
 		display: flex;
 		align-items: center;
-		gap: 1rem;
-		border-bottom: 1px solid var(--border);
-		background:
-			linear-gradient(135deg, var(--page-soft), transparent 70%),
-			var(--header-bg);
-	}
-
-	.title-mark {
-		width: 3.5rem;
-		height: 3.5rem;
-		display: grid;
-		place-items: center;
-		border-radius: 1.1rem;
-		background: var(--surface-glass);
-		border: 1px solid var(--page-border);
-		color: var(--page-accent);
-		box-shadow: 0 0 20px var(--page-soft);
-		flex: 0 0 auto;
-	}
-
-	.title-copy {
-		min-width: 0;
-		flex: 1;
-	}
-
-	.eyebrow {
+		gap: 0.35rem;
 		color: var(--page-accent);
 		font-size: 0.72rem;
 		font-weight: 800;
@@ -531,25 +586,11 @@
 		text-transform: uppercase;
 	}
 
-	h1,
 	h2 {
 		margin: 0;
 		letter-spacing: -0.03em;
-	}
-
-	h1 {
-		font-size: 1.65rem;
-		font-weight: 900;
-		line-height: 1.1;
-	}
-
-	h2 {
 		font-size: 1.15rem;
 		font-weight: 850;
-	}
-
-	.title-copy p:last-child {
-		margin: 0.15rem 0 0;
 	}
 
 	p {
@@ -615,11 +656,68 @@
 	}
 
 	.inbox-shell {
+		position: relative;
 		height: 100%;
 		min-height: 24rem;
 		display: grid;
 		grid-template-columns: 14rem minmax(20rem, 0.85fr) minmax(18rem, 1fr);
 		gap: 1rem;
+	}
+
+	.mobile-pane-switch {
+		display: none;
+		grid-column: 1 / -1;
+		gap: 0.5rem;
+		align-items: center;
+	}
+
+	.pane-tabs {
+		display: flex;
+		flex: 1;
+		gap: 0.4rem;
+		padding: 0.25rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-control, 0.8rem);
+		background: var(--surface-inset);
+	}
+
+	.pane-tabs button,
+	.mailbox-toggle {
+		border: none;
+		border-radius: var(--radius-sm, 6px);
+		background: transparent;
+		color: var(--text-muted);
+		font-weight: 700;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+
+	.pane-tabs button {
+		flex: 1;
+		padding: 0.5rem 0.4rem;
+	}
+
+	.pane-tabs button.active {
+		background: var(--accent-soft);
+		color: var(--text);
+	}
+
+	.mailbox-toggle {
+		padding: 0.6rem 0.8rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-control, 0.8rem);
+		background: var(--surface-card);
+		white-space: nowrap;
+	}
+
+	.mailbox-toggle.active {
+		background: var(--accent-soft);
+		color: var(--text);
+		border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+	}
+
+	.mailbox-backdrop {
+		display: none;
 	}
 
 	.inbox-rail,
@@ -644,7 +742,25 @@
 	}
 
 	.rail-heading {
+		flex: 0 0 auto;
 		margin-bottom: 1rem;
+	}
+
+	.drawer-close {
+		display: none;
+		position: absolute;
+		top: 0.6rem;
+		right: 0.6rem;
+		z-index: 1;
+		width: 2rem;
+		height: 2rem;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		background: var(--surface-card);
+		color: var(--text-muted);
+		cursor: pointer;
 	}
 
 	.rail-heading strong {
@@ -676,6 +792,9 @@
 	}
 
 	.mailbox-section > p {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
 		padding: 0 0.35rem;
 		color: var(--text-soft);
 		font-size: 0.68rem;
@@ -728,35 +847,17 @@
 		box-shadow: 0 0 1rem color-mix(in srgb, var(--accent) 20%, transparent);
 	}
 
-	.mailbox-glyph {
-		position: relative;
-		width: 0.95rem;
-		height: 0.75rem;
+	.mailbox-pill :global(.mailbox-icon) {
 		flex: 0 0 auto;
-		border-radius: 0.16rem;
-		background: color-mix(in srgb, var(--accent) 18%, var(--surface-glass));
-		border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+		color: var(--text-muted);
 	}
 
-	.mailbox-pill.folder .mailbox-glyph::before {
-		content: '';
-		position: absolute;
-		left: 0.08rem;
-		top: -0.28rem;
-		width: 0.48rem;
-		height: 0.28rem;
-		border-radius: 0.15rem 0.15rem 0 0;
-		background: color-mix(in srgb, var(--accent) 22%, var(--surface-glass));
-		border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
-		border-bottom: 0;
+	.mailbox-pill.active :global(.mailbox-icon) {
+		color: var(--page-accent, var(--accent));
 	}
 
-	.mailbox-pill.label .mailbox-glyph {
-		width: 0.78rem;
-		height: 0.78rem;
-		border-radius: 999px;
-		background: color-mix(in srgb, var(--success) 18%, var(--surface-glass));
-		border-color: color-mix(in srgb, var(--success) 30%, var(--border));
+	.mailbox-pill.label :global(.mailbox-icon) {
+		color: color-mix(in srgb, var(--success) 70%, var(--text-muted));
 	}
 
 	.mailbox-pill:hover,
@@ -764,11 +865,6 @@
 		border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
 		background: var(--surface-glass);
 		color: var(--text);
-	}
-
-	.mailbox-pill.muted {
-		color: var(--text-soft);
-		pointer-events: none;
 	}
 
 	.message-list-panel {
@@ -836,6 +932,7 @@
 	}
 
 	.message-list {
+		flex: 1 1 auto;
 		min-height: 0;
 		overflow: auto;
 	}
@@ -899,6 +996,12 @@
 	.message-topline time {
 		flex: 0 0 auto;
 		white-space: nowrap;
+	}
+
+	.sender :global(svg) {
+		vertical-align: -0.15em;
+		margin-right: 0.1rem;
+		color: var(--text-muted);
 	}
 
 	.empty-list {
@@ -1008,20 +1111,104 @@
 	}
 
 	@media (max-width: 980px) {
-		.email-page,
-		.email-panel {
-			height: auto;
-			max-height: none;
+		/* Keep the whole mail view a fixed height; the active pane scrolls inside. */
+		.email-page {
+			height: calc(100dvh - 5rem);
 		}
 
-		.email-header {
-			align-items: flex-start;
-			flex-wrap: wrap;
+		.email-panel {
+			flex: 1 1 auto;
+			min-height: 0;
 		}
 
 		.inbox-shell {
 			grid-template-columns: 1fr;
-			height: auto;
+			grid-template-rows: auto minmax(0, 1fr);
+			height: 100%;
+			min-height: 0;
+		}
+
+		/* Messages/Preview tabs swap the two main panes; mailboxes is a drawer. */
+		.mobile-pane-switch {
+			display: flex;
+		}
+
+		.inbox-rail {
+			display: none;
+		}
+
+		.inbox-shell[data-pane='messages'] .guard-card,
+		.inbox-shell[data-pane='preview'] .message-list-panel {
+			display: none;
+		}
+
+		/* Mailboxes drawer overlays only the email card, full card height. */
+		.inbox-shell.overlay-open .mailbox-backdrop {
+			display: block;
+			position: absolute;
+			inset: 0;
+			z-index: 15;
+			border: 0;
+			border-radius: 1.05rem;
+			background: rgba(3, 7, 18, 0.5);
+			backdrop-filter: blur(2px);
+			cursor: pointer;
+		}
+
+		.inbox-shell.overlay-open .inbox-rail {
+			display: flex;
+			flex-direction: column;
+			position: absolute;
+			top: 0;
+			bottom: 0;
+			left: 0;
+			width: min(19rem, 84%);
+			z-index: 20;
+			background: var(--panel-raised);
+			border: 1px solid var(--border-strong, var(--border));
+			border-radius: 1.05rem;
+			box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+			animation: mailbox-drawer-in 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+		}
+
+		.inbox-shell.overlay-open .inbox-rail .mailbox-list {
+			flex: 1 1 auto;
+			min-height: 0;
+			overflow-y: auto;
+		}
+
+		.drawer-close {
+			display: inline-flex;
+		}
+
+		@keyframes mailbox-drawer-in {
+			from { transform: translateX(-100%); opacity: 0.4; }
+			to { transform: translateX(0); opacity: 1; }
+		}
+	}
+
+	@media (max-width: 768px) {
+		.guard-card {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.message-list-meta {
+			flex-wrap: wrap;
+		}
+
+		.search-row {
+			flex-wrap: wrap;
+		}
+
+		.empty-card {
+			min-height: 12rem;
+		}
+
+		.mailbox-badge {
+			max-width: 3.5rem;
+			overflow: hidden;
+			text-overflow: ellipsis;
 		}
 	}
 </style>

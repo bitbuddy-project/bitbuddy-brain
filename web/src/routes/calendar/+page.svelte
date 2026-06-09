@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import CalendarBlankIcon from 'phosphor-svelte/lib/CalendarBlankIcon';
 	import CaretLeftIcon from 'phosphor-svelte/lib/CaretLeftIcon';
 	import CaretRightIcon from 'phosphor-svelte/lib/CaretRightIcon';
@@ -303,17 +305,8 @@
 </svelte:head>
 
 <div class="calendar-page">
-	<section class="calendar-panel" aria-label="Calendar">
-		<header class="calendar-header">
-			<div class="header-top">
-				<div class="title-mark" aria-hidden="true"><CalendarBlankIcon size={28} weight="duotone" /></div>
-				<div class="title-copy">
-					<p class="eyebrow">Schedule</p>
-					<h1>Calendar</h1>
-					<p class="subtitle">Your local-first schedule — plan events and stay ahead of reminders.</p>
-				</div>
-			</div>
-
+	<PageHeader icon={CalendarBlankIcon} eyebrow="Schedule" title="Calendar" subtitle="Your local-first schedule — plan events and stay ahead of reminders.">
+		{#snippet action()}
 			<div class="header-controls">
 				<div class="period-nav">
 					<button class="nav-btn" type="button" onclick={goToday}>Today</button>
@@ -333,11 +326,12 @@
 				</div>
 
 				<button class="add-btn" type="button" onclick={() => openCreate()}>
-					<PlusIcon size={16} weight="bold" /> Event
+					<PlusIcon size={16} weight="bold" /> <span class="add-btn-label">Event</span>
 				</button>
 			</div>
-		</header>
-
+		{/snippet}
+	</PageHeader>
+	<section class="calendar-panel" aria-label="Calendar">
 		<div class="calendar-content">
 			{#if error}
 				<div class="error-banner">{error}</div>
@@ -365,7 +359,7 @@
 			{/if}
 
 			{#if loading}
-				<div class="loading-state"><div class="spinner"></div><span>Loading your schedule…</span></div>
+				<div class="loading-state"><Skeleton variant="row" count={5} /></div>
 			{:else if view === 'month'}
 				<div class="month-grid">
 					{#each WEEKDAYS as wd}<div class="weekday-head">{wd}</div>{/each}
@@ -516,6 +510,8 @@
 		height: 100%;
 		margin: 0 auto;
 		display: flex;
+		flex-direction: column;
+		gap: 0.7rem;
 		min-height: 0;
 		animation: fade-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 	}
@@ -527,46 +523,17 @@
 
 	.calendar-panel {
 		width: 100%;
-		height: 100%;
-		max-height: calc(100vh - 3rem);
+		flex: 1 1 auto;
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
 	}
 
-	.calendar-header {
-		flex: 0 0 auto;
-		padding: 1.1rem 1.35rem;
-		display: flex;
-		flex-direction: column;
-		gap: 0.9rem;
-	}
-
-	.header-top { display: flex; align-items: center; gap: 1rem; }
-
-	.title-mark {
-		width: 3rem;
-		height: 3rem;
-		display: grid;
-		place-items: center;
-		border-radius: 1rem;
-		background: var(--surface-glass);
-		border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--card-border));
-		color: var(--accent);
-		flex: 0 0 auto;
-	}
-
-	.title-copy { margin-right: auto; }
-	.eyebrow { color: var(--accent); font-size: 0.7rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
-	h1 { font-size: 1.5rem; font-weight: 900; letter-spacing: -0.03em; line-height: 1.1; }
-	.subtitle { margin-top: 0.15rem; color: var(--text-soft); font-size: 0.86rem; }
-
-	.header-controls { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 0.7rem; }
-	.header-controls .add-btn { justify-self: end; }
+	.header-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
 
 	.period-nav { display: inline-flex; align-items: center; gap: 0.5rem; }
 	.period-stepper { display: inline-flex; align-items: center; gap: 0.4rem; }
-	.period-label { width: 12rem; text-align: center; font-weight: 800; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.period-label { min-width: 6.5rem; text-align: center; font-weight: 800; font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.nav-icon.invisible { visibility: hidden; }
 
 	.nav-btn {
@@ -758,8 +725,6 @@
 		border: 1px dashed var(--border-strong); border-radius: 1rem;
 	}
 	.loading-state { display: flex; align-items: center; gap: 0.65rem; padding: 1rem; color: var(--text-muted); }
-	.spinner { width: 1.05rem; height: 1.05rem; border-radius: 999px; border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent); border-top-color: var(--accent); animation: spin 0.7s linear infinite; }
-	@keyframes spin { to { transform: rotate(360deg); } }
 
 	/* Editor */
 	.event-form { display: grid; gap: 0.8rem; padding: 1.1rem; }
@@ -777,11 +742,22 @@
 		background: transparent;
 		box-shadow: none;
 	}
+	@media (max-width: 760px) {
+		/* Toolbar drops below the title; let its groups spread and the Today/Event
+		   buttons stay reachable. */
+		.header-controls { width: 100%; justify-content: space-between; }
+		.period-nav { flex: 1 1 auto; }
+		.period-label { flex: 1 1 auto; min-width: 0; }
+	}
+
 	@media (max-width: 520px) {
 		.event-form .field-row {
 			width: 100%;
 			grid-template-columns: 1fr;
 		}
+
+		.add-btn-label { display: none; }
+		.add-btn { padding: 0.5rem; }
 	}
 	.field.narrow { min-width: 0; }
 	.event-form input, .event-form textarea {
