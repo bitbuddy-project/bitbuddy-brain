@@ -5,6 +5,7 @@
 	import TrashIcon from 'phosphor-svelte/lib/TrashIcon';
 	import {
 		createSenderTrashRule,
+		emptyEmailTrash,
 		getEmailMailboxes,
 		getEmailMessages,
 		getEmailOverview,
@@ -29,9 +30,14 @@
 	let messages = $state<EmailMessage[]>([]);
 	let selectedMessage = $state<EmailMessage | null>(null);
 	let messageAction = $state(false);
+	let loadingMore = $state(false);
+	let emptyTrashConfirm = $state(false);
 	let ruleConfirm = $state(false);
 	let actionStatus = $state('');
+	let nextPageToken = $state('');
+	let resultSizeEstimate = $state<number | null>(null);
 	let messageRequestId = 0;
+	const pageSize = 50;
 
 	const mailboxDisplayNames: Record<string, string> = {
 		INBOX: 'Inbox',
@@ -89,35 +95,50 @@
 		}
 	}
 
-	async function loadMessages(options: { clear?: boolean } = {}) {
+	async function loadMessages(options: { clear?: boolean; append?: boolean } = {}) {
 		const requestId = ++messageRequestId;
 		const mailbox = selectedMailbox;
 		const searchQuery = query.trim();
-		messageLoading = true;
+		const pageToken = options.append ? nextPageToken : '';
+		messageLoading = !options.append;
+		loadingMore = Boolean(options.append);
 		if (options.clear) {
 			messages = [];
 			selectedMessage = null;
+			nextPageToken = '';
+			resultSizeEstimate = null;
 		}
 		try {
-			const nextMessages = searchQuery
-				? await searchEmailMessages(searchQuery, mailbox, 25)
-				: await getEmailMessages(mailbox, 25);
+			const page = searchQuery
+				? await searchEmailMessages(searchQuery, mailbox, pageSize, pageToken)
+				: await getEmailMessages(mailbox, pageSize, pageToken);
 			if (requestId !== messageRequestId) return;
-			messages = nextMessages;
-			selectedMessage = null;
+			messages = options.append ? [...messages, ...page.messages] : page.messages;
+			nextPageToken = page.next_page_token || '';
+			resultSizeEstimate = page.result_size_estimate ?? selectedMailboxCount();
+			if (!options.append) selectedMessage = null;
 			error = '';
 		} catch (caught) {
 			if (requestId !== messageRequestId) return;
 			error = caught instanceof Error ? caught.message : 'Could not load inbox messages.';
 		} finally {
-			if (requestId === messageRequestId) messageLoading = false;
+			if (requestId === messageRequestId) {
+				messageLoading = false;
+				loadingMore = false;
+			}
 		}
+	}
+
+	async function loadMoreMessages() {
+		if (!nextPageToken || messageLoading || loadingMore) return;
+		await loadMessages({ append: true });
 	}
 
 	async function chooseMailbox(mailbox: string) {
 		if (mailbox === selectedMailbox && !query.trim()) return;
 		selectedMailbox = mailbox;
 		query = '';
+		emptyTrashConfirm = false;
 		await loadMessages({ clear: true });
 	}
 
@@ -151,6 +172,32 @@
 		}
 	}
 
+	async function emptyTrash() {
+		if (selectedMailbox !== 'TRASH' || messageAction) return;
+		if (!emptyTrashConfirm) {
+			emptyTrashConfirm = true;
+			actionStatus = 'Click again to permanently delete every message in Trash.';
+			return;
+		}
+		messageAction = true;
+		try {
+			const result = await emptyEmailTrash();
+			actionStatus = `Emptied Trash. Permanently deleted ${result.deleted} message${result.deleted === 1 ? '' : 's'}.`;
+			messages = [];
+			selectedMessage = null;
+			nextPageToken = '';
+			resultSizeEstimate = 0;
+			emptyTrashConfirm = false;
+			mailboxes = mailboxes.map((mailbox) => mailbox.name === 'TRASH' ? { ...mailbox, messages_total: 0, messages_unread: 0, threads_total: 0, threads_unread: 0 } : mailbox);
+			void getEmailMailboxes().then((next) => (mailboxes = next)).catch(() => undefined);
+			error = '';
+		} catch (caught) {
+			error = caught instanceof Error ? caught.message : 'Could not empty Trash.';
+		} finally {
+			messageAction = false;
+		}
+	}
+
 	async function autoTrashSender(applyExisting: boolean) {
 		if (!selectedMessage || messageAction) return;
 		messageAction = true;
@@ -178,6 +225,42 @@
 	function selectedMailboxLabel() {
 		const mailbox = mailboxes.find((item) => item.name === selectedMailbox);
 		return mailbox ? mailboxLabel(mailbox) : mailboxDisplayNames[selectedMailbox] || selectedMailbox || 'mail';
+	}
+
+	function selectedMailboxCount() {
+		const mailbox = mailboxes.find((item) => item.name === selectedMailbox);
+		return mailbox?.messages_total ?? null;
+	}
+
+	function mailboxBadgeValue(mailbox: EmailMailbox) {
+		const unread = mailbox.messages_unread ?? 0;
+		if (unread > 0) return unread;
+		return mailbox.messages_total ?? null;
+	}
+
+	function mailboxBadgeLabel(mailbox: EmailMailbox) {
+		const value = mailboxBadgeValue(mailbox);
+		return value === null ? '' : compactCount(value);
+	}
+
+	function mailboxBadgeKind(mailbox: EmailMailbox) {
+		return (mailbox.messages_unread ?? 0) > 0 ? 'unread' : 'total';
+	}
+
+	function compactCount(value: number) {
+		if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}m`;
+		if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+		return String(value);
+	}
+
+	function messageCountLabel() {
+		const total = resultSizeEstimate ?? selectedMailboxCount();
+		if (total === null || total === undefined) return `Showing ${messages.length}`;
+		return `Showing ${messages.length} of ${compactCount(total)}`;
+	}
+
+	function showEmptyTrashButton() {
+		return selectedMailbox === 'TRASH' && (messages.length > 0 || (selectedMailboxCount() ?? 0) > 0);
 	}
 
 	function formatDate(value: string) {
@@ -245,7 +328,10 @@
 									{#each primaryMailboxes as mailbox (mailbox.name)}
 										<button class="mailbox-pill folder" class:active={selectedMailbox === mailbox.name} type="button" onclick={() => chooseMailbox(mailbox.name)}>
 											<span class="mailbox-glyph" aria-hidden="true"></span>
-											<span>{mailboxLabel(mailbox)}</span>
+											<span class="mailbox-name">{mailboxLabel(mailbox)}</span>
+											{#if mailboxBadgeValue(mailbox) !== null}
+												<span class="mailbox-badge" class:unread={mailboxBadgeKind(mailbox) === 'unread'}>{mailboxBadgeLabel(mailbox)}</span>
+											{/if}
 										</button>
 									{/each}
 								</div>
@@ -255,7 +341,10 @@
 										{#each labelMailboxes as mailbox (mailbox.name)}
 											<button class="mailbox-pill label" class:active={selectedMailbox === mailbox.name} type="button" onclick={() => chooseMailbox(mailbox.name)}>
 												<span class="mailbox-glyph" aria-hidden="true"></span>
-												<span>{mailboxLabel(mailbox)}</span>
+												<span class="mailbox-name">{mailboxLabel(mailbox)}</span>
+												{#if mailboxBadgeValue(mailbox) !== null}
+													<span class="mailbox-badge" class:unread={mailboxBadgeKind(mailbox) === 'unread'}>{mailboxBadgeLabel(mailbox)}</span>
+												{/if}
 											</button>
 										{/each}
 									</div>
@@ -266,6 +355,11 @@
 					<section class="message-list-panel" aria-label="Messages">
 						<form class="search-row" onsubmit={(event) => { event.preventDefault(); void loadMessages(); }}>
 							<input bind:value={query} placeholder={`Search ${selectedMailboxLabel()}...`} />
+							{#if showEmptyTrashButton()}
+								<button class="empty-trash-action" class:confirm={emptyTrashConfirm} type="button" onclick={emptyTrash} disabled={messageAction || messageLoading || loadingMore}>
+									{emptyTrashConfirm ? 'Confirm empty' : 'Empty Trash'}
+								</button>
+							{/if}
 							<button type="submit" class:icon-only={!query.trim()} aria-label={query.trim() ? 'Search email' : 'Refresh inbox'} disabled={messageLoading}>
 								{#if query.trim()}
 									Search
@@ -274,6 +368,12 @@
 								{/if}
 							</button>
 						</form>
+						{#if !messageLoading || messages.length > 0}
+							<div class="message-list-meta">
+								<span>{messageCountLabel()}</span>
+								{#if nextPageToken}<span>More available</span>{/if}
+							</div>
+						{/if}
 
 						<div class="message-list">
 							{#if messageLoading && messages.length === 0}
@@ -288,6 +388,13 @@
 										<span class="snippet">{message.snippet}</span>
 									</button>
 								{/each}
+								{#if nextPageToken}
+									<div class="load-more-wrap">
+										<button class="load-more" type="button" onclick={loadMoreMessages} disabled={loadingMore || messageLoading}>
+											{loadingMore ? 'Loading more...' : 'Load more'}
+										</button>
+									</div>
+								{/if}
 							{/if}
 						</div>
 					</section>
@@ -577,11 +684,34 @@
 		text-align: left;
 	}
 
-	.mailbox-pill span:last-child {
+	.mailbox-name {
+		flex: 1;
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.mailbox-badge {
+		flex: 0 0 auto;
+		min-width: 1.55rem;
+		max-width: 4.5rem;
+		padding: 0.16rem 0.42rem;
+		border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--surface-inset) 78%, transparent);
+		color: var(--text-soft);
+		font-size: 0.68rem;
+		font-weight: 900;
+		line-height: 1;
+		text-align: center;
+	}
+
+	.mailbox-badge.unread {
+		border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+		background: color-mix(in srgb, var(--accent) 82%, #ffffff 0%);
+		color: var(--on-accent);
+		box-shadow: 0 0 1rem color-mix(in srgb, var(--accent) 20%, transparent);
 	}
 
 	.mailbox-glyph {
@@ -661,9 +791,34 @@
 		padding: 0.65rem 0.8rem;
 	}
 
+	.search-row .empty-trash-action {
+		border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border));
+		background: color-mix(in srgb, var(--danger) 18%, var(--surface-inset));
+		color: color-mix(in srgb, var(--danger) 76%, var(--text));
+		white-space: nowrap;
+	}
+
+	.search-row .empty-trash-action.confirm {
+		background: var(--danger);
+		color: #fff;
+	}
+
 	.search-row button.icon-only {
 		aspect-ratio: 1;
 		padding: 0.65rem;
+	}
+
+	.message-list-meta {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		padding: 0.48rem 0.85rem;
+		border-bottom: 1px solid color-mix(in srgb, var(--border) 66%, transparent);
+		background: color-mix(in srgb, var(--surface-inset) 24%, transparent);
+		color: var(--text-soft);
+		font-size: 0.72rem;
+		font-weight: 750;
 	}
 
 	.message-list {
@@ -685,6 +840,26 @@
 	.message-row:hover,
 	.message-row.active {
 		background: color-mix(in srgb, var(--accent-soft) 38%, transparent);
+	}
+
+	.load-more-wrap {
+		padding: 0.9rem;
+		display: grid;
+		place-items: center;
+	}
+
+	.load-more {
+		border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--accent-soft) 34%, transparent);
+		color: var(--text);
+		font-weight: 850;
+		padding: 0.58rem 0.95rem;
+	}
+
+	.load-more:disabled {
+		opacity: 0.6;
+		cursor: wait;
 	}
 
 	.message-topline {

@@ -48,9 +48,9 @@ from .calendar.providers import EventDraft, EventPatch
 from .calendar.secrets import get_credentials, put_credentials, delete_credentials
 from .calendar.service import calendar_overview, create_event as calendar_create_event, delete_event as calendar_delete_event, modify_event as calendar_modify_event, user_timezone, view_events as calendar_view_events
 from .calendar.store import calendar_to_json, ensure_default_calendar, event_to_json, list_calendars as list_calendars_store
-from .email.models import mailbox_to_json, message_to_json, rule_to_json
+from .email.models import mailbox_to_json, message_page_to_json, message_to_json, rule_to_json
 from .email.permissions import EMAIL_SCOPES, EmailPermissionRequired, all_permissions as email_permissions, set_permission as set_email_permission
-from .email.service import create_sender_trash_rule as email_create_sender_trash_rule, delete_rule as email_delete_rule, email_account_id, email_overview, list_mailboxes as email_list_mailboxes, list_messages as email_list_messages, list_rules as email_list_rules, read_message as email_read_message, search_messages as email_search_messages, trash_message as email_trash_message
+from .email.service import create_sender_trash_rule as email_create_sender_trash_rule, delete_rule as email_delete_rule, email_account_id, email_overview, empty_trash as email_empty_trash, list_mailboxes as email_list_mailboxes, list_messages_page as email_list_messages_page, list_rules as email_list_rules, read_message as email_read_message, search_messages_page as email_search_messages_page, trash_message as email_trash_message
 from .continuity import record_continuity_event
 from .personality import load_selected_personality, selected_personality_to_legacy_dict
 from .paths import APP_DIR, CONFIG_PATH, PERSONALITIES_DIR, PERSONALITY_PATH
@@ -284,32 +284,34 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
             if path == "/email/messages":
                 params = parse_qs(urlparse(self.path).query)
                 mailbox = params.get("mailbox", [""])[0]
+                page_token = params.get("page_token", [""])[0]
                 try:
-                    limit = int(params.get("limit", ["25"])[0])
+                    limit = int(params.get("limit", ["50"])[0])
                 except ValueError:
-                    limit = 25
+                    limit = 50
                 try:
-                    messages = email_list_messages(mailbox=mailbox, limit=limit, enforce=False)
+                    page = email_list_messages_page(mailbox=mailbox, limit=limit, page_token=page_token, enforce=False)
                 except ValueError as error:
                     self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
                     return
-                self.send_json({"messages": [message_to_json(message) for message in messages]})
+                self.send_json(message_page_to_json(page))
                 return
 
             if path == "/email/search":
                 params = parse_qs(urlparse(self.path).query)
                 query = params.get("q", [""])[0]
                 mailbox = params.get("mailbox", [""])[0]
+                page_token = params.get("page_token", [""])[0]
                 try:
-                    limit = int(params.get("limit", ["25"])[0])
+                    limit = int(params.get("limit", ["50"])[0])
                 except ValueError:
-                    limit = 25
+                    limit = 50
                 try:
-                    messages = email_search_messages(query=query, mailbox=mailbox, limit=limit, enforce=False)
+                    page = email_search_messages_page(query=query, mailbox=mailbox, limit=limit, page_token=page_token, enforce=False)
                 except ValueError as error:
                     self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
                     return
-                self.send_json({"messages": [message_to_json(message) for message in messages]})
+                self.send_json(message_page_to_json(page))
                 return
 
             if path == "/email/message":
@@ -662,6 +664,15 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
                     return
                 self.send_json({"message": message_to_json(message), "trashed": True})
+                return
+
+            if path == "/email/trash/empty":
+                try:
+                    deleted = email_empty_trash(enforce=True)
+                except (EmailPermissionRequired, ValueError) as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"emptied": True, "deleted": deleted})
                 return
 
             if path == "/email/rules/sender-trash":

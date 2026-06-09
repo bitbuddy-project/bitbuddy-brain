@@ -909,6 +909,16 @@ export type EmailMailbox = {
 	name: string;
 	flags: string[];
 	delimiter: string;
+	messages_total?: number | null;
+	messages_unread?: number | null;
+	threads_total?: number | null;
+	threads_unread?: number | null;
+};
+
+export type EmailMessagePage = {
+	messages: EmailMessage[];
+	next_page_token: string;
+	result_size_estimate?: number | null;
 };
 
 export type EmailMessage = {
@@ -1123,23 +1133,25 @@ export async function getEmailMailboxes(): Promise<EmailMailbox[]> {
 	return data.mailboxes ?? [];
 }
 
-export async function getEmailMessages(mailbox = '', limit = 25): Promise<EmailMessage[]> {
+export async function getEmailMessages(mailbox = '', limit = 50, pageToken = ''): Promise<EmailMessagePage> {
 	const params = new URLSearchParams();
 	if (mailbox) params.set('mailbox', mailbox);
 	params.set('limit', String(limit));
+	if (pageToken) params.set('page_token', pageToken);
 	const response = await fetch(`${BITBUDDY_API}/email/messages?${params}`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not load email messages.');
-	return data.messages ?? [];
+	return { messages: data.messages ?? [], next_page_token: data.next_page_token ?? '', result_size_estimate: data.result_size_estimate ?? null };
 }
 
-export async function searchEmailMessages(query: string, mailbox = '', limit = 25): Promise<EmailMessage[]> {
+export async function searchEmailMessages(query: string, mailbox = '', limit = 50, pageToken = ''): Promise<EmailMessagePage> {
 	const params = new URLSearchParams({ q: query, limit: String(limit) });
 	if (mailbox) params.set('mailbox', mailbox);
+	if (pageToken) params.set('page_token', pageToken);
 	const response = await fetch(`${BITBUDDY_API}/email/search?${params}`);
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not search email messages.');
-	return data.messages ?? [];
+	return { messages: data.messages ?? [], next_page_token: data.next_page_token ?? '', result_size_estimate: data.result_size_estimate ?? null };
 }
 
 export async function readEmailMessage(id: string, mailbox = ''): Promise<EmailMessage> {
@@ -1160,6 +1172,13 @@ export async function trashEmailMessage(id: string, mailbox = ''): Promise<Email
 	const data = await response.json().catch(() => ({}));
 	if (!response.ok) throw new Error(data.error ?? 'Could not move email to Trash.');
 	return data.message;
+}
+
+export async function emptyEmailTrash(): Promise<{ emptied: boolean; deleted: number }> {
+	const response = await fetch(`${BITBUDDY_API}/email/trash/empty`, { method: 'POST' });
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not empty Trash.');
+	return { emptied: Boolean(data.emptied), deleted: Number(data.deleted ?? 0) };
 }
 
 export async function getEmailRules(): Promise<EmailRule[]> {

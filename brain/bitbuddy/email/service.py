@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from ..config import EmailConfig, load_config
 from ..calendar.secrets import get_credentials
-from .models import EmailMessage, EmailRule, Mailbox
+from .models import EmailMessage, EmailMessagePage, EmailRule, Mailbox
 from .permissions import EmailPermissionRequired, account_id, all_permissions, require_permission
 from .providers import get_provider
 from .store import delete_rule as delete_rule_store, list_rules as list_rules_store, upsert_rule
@@ -45,6 +45,10 @@ def list_mailboxes(*, enforce: bool = True) -> list[Mailbox]:
 
 
 def list_messages(*, mailbox: str = "", limit: int = 20, enforce: bool = True) -> list[EmailMessage]:
+    return list_messages_page(mailbox=mailbox, limit=limit, enforce=enforce).messages
+
+
+def list_messages_page(*, mailbox: str = "", limit: int = 20, page_token: str = "", enforce: bool = True) -> EmailMessagePage:
     config = require_enabled_config()
     if enforce:
         require_permission(email_account_id(config), "read")
@@ -55,15 +59,26 @@ def list_messages(*, mailbox: str = "", limit: int = 20, enforce: bool = True) -
             apply_trash_rules(config=config, provider=provider)
         except ValueError:
             pass
-    return provider.list_messages(mailbox=clean_mailbox, limit=max(1, min(100, limit)))
+    clean_limit = clamp_email_limit(limit)
+    if hasattr(provider, "list_messages_page"):
+        return provider.list_messages_page(mailbox=clean_mailbox, limit=clean_limit, page_token=page_token.strip())
+    return EmailMessagePage(messages=provider.list_messages(mailbox=clean_mailbox, limit=clean_limit))
 
 
 def search_messages(*, query: str, mailbox: str = "", limit: int = 20, enforce: bool = True) -> list[EmailMessage]:
+    return search_messages_page(query=query, mailbox=mailbox, limit=limit, enforce=enforce).messages
+
+
+def search_messages_page(*, query: str, mailbox: str = "", limit: int = 20, page_token: str = "", enforce: bool = True) -> EmailMessagePage:
     config = require_enabled_config()
     if enforce:
         require_permission(email_account_id(config), "search")
     clean_mailbox = mailbox.strip() or config.default_mailbox or "INBOX"
-    return get_provider(config).search_messages(query=query, mailbox=clean_mailbox, limit=max(1, min(100, limit)))
+    provider = get_provider(config)
+    clean_limit = clamp_email_limit(limit)
+    if hasattr(provider, "search_messages_page"):
+        return provider.search_messages_page(query=query, mailbox=clean_mailbox, limit=clean_limit, page_token=page_token.strip())
+    return EmailMessagePage(messages=provider.search_messages(query=query, mailbox=clean_mailbox, limit=clean_limit))
 
 
 def read_message(*, message_id: str, mailbox: str = "", enforce: bool = True) -> EmailMessage:
@@ -86,6 +101,16 @@ def trash_message(*, message_id: str, mailbox: str = "", enforce: bool = True) -
     if not clean_id:
         raise ValueError("message_id is required.")
     return get_provider(config).trash_message(mailbox=clean_mailbox, message_id=clean_id)
+
+
+def empty_trash(*, enforce: bool = True) -> int:
+    config = require_enabled_config()
+    if enforce:
+        require_permission(email_account_id(config), "trash")
+    provider = get_provider(config)
+    if not hasattr(provider, "empty_trash"):
+        raise ValueError("This email provider does not support emptying Trash.")
+    return int(provider.empty_trash())
 
 
 def list_rules() -> list[EmailRule]:
@@ -135,6 +160,10 @@ def apply_trash_rules(*, config: EmailConfig | None = None, provider: object | N
 
 def should_auto_apply_rules(mailbox: str) -> bool:
     return (mailbox or "INBOX").strip().casefold() in {"inbox", "inbox".casefold()}
+
+
+def clamp_email_limit(limit: int) -> int:
+    return max(1, min(100, limit))
 
 
 def rule_matches_message(rule: EmailRule, message: EmailMessage) -> bool:

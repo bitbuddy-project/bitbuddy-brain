@@ -11,7 +11,7 @@ from typing import Any
 
 from ...calendar.secrets import get_credentials, put_credentials
 from ...config import EmailConfig
-from ..models import EmailMessage, Mailbox
+from ..models import EmailMessage, EmailMessagePage, Mailbox
 
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -47,28 +47,67 @@ class GmailProvider:
         if not isinstance(labels, list):
             return []
         mailboxes: list[Mailbox] = []
-        for item in labels:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(labels)))) as executor:
+            detailed_labels = list(executor.map(self._label_with_counts, labels))
+        for item in detailed_labels:
             if not isinstance(item, dict):
                 continue
             label_id = str(item.get("id") or "")
             name = str(item.get("name") or label_id)
             if label_id:
-                mailboxes.append(Mailbox(name=label_id, flags=[name], delimiter="/"))
+                mailboxes.append(
+                    Mailbox(
+                        name=label_id,
+                        flags=[name],
+                        delimiter="/",
+                        messages_total=int_or_none(item.get("messagesTotal")),
+                        messages_unread=int_or_none(item.get("messagesUnread")),
+                        threads_total=int_or_none(item.get("threadsTotal")),
+                        threads_unread=int_or_none(item.get("threadsUnread")),
+                    )
+                )
         return mailboxes
 
+    def _label_with_counts(self, item: object) -> dict[str, Any]:
+        if not isinstance(item, dict):
+            return {}
+        if any(key in item for key in ("messagesTotal", "messagesUnread", "threadsTotal", "threadsUnread")):
+            return item
+        label_id = str(item.get("id") or "")
+        if not label_id:
+            return item
+        try:
+            detail = self._request("GET", f"/users/me/labels/{urllib.parse.quote(label_id)}")
+        except ValueError:
+            return item
+        return {**item, **detail} if isinstance(detail, dict) else item
+
     def list_messages(self, *, mailbox: str, limit: int = 20) -> list[EmailMessage]:
+        return self.list_messages_page(mailbox=mailbox, limit=limit).messages
+
+
+    def list_messages_page(self, *, mailbox: str, limit: int = 20, page_token: str = "") -> EmailMessagePage:
         label = normalize_gmail_label(mailbox or self.config.default_mailbox or "INBOX")
-        query = urllib.parse.urlencode({"maxResults": max(1, min(100, limit)), "labelIds": label})
+        params: dict[str, object] = {"maxResults": max(1, min(100, limit)), "labelIds": label}
+        if page_token:
+            params["pageToken"] = page_token
+        query = urllib.parse.urlencode(params)
         data = self._request("GET", f"/users/me/messages?{query}")
-        return self._messages_from_list(data, mailbox=label)
+        return self._message_page_from_list(data, mailbox=label)
 
     def search_messages(self, *, query: str, mailbox: str, limit: int = 20) -> list[EmailMessage]:
+        return self.search_messages_page(query=query, mailbox=mailbox, limit=limit).messages
+
+
+    def search_messages_page(self, *, query: str, mailbox: str, limit: int = 20, page_token: str = "") -> EmailMessagePage:
         params: dict[str, object] = {"maxResults": max(1, min(100, limit)), "q": query.strip()}
         label = normalize_gmail_label(mailbox or self.config.default_mailbox or "INBOX")
         if label:
             params["labelIds"] = label
+        if page_token:
+            params["pageToken"] = page_token
         data = self._request("GET", f"/users/me/messages?{urllib.parse.urlencode(params)}")
-        return self._messages_from_list(data, mailbox=label)
+        return self._message_page_from_list(data, mailbox=label)
 
     def read_message(self, *, mailbox: str, message_id: str) -> EmailMessage:
         if not message_id:
@@ -90,10 +129,36 @@ class GmailProvider:
             raise
         return gmail_message_to_email(data, mailbox=label, include_body=False)
 
+    def empty_trash(self) -> int:
+        message_ids: list[str] = []
+        page_token = ""
+        while True:
+            params: dict[str, object] = {"maxResults": 500, "labelIds": "TRASH"}
+            if page_token:
+                params["pageToken"] = page_token
+            data = self._request("GET", f"/users/me/messages?{urllib.parse.urlencode(params)}")
+            message_ids.extend(gmail_message_ids(data))
+            page_token = str(data.get("nextPageToken") or "") if isinstance(data, dict) else ""
+            if not page_token:
+                break
+        for chunk in chunks(message_ids, 1000):
+            try:
+                self._request("POST", "/users/me/messages/batchDelete", {"ids": chunk})
+            except ValueError as error:
+                message = str(error)
+                if "insufficientPermissions" in message or "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in message:
+                    raise ValueError("Gmail empty Trash requires reconnecting Gmail in Settings to grant the Gmail modify scope.") from error
+                raise
+        return len(message_ids)
+
     def _messages_from_list(self, data: dict[str, Any], *, mailbox: str) -> list[EmailMessage]:
+        return self._message_page_from_list(data, mailbox=mailbox).messages
+
+
+    def _message_page_from_list(self, data: dict[str, Any], *, mailbox: str) -> EmailMessagePage:
         messages = data.get("messages") if isinstance(data, dict) else []
         if not isinstance(messages, list):
-            return []
+            return EmailMessagePage(messages=[], next_page_token="", result_size_estimate=int_or_none(data.get("resultSizeEstimate") if isinstance(data, dict) else None))
         message_ids: list[str] = []
         for item in messages:
             if not isinstance(item, dict):
@@ -103,10 +168,11 @@ class GmailProvider:
                 continue
             message_ids.append(message_id)
         if not message_ids:
-            return []
+            return EmailMessagePage(messages=[], next_page_token=str(data.get("nextPageToken") or ""), result_size_estimate=int_or_none(data.get("resultSizeEstimate")))
         worker_count = min(8, len(message_ids))
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
-            return list(executor.map(lambda message_id: self._fetch_message_metadata(message_id, mailbox=mailbox), message_ids))
+            fetched = list(executor.map(lambda message_id: self._fetch_message_metadata(message_id, mailbox=mailbox), message_ids))
+        return EmailMessagePage(messages=fetched, next_page_token=str(data.get("nextPageToken") or ""), result_size_estimate=int_or_none(data.get("resultSizeEstimate")))
 
     def _fetch_message_metadata(self, message_id: str, *, mailbox: str) -> EmailMessage:
         message = self._request("GET", f"/users/me/messages/{urllib.parse.quote(message_id)}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Date")
@@ -137,6 +203,29 @@ def normalize_gmail_label(value: str) -> str:
         return "INBOX"
     normalized = " ".join(raw.replace("_", " ").replace("-", " ").split()).casefold()
     return GMAIL_SYSTEM_LABEL_ALIASES.get(normalized, raw)
+
+
+def int_or_none(value: object) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def gmail_message_ids(data: dict[str, Any]) -> list[str]:
+    messages = data.get("messages") if isinstance(data, dict) else []
+    if not isinstance(messages, list):
+        return []
+    ids: list[str] = []
+    for item in messages:
+        if isinstance(item, dict) and item.get("id"):
+            ids.append(str(item.get("id") or ""))
+    return ids
+
+
+def chunks(values: list[str], size: int) -> list[list[str]]:
+    clean_size = max(1, size)
+    return [values[index:index + clean_size] for index in range(0, len(values), clean_size)]
 
 
 def gmail_access_token(config: EmailConfig) -> str:

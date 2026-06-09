@@ -18,7 +18,8 @@ from bitbuddy.config import parse_email_config, update_email_config, write_confi
 from bitbuddy.http_api import GMAIL_AUTH_FLOWS, exchange_gmail_code, start_gmail_login  # noqa: E402
 from bitbuddy.calendar.secrets import put_credentials  # noqa: E402
 from bitbuddy.email.permissions import EmailPermissionRequired, all_permissions, permission_state, require_permission, set_permission  # noqa: E402
-from bitbuddy.email.providers.gmail import gmail_access_token, gmail_message_to_email, normalize_gmail_label  # noqa: E402
+from bitbuddy.email.models import mailbox_to_json, message_page_to_json  # noqa: E402
+from bitbuddy.email.providers.gmail import GmailProvider, gmail_access_token, gmail_message_to_email, normalize_gmail_label  # noqa: E402
 from bitbuddy.email.store import ensure_email_database, list_rules, upsert_rule  # noqa: E402
 from bitbuddy.paths import GLOBAL_DB_PATH  # noqa: E402
 from bitbuddy.prompt_builder import email_capability_context  # noqa: E402
@@ -313,6 +314,97 @@ class EmailTest(unittest.TestCase):
         self.assertEqual(normalize_gmail_label("drafts"), "DRAFT")
         self.assertEqual(normalize_gmail_label("Sent Mail"), "SENT")
         self.assertEqual(normalize_gmail_label("Label_5"), "Label_5")
+
+    def test_gmail_mailbox_counts_are_exposed(self) -> None:
+        config = parse_email_config({"provider": "gmail", "gmail_client_id": "client", "gmail_token_ref": "tokens"})
+        provider = GmailProvider(config)
+        provider._request = lambda _method, _path, _payload=None: {  # type: ignore[method-assign]
+            "labels": [
+                {
+                    "id": "INBOX",
+                    "name": "Inbox",
+                    "messagesTotal": 42,
+                    "messagesUnread": 7,
+                    "threadsTotal": 30,
+                    "threadsUnread": 5,
+                }
+            ]
+        }
+
+        mailbox = provider.list_mailboxes()[0]
+        data = mailbox_to_json(mailbox)
+
+        self.assertEqual(data["messages_total"], 42)
+        self.assertEqual(data["messages_unread"], 7)
+        self.assertEqual(data["threads_total"], 30)
+        self.assertEqual(data["threads_unread"], 5)
+
+    def test_gmail_mailbox_counts_fall_back_to_label_detail(self) -> None:
+        config = parse_email_config({"provider": "gmail", "gmail_client_id": "client", "gmail_token_ref": "tokens"})
+        provider = GmailProvider(config)
+
+        def fake_request(_method: str, path: str, _payload: object = None) -> dict[str, object]:
+            if path == "/users/me/labels":
+                return {"labels": [{"id": "INBOX", "name": "Inbox"}]}
+            self.assertEqual(path, "/users/me/labels/INBOX")
+            return {"id": "INBOX", "messagesTotal": 42, "messagesUnread": 7}
+
+        provider._request = fake_request  # type: ignore[method-assign]
+
+        mailbox = provider.list_mailboxes()[0]
+
+        self.assertEqual(mailbox.messages_total, 42)
+        self.assertEqual(mailbox.messages_unread, 7)
+
+    def test_gmail_message_pages_use_next_page_token(self) -> None:
+        config = parse_email_config({"provider": "gmail", "gmail_client_id": "client", "gmail_token_ref": "tokens"})
+        provider = GmailProvider(config)
+        paths: list[str] = []
+
+        def fake_request(_method: str, path: str, _payload: object = None) -> dict[str, object]:
+            paths.append(path)
+            if path.startswith("/users/me/messages?"):
+                return {"messages": [{"id": "msg-1"}], "nextPageToken": "next-token", "resultSizeEstimate": 123}
+            return {
+                "id": "msg-1",
+                "labelIds": ["INBOX"],
+                "snippet": "Snippet",
+                "payload": {"headers": [{"name": "Subject", "value": "Hello"}]},
+            }
+
+        provider._request = fake_request  # type: ignore[method-assign]
+
+        page = provider.list_messages_page(mailbox="INBOX", limit=50, page_token="page-2")
+        data = message_page_to_json(page)
+
+        self.assertIn("maxResults=50", paths[0])
+        self.assertIn("labelIds=INBOX", paths[0])
+        self.assertIn("pageToken=page-2", paths[0])
+        self.assertEqual(data["next_page_token"], "next-token")
+        self.assertEqual(data["result_size_estimate"], 123)
+        self.assertEqual(len(data["messages"]), 1)
+
+    def test_gmail_empty_trash_deletes_all_paged_trash_ids(self) -> None:
+        config = parse_email_config({"provider": "gmail", "gmail_client_id": "client", "gmail_token_ref": "tokens"})
+        provider = GmailProvider(config)
+        deleted_batches: list[list[str]] = []
+
+        def fake_request(_method: str, path: str, payload: object = None) -> dict[str, object]:
+            if path == "/users/me/messages?maxResults=500&labelIds=TRASH":
+                return {"messages": [{"id": "msg-1"}], "nextPageToken": "page-2"}
+            if path == "/users/me/messages?maxResults=500&labelIds=TRASH&pageToken=page-2":
+                return {"messages": [{"id": "msg-2"}]}
+            self.assertEqual(path, "/users/me/messages/batchDelete")
+            self.assertIsInstance(payload, dict)
+            deleted_batches.append(list(payload.get("ids", [])))  # type: ignore[union-attr]
+            return {}
+
+        provider._request = fake_request  # type: ignore[method-assign]
+
+        deleted = provider.empty_trash()
+
+        self.assertEqual(deleted, 2)
+        self.assertEqual(deleted_batches, [["msg-1", "msg-2"]])
 
     def test_thinking_cleanup_strips_system_reminders(self) -> None:
         clean = clean_model_thinking_text("before\n<system-reminder>secret\nmore</system-reminder>\nafter")

@@ -8,7 +8,7 @@ from email.message import Message
 
 from ...calendar.secrets import get_credentials
 from ...config import EmailConfig
-from ..models import EmailMessage, Mailbox
+from ..models import EmailMessage, EmailMessagePage, Mailbox
 
 
 class ImapProvider:
@@ -23,29 +23,54 @@ class ImapProvider:
             return [box for row in rows or [] if (box := parse_mailbox(row)) is not None]
 
     def list_messages(self, *, mailbox: str, limit: int = 20) -> list[EmailMessage]:
+        return self.list_messages_page(mailbox=mailbox, limit=limit).messages
+
+
+    def list_messages_page(self, *, mailbox: str, limit: int = 20, page_token: str = "") -> EmailMessagePage:
         with self._connect() as client:
             self._select(client, mailbox)
-            uids = self._search_uids(client, "ALL")[-max(1, limit):]
-            uids.reverse()
-            return [self._fetch_message(client, mailbox, uid, include_body=False) for uid in uids]
+            all_uids = self._search_uids(client, "ALL")
+            all_uids.reverse()
+            offset = parse_offset_token(page_token)
+            clean_limit = max(1, limit)
+            uids = all_uids[offset:offset + clean_limit]
+            next_offset = offset + clean_limit
+            next_token = str(next_offset) if next_offset < len(all_uids) else ""
+            return EmailMessagePage(
+                messages=[self._fetch_message(client, mailbox, uid, include_body=False) for uid in uids],
+                next_page_token=next_token,
+                result_size_estimate=len(all_uids),
+            )
 
     def search_messages(self, *, query: str, mailbox: str, limit: int = 20) -> list[EmailMessage]:
+        return self.search_messages_page(query=query, mailbox=mailbox, limit=limit).messages
+
+
+    def search_messages_page(self, *, query: str, mailbox: str, limit: int = 20, page_token: str = "") -> EmailMessagePage:
         clean = query.strip().casefold()
         if not clean:
-            return self.list_messages(mailbox=mailbox, limit=limit)
+            return self.list_messages_page(mailbox=mailbox, limit=limit, page_token=page_token)
         with self._connect() as client:
             self._select(client, mailbox)
             uids = self._search_uids(client, "ALL")[-100:]
             uids.reverse()
             matches: list[EmailMessage] = []
+            offset = parse_offset_token(page_token)
+            matched_count = 0
             for uid in uids:
                 message = self._fetch_message(client, mailbox, uid, include_body=False)
                 haystack = " ".join([message.subject, message.from_addr, message.snippet]).casefold()
-                if clean in haystack:
-                    matches.append(message)
-                if len(matches) >= limit:
+                if clean not in haystack:
+                    continue
+                if matched_count < offset:
+                    matched_count += 1
+                    continue
+                matches.append(message)
+                matched_count += 1
+                if len(matches) >= max(1, limit):
                     break
-            return matches
+            next_token = str(offset + len(matches)) if len(matches) >= max(1, limit) else ""
+            return EmailMessagePage(messages=matches, next_page_token=next_token)
 
     def read_message(self, *, mailbox: str, message_id: str) -> EmailMessage:
         with self._connect() as client:
@@ -63,6 +88,20 @@ class ImapProvider:
                 raise ValueError(f"Could not move email message {message_id} to Trash.")
             client.uid("STORE", uid, "+FLAGS", "(\\Deleted)")
             return message
+
+    def empty_trash(self) -> int:
+        with self._connect() as client:
+            trash_mailbox = self._trash_mailbox(client)
+            self._select(client, trash_mailbox, readonly=False)
+            uids = self._search_uids(client, "ALL")
+            if not uids:
+                return 0
+            uid_set = b",".join(uids)
+            status, _data = client.uid("STORE", uid_set, "+FLAGS", "(\\Deleted)")
+            if status != "OK":
+                raise ValueError("Could not mark Trash messages for deletion.")
+            client.expunge()
+            return len(uids)
 
     def _connect(self) -> imaplib.IMAP4:
         if not self.config.imap_host:
@@ -139,6 +178,13 @@ def parse_flags(data: list[object]) -> list[str]:
             if match:
                 flags.update(flag.strip("\\") for flag in match.group(1).split() if flag)
     return sorted(flags)
+
+
+def parse_offset_token(value: str) -> int:
+    try:
+        return max(0, int(value or "0"))
+    except ValueError:
+        return 0
 
 
 def decode_value(value: str) -> str:

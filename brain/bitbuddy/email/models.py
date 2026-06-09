@@ -8,6 +8,17 @@ class Mailbox:
     name: str
     flags: list[str] = field(default_factory=list)
     delimiter: str = "/"
+    messages_total: int | None = None
+    messages_unread: int | None = None
+    threads_total: int | None = None
+    threads_unread: int | None = None
+
+
+@dataclass(frozen=True)
+class EmailMessagePage:
+    messages: list["EmailMessage"]
+    next_page_token: str = ""
+    result_size_estimate: int | None = None
 
 
 @dataclass(frozen=True)
@@ -36,7 +47,15 @@ class EmailRule:
 
 
 def mailbox_to_json(mailbox: Mailbox) -> dict[str, object]:
-    return {"name": mailbox.name, "flags": mailbox.flags, "delimiter": mailbox.delimiter}
+    return {
+        "name": mailbox.name,
+        "flags": mailbox.flags,
+        "delimiter": mailbox.delimiter,
+        "messages_total": mailbox.messages_total,
+        "messages_unread": mailbox.messages_unread,
+        "threads_total": mailbox.threads_total,
+        "threads_unread": mailbox.threads_unread,
+    }
 
 
 def message_to_json(message: EmailMessage, *, include_body: bool = False) -> dict[str, object]:
@@ -53,6 +72,14 @@ def message_to_json(message: EmailMessage, *, include_body: bool = False) -> dic
     if include_body:
         data["body"] = message.body
     return data
+
+
+def message_page_to_json(page: EmailMessagePage) -> dict[str, object]:
+    return {
+        "messages": [message_to_json(message) for message in page.messages],
+        "next_page_token": page.next_page_token,
+        "result_size_estimate": page.result_size_estimate,
+    }
 
 
 def rule_to_json(rule: EmailRule) -> dict[str, object]:
