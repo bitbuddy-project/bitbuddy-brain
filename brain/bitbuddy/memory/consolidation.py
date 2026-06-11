@@ -7,6 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlencode
 
 from ..chats.repository import chat_window_token, create_tool_event, recent_chat_window, update_tool_event
 from ..config import load_config
@@ -797,13 +798,32 @@ def notify_memory_consolidation_completed(job: ConsolidationJob, result: dict[st
         body=body,
         source_kind="memory_consolidation.completed",
         chat_id=job.chat_id,
-        action_url=f"/?chat_id={job.chat_id}",
+        action_url=memory_notification_action_url(writes, job.chat_id),
         metadata={
             "job_id": job.job_id,
             "write_count": count,
             "writes": writes[:5],
         },
     )
+
+
+def memory_notification_action_url(writes: list[dict[str, object]], chat_id: str) -> str:
+    for write in writes:
+        arguments = write.get("arguments_summary")
+        if not isinstance(arguments, dict):
+            continue
+        layer = str(arguments.get("layer") or "").strip()
+        memory_id = str(arguments.get("memory_id") or "").strip()
+        project_id = str(arguments.get("project_id") or "").strip()
+        if not layer and not memory_id:
+            continue
+        query = {"tab": layer or "project"}
+        if memory_id:
+            query["memory"] = memory_id
+        if project_id:
+            query["project"] = project_id
+        return f"/memory?{urlencode(query)}"
+    return f"/?chat_id={chat_id}"
 
 
 def job_is_stale(job: ConsolidationJob) -> bool:

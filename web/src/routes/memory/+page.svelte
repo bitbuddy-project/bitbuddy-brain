@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
+	import { page } from '$app/state';
 	import Skeleton from '$lib/components/Skeleton.svelte';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import BrainIcon from 'phosphor-svelte/lib/BrainIcon';
@@ -56,6 +57,38 @@
 	let editSummary = $state('');
 	let movingMemoryId = $state<string | null>(null);
 	let memoryActionError = $state('');
+	let highlightedMemoryId = $state('');
+	let targetProjectId = $state('');
+	let lastTargetKey = '';
+	let lastScrolledTarget = '';
+
+	$effect(() => {
+		const tab = page.url.searchParams.get('tab') ?? '';
+		const memoryId = page.url.searchParams.get('memory') ?? '';
+		const projectId = page.url.searchParams.get('project') ?? '';
+		const targetKey = `${tab}:${memoryId}:${projectId}`;
+		if (targetKey === lastTargetKey) return;
+		lastTargetKey = targetKey;
+		lastScrolledTarget = '';
+		if (isMemoryTab(tab)) activeTab = tab;
+		highlightedMemoryId = memoryId;
+		targetProjectId = projectId;
+		if (projectId && projects.some((project) => project.id === projectId) && selectedProjectId !== projectId) {
+			void selectProject(projectId);
+		}
+	});
+
+	$effect(() => {
+		if (!targetProjectId || !projects.some((project) => project.id === targetProjectId) || selectedProjectId === targetProjectId) return;
+		void selectProject(targetProjectId);
+	});
+
+	$effect(() => {
+		const targetKey = `${activeTab}:${highlightedMemoryId}:${selectedProjectId}:${loadingLayerMemories}:${loadingMemory}:${activeLayerMemories().length}:${visibleProjectNotes().length}`;
+		if (!highlightedMemoryId || targetKey === lastScrolledTarget) return;
+		lastScrolledTarget = targetKey;
+		void scrollToHighlightedMemory();
+	});
 
 	onMount(() => {
 		void loadProjects();
@@ -68,7 +101,11 @@
 		try {
 			projects = await getProjects();
 			projectError = '';
-			if (projects[0]) {
+			const preferredProjectId = targetProjectId || page.url.searchParams.get('project') || '';
+			const preferredProject = projects.find((project) => project.id === preferredProjectId);
+			if (preferredProject) {
+				await selectProject(preferredProject.id);
+			} else if (projects[0]) {
 				await selectProject(projects[0].id);
 			}
 		} catch (caught) {
@@ -105,6 +142,10 @@
 
 	function activeLayerMemories(): MemoryRecord[] {
 		return memoriesByLayer[activeTab] ?? [];
+	}
+
+	function isMemoryTab(value: string): value is MemoryLayer {
+		return MEMORY_TABS.includes(value as MemoryLayer);
 	}
 
 	function layerTitle(layer: MemoryLayer): string {
@@ -203,6 +244,15 @@
 		return memory?.project_notes ?? [];
 	}
 
+	function visibleProjectNotes() {
+		const notes = projectNotes();
+		const visible = notes.slice(0, 8);
+		if (!highlightedMemoryId) return visible;
+		const target = notes.find((note) => note.memory_id === highlightedMemoryId);
+		if (!target || visible.includes(target)) return visible;
+		return [...visible.slice(0, 7), target];
+	}
+
 	function splitFacts(value?: string): string[] {
 		return (value ?? '')
 			.split(';')
@@ -282,6 +332,19 @@
 		if (!clean.length) return '';
 		const visible = clean.slice(0, limit).join(', ');
 		return clean.length > limit ? `${visible}, +${clean.length - limit} more` : visible;
+	}
+
+	async function scrollToHighlightedMemory() {
+		if (!highlightedMemoryId || typeof document === 'undefined') return;
+		await tick();
+		window.requestAnimationFrame(() => {
+			const target = document.querySelector(`[data-memory-id="${escapeAttributeSelector(highlightedMemoryId)}"]`);
+			target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+		});
+	}
+
+	function escapeAttributeSelector(value: string): string {
+		return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 	}
 </script>
 
@@ -455,8 +518,8 @@
 									<span>{projectNotes().length} linked</span>
 								</div>
 								<div class="stack-list">
-									{#each projectNotes().slice(0, 8) as note}
-										<article>
+									{#each visibleProjectNotes() as note}
+										<article class:highlighted={Boolean(note.memory_id && note.memory_id === highlightedMemoryId)} data-memory-id={note.memory_id ?? ''}>
 											<h3>{note.category}</h3>
 											{#if note.content}<p>{note.content}</p>{/if}
 											<small>{note.layer ?? 'project'} / {note.kind ?? note.category}{note.memory_id ? ` · ${note.memory_id.slice(0, 8)}` : ''}</small>
@@ -546,7 +609,7 @@
 					{/if}
 					<div class="episode-list">
 						{#each activeLayerMemories() as memoryRecord}
-							<article class="episode-card">
+							<article class="episode-card" class:highlighted={memoryRecord.id === highlightedMemoryId} data-memory-id={memoryRecord.id}>
 								{#if editingMemoryId === memoryRecord.id}
 									<div class="memory-edit-form">
 										<input class="edit-input" type="text" bind:value={editTitle} placeholder="Title" />
@@ -629,6 +692,12 @@
 	@keyframes fade-in {
 		from { opacity: 0; transform: translateY(12px); }
 		to { opacity: 1; transform: translateY(0); }
+	}
+
+	@keyframes memory-highlight-pulse {
+		0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--page-accent) 34%, transparent), var(--shadow-panel); }
+		60% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--page-accent) 0%, transparent), var(--shadow-panel); }
+		100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--page-accent) 18%, transparent), var(--shadow-panel); }
 	}
 
 	.memory-panel {
@@ -751,6 +820,19 @@
 		border-radius: 1rem;
 		background: var(--surface-card);
 		box-shadow: var(--shadow-panel);
+	}
+
+	.episode-card.highlighted,
+	.stack-list article.highlighted {
+		border-color: color-mix(in srgb, var(--page-accent) 66%, var(--border));
+		background:
+			linear-gradient(135deg, color-mix(in srgb, var(--page-accent) 14%, transparent), transparent 72%),
+			var(--surface-card);
+		box-shadow:
+			0 0 0 3px color-mix(in srgb, var(--page-accent) 18%, transparent),
+			0 18px 48px color-mix(in srgb, var(--page-accent) 16%, transparent),
+			var(--shadow-panel);
+		animation: memory-highlight-pulse 1.8s ease-out 2;
 	}
 
 	.episode-header {

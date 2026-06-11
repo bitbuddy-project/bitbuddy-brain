@@ -409,21 +409,18 @@
 	}
 
 	.overview-grid {
-		display: flex;
-		gap: 1rem;
-		overflow-x: auto;
-		overscroll-behavior-x: contain;
-		scroll-snap-type: x mandatory;
-		scrollbar-color: var(--scrollbar-thumb) transparent;
-		scrollbar-width: thin;
-		padding-bottom: 0.25rem;
-		-webkit-overflow-scrolling: touch;
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.65rem;
 	}
 
 	.overview-grid > .signal-card {
-		flex: 0 0 22rem;
-		min-width: 18rem;
-		scroll-snap-align: start;
+		width: 100%;
+	}
+
+	.overview-grid > .focus-card {
+		grid-column: 1 / -1;
+		height: 9.75rem;
 	}
 
 	.signal-card,
@@ -432,14 +429,16 @@
 	}
 
 	.signal-card {
-		padding: 1.15rem 1.25rem;
+		padding: 0.55rem 0.72rem;
+		height: 8.5rem;
 		display: grid;
-		gap: 0.5rem;
-		align-content: start;
-		justify-items: start;
+		grid-template-columns: auto minmax(0, 1fr);
+		gap: 0.58rem;
+		align-items: start;
 		text-align: left;
 		min-width: 0;
-		overflow: hidden;
+		overflow-y: auto;
+		scrollbar-color: var(--scrollbar-thumb) transparent;
 		border: 1px solid var(--card-border);
 		background: var(--event-bg);
 		box-shadow:
@@ -449,11 +448,19 @@
 
 	.signal-copy {
 		display: grid;
-		gap: 0.35rem;
+		gap: 0.12rem;
 		min-width: 0;
 	}
 
-	.signal-copy h2,
+	.signal-copy h2 {
+		font-size: 1rem;
+		line-height: 1.16;
+		letter-spacing: -0.025em;
+		overflow-wrap: break-word;
+		word-break: break-word;
+		min-width: 0;
+	}
+
 	.panel-card h2 {
 		font-size: 1.15rem;
 		letter-spacing: -0.025em;
@@ -469,11 +476,15 @@
 
 	.signal-copy p:last-child {
 		color: var(--text-muted);
+		display: block;
+		line-clamp: unset;
+		-webkit-line-clamp: unset;
+		overflow: visible;
 	}
 
 	.card-icon {
-		width: 2.45rem;
-		height: 2.45rem;
+		width: 1.95rem;
+		height: 1.95rem;
 		display: grid;
 		place-items: center;
 		border-radius: 0.9rem;
@@ -786,9 +797,12 @@
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 
-		.overview-grid > .signal-card {
-			flex: 0 0 80vw;
-			min-width: 16rem;
+		.overview-grid {
+			grid-template-columns: 1fr;
+		}
+
+		.overview-grid > .focus-card {
+			grid-column: auto;
 		}
 	}
 </style>

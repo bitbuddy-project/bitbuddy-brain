@@ -95,6 +95,7 @@ class NotificationsTest(unittest.TestCase):
         self.assertEqual(len(notifications), 1)
         self.assertEqual(notifications[0].category, "memory")
         self.assertEqual(notifications[0].chat_id, "chat-1")
+        self.assertEqual(notifications[0].action_url, "/memory?tab=relationship&memory=mem-1")
         self.assertEqual(notifications[0].metadata["write_count"], 1)
 
 

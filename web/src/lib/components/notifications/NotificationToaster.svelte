@@ -36,6 +36,11 @@
 
 	async function viewNotification(notification: NotificationItem) {
 		await closeToast(notification.id);
+		const memoryUrl = memoryNotificationUrl(notification);
+		if (memoryUrl) {
+			await goto(memoryUrl);
+			return;
+		}
 		if (notification.chat_id) {
 			await goto('/');
 			await loadPersistedChat(notification.chat_id);
@@ -57,6 +62,31 @@
 
 	function isPersistent(notification: NotificationItem) {
 		return notification.metadata?.persistent === true;
+	}
+
+	function memoryNotificationUrl(notification: NotificationItem) {
+		if (notification.category !== 'memory') return '';
+		if (notification.action_url?.startsWith('/memory')) return notification.action_url;
+		return memoryUrlFromMetadata(notification.metadata);
+	}
+
+	function memoryUrlFromMetadata(metadata: Record<string, unknown>) {
+		const writes = Array.isArray(metadata?.writes) ? metadata.writes : [];
+		for (const write of writes) {
+			if (!write || typeof write !== 'object') continue;
+			const args = (write as Record<string, unknown>).arguments_summary;
+			if (!args || typeof args !== 'object') continue;
+			const summary = args as Record<string, unknown>;
+			const layer = typeof summary.layer === 'string' ? summary.layer.trim() : '';
+			const memoryId = typeof summary.memory_id === 'string' ? summary.memory_id.trim() : '';
+			const projectId = typeof summary.project_id === 'string' ? summary.project_id.trim() : '';
+			if (!layer && !memoryId) continue;
+			const params = new URLSearchParams({ tab: layer || 'project' });
+			if (memoryId) params.set('memory', memoryId);
+			if (projectId) params.set('project', projectId);
+			return `/memory?${params.toString()}`;
+		}
+		return '';
 	}
 </script>
 
