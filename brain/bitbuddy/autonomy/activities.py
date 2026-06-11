@@ -11,7 +11,7 @@ from ..memory.layers import MemoryLayer
 from ..memory.project import ARCHITECTURE_FIELDS, PROJECT_OVERVIEW_FIELDS, list_projects, load_project, project_model, update_structured_project_memory
 from ..memory.store import MemoryRecord, create_memory, search_memories
 from ..providers import ProviderClient
-from ..self_model import add_self_journal, create_goal, get_goal, get_recent_conversation_signals, get_self_state, goal_task_state, list_goals, set_goal_task_state, update_goal, update_self_state, upsert_personality_evolution
+from ..self_model import GOAL_TASK_INACTIVE_STATUSES, add_self_journal, create_goal, get_goal, get_recent_conversation_signals, get_self_state, goal_task_state, list_goals, set_goal_task_state, update_goal, update_self_state, upsert_personality_evolution
 from ..workspace import append_to_workspace_document, latest_document_for_goal, list_workspace_documents, write_workspace_document
 from .decision import AutonomyActivityType, AutonomyDecision, collect_model_text, extract_json_object
 from .intentions import create_intention, has_intention_with_metadata, intention_to_json, recent_spontaneous_remark
@@ -393,6 +393,7 @@ def select_actionable_goal(decision: AutonomyDecision) -> Any:
     candidates = [
         goal for goal in list_goals(include_done=False, limit=20)
         if goal.status == "active" and goal.autonomy_allowed and goal.risk_level <= 1 and goal.next_action.strip()
+        and goal_task_state(goal).get("status") not in GOAL_TASK_INACTIVE_STATUSES
     ]
     requested = str(decision.inputs.get("goal_id") or "").strip()
     if requested:
@@ -438,17 +439,20 @@ def pursue_goal(cycle_id: str, client: ProviderClient, decision: AutonomyDecisio
         if outcome.get("document"):
             documents.append(outcome["document"])
         created_intentions.extend(outcome.get("intentions", []))
-        if outcome["task_status"] in {"done", "blocked"}:
+        if outcome["task_status"] in {"done", "blocked", "blocked_on_user"}:
             break
         if not outcome["advanced"]:
             break  # no plan progress this step — don't spin in place within one cycle
         goal = get_goal(goal.id)  # reload updated next_action / task_state before the next step
 
     last_doc = documents[-1] if documents else {}
-    summary = (
-        f"Advanced goal {goal.title!r} over {steps_done} step(s) via {final_action} "
-        f"and saved \"{last_doc.get('title', 'a note')}\" to AI Space."
-    )
+    if final_action == "ask_user":
+        summary = f"Paused goal {goal.title!r} and asked Dustin for input (after {steps_done} step(s))."
+    else:
+        summary = (
+            f"Advanced goal {goal.title!r} over {steps_done} step(s) via {final_action} "
+            f"and saved \"{last_doc.get('title', 'a note')}\" to AI Space."
+        )
     return AutonomyActivityResult(
         decision.activity,
         "completed",
@@ -484,14 +488,21 @@ def pursue_goal_step(
     task_state = goal_task_state(goal)
     existing_plan = [str(step) for step in task_state.get("plan", []) if str(step).strip()] if isinstance(task_state.get("plan"), list) else []
     step_index = int(task_state.get("step_index") or 0)
+    answered_blocker = task_state.get("blocker") if isinstance(task_state.get("blocker"), dict) else {}
+    resume_note = ""
+    if answered_blocker.get("answered") and answered_blocker.get("question"):
+        resume_note = (
+            f" You earlier asked Dustin: \"{answered_blocker['question']}\" and he has since replied — "
+            "read the recent conversation above and incorporate his answer; only ask again if it is still genuinely unanswered."
+        )
     if task_state.get("status") == "in_progress" and existing_plan:
         current_step = existing_plan[step_index] if 0 <= step_index < len(existing_plan) else existing_plan[-1]
         task_note = (
             "Resume this in-progress task — do NOT restart it. "
-            f"Plan: {existing_plan}. You are on step {step_index + 1}/{len(existing_plan)}: {current_step}."
+            f"Plan: {existing_plan}. You are on step {step_index + 1}/{len(existing_plan)}: {current_step}.{resume_note}"
         )
     else:
-        task_note = "No task is in progress yet. If this goal needs multiple steps, lay out a short ordered plan now."
+        task_note = "No task is in progress yet. If this goal needs multiple steps, lay out a short ordered plan now." + resume_note
 
     plan = parse_reflection_json(
         collect_model_text(
@@ -504,10 +515,13 @@ def pursue_goal_step(
                             "You are choosing ONE safe step to advance a BitBuddy self-goal while the user is away.",
                             "Allowed actions: research (search the web for evidence), read_project_file (read one already-registered project file), draft (write/extend a note from what you already know).",
                             "Stay read-only against the world. The only thing you may write is a note in BitBuddy's own workspace.",
+                            "This runs while the user is AWAY. 'Wait for the user', 'await feedback', or 'when a relevant moment arises' are NEVER valid actions or next_action_update values — they would loop forever. Always either make progress that does not need the user, or ask a question (see below) and stop on THIS goal.",
+                            "Decision policy when you are unsure or need input: (1) reversible/low-risk choice → pick a sensible default and proceed, noting the assumption; (2) missing optional info → proceed with stated assumptions; (3) a user preference or design choice → set task_status blocked_on_user with a concrete question; (4) risky or irreversible choice → blocked_on_user; (5) missing REQUIRED info you cannot reasonably assume → blocked_on_user (required true).",
                             "Maintain continuity across cycles: keep the same ordered plan, advance one step at a time, and only restart the plan if the goal itself changed.",
-                            'Return only JSON: {"action":"research|read_project_file|draft","query":"...","project_id":"","relative_path":"","rationale":"...","next_action_update":"","queue_comment":true|false,"plan":["step 1","step 2"],"step_index":0,"task_status":"in_progress|blocked|done","blocked_reason":""}',
-                            "query is required for research; relative_path (and optionally project_id) for read_project_file. next_action_update is the goal's next step after this one (may be empty).",
-                            "plan is the full ordered step list for this task (reuse the existing plan when resuming). step_index is the step you are doing THIS cycle. Set task_status done when the goal is fully achieved, blocked (with blocked_reason) when you cannot proceed safely, else in_progress.",
+                            'Return only JSON: {"action":"research|read_project_file|draft","query":"...","project_id":"","relative_path":"","rationale":"...","next_action_update":"","queue_comment":true|false,"plan":["step 1","step 2"],"step_index":0,"task_status":"in_progress|blocked|blocked_on_user|done","blocked_reason":"","question":"","choices":[],"required":false}',
+                            "query is required for research; relative_path (and optionally project_id) for read_project_file. next_action_update is the goal's next concrete step (NOT a wait), may be empty.",
+                            "plan is the full ordered step list for this task (reuse the existing plan when resuming). step_index is the step you are doing THIS cycle. Set task_status done when the goal is fully achieved, blocked (with blocked_reason) when you cannot proceed safely on your own, blocked_on_user (with a specific question, optional choices, required) when you genuinely need Dustin's input per the policy above, else in_progress.",
+                            "When task_status is blocked_on_user, question MUST be a single concrete question Dustin can answer; choices is an optional short list of options; required is true only when the goal cannot progress at all without the answer.",
                             "Set queue_comment true only for a significant finding, risk, blocked decision, or concrete question Dustin should see. Most goal progress should stay quietly in AI Space.",
                         ]
                     ),
@@ -520,6 +534,11 @@ def pursue_goal_step(
             model=model,
         )
     )
+
+    # Ask-then-continue: if the model needs Dustin's input, surface ONE question and stop on
+    # this goal instead of parking on a passive "await feedback" that loops as do_nothing.
+    if str(plan.get("task_status") or "").strip() == "blocked_on_user":
+        return block_goal_on_user(goal, plan, cycle_id, step_index, existing_plan)
 
     action = str(plan.get("action") or "draft").strip()
     rationale = str(plan.get("rationale") or "").strip()
@@ -620,14 +639,19 @@ def pursue_goal_step(
     advanced = False
     if task_status:
         model_index = int(plan.get("step_index")) if isinstance(plan.get("step_index"), int) else step_index
+        # Clamp to the plan: the model used to push step_index unbounded (we saw 15/3, 16/16),
+        # which made every later cycle read as "plan exhausted → just wait". Never run past the plan.
+        plan_len = len(new_plan)
         next_step_index = model_index
         if task_status == "in_progress":
             # Advance past the step just completed unless the model pinned a specific index.
             next_step_index = max(model_index, step_index + 1)
+        if plan_len:
+            next_step_index = min(next_step_index, plan_len)
         advanced = next_step_index > step_index  # drives the multi-step loop
-        # Anti-stuck: if the task is "in_progress" yet the model has run off the end of its
-        # own plan, it is spinning. Count those cycles and auto-block once it grinds too long.
-        plan_exhausted = bool(new_plan) and model_index >= len(new_plan)
+        # When the plan is finished but the model still says in_progress, treat running off the
+        # end as a stall signal (a finished plan should be done or extended, not endlessly waited on).
+        plan_exhausted = bool(new_plan) and next_step_index >= plan_len and not advanced
         stalled_count = int(task_state.get("stalled_count") or 0) + 1 if (task_status == "in_progress" and plan_exhausted) else 0
         blocked_reason = str(plan.get("blocked_reason") or "")
         if task_status == "in_progress" and stalled_count >= GOAL_STALL_THRESHOLD:
@@ -667,6 +691,77 @@ def pursue_goal_step(
         "intentions": created_intentions,
     }
 
+
+
+def block_goal_on_user(
+    goal: Any,
+    plan: dict[str, Any],
+    cycle_id: str,
+    step_index: int,
+    existing_plan: list[str],
+) -> dict[str, Any]:
+    """Ask Dustin one concrete question, mark the goal blocked_on_user, and stop on it.
+
+    This is the "ask once, then continue elsewhere" behavior: the goal drops out of active
+    selection (so it can't keep generating do_nothing), the question reaches Dustin through the
+    normal delivery pipeline, and reactivate_answered_blockers() un-parks it once he replies.
+    """
+    question = str(plan.get("question") or "").strip()
+    blocked_reason = str(plan.get("blocked_reason") or "").strip()
+    if not question:
+        # Fall back to the human reason; if there is nothing to ask, treat it as a plain block.
+        if not blocked_reason:
+            set_goal_task_state(
+                goal.id, status="blocked", plan=existing_plan, step_index=step_index,
+                blocked_reason="Marked blocked but provided no question.", last_cycle_id=cycle_id,
+            )
+            return {"status": "skipped", "summary": "Goal marked blocked_on_user without a question.", "metadata": {"goal_id": goal.id}}
+        question = blocked_reason if blocked_reason.endswith("?") else f"{blocked_reason.rstrip('.')}?"
+    if not question.endswith("?"):
+        question = f"{question.rstrip('.')}?"
+    required = bool(plan.get("required"))
+    choices = plan.get("choices") if isinstance(plan.get("choices"), list) else []
+    clean_choices = [str(c).strip() for c in choices if str(c).strip()]
+    # Keep the content ending in "?" (intention_quality requires it for questions), so fold any
+    # options into the phrasing rather than appending after the question mark.
+    content = f"{question} Options — {'; '.join(clean_choices)}. Which would you prefer?" if clean_choices else question
+
+    # Deliberate channel (spontaneous=False) so the question is not held by the social cooldown;
+    # it still passes intention_quality and the delivery cadence/daily cap, so it won't spam.
+    created = create_autonomy_intentions(
+        [{
+            "kind": "question",
+            "content": content,
+            "reason": blocked_reason or f"Need your input to continue self-goal {goal.id}: {goal.title}",
+            "importance": 5 if required else 4,
+            "playfulness": 0,
+        }],
+        cycle_id=cycle_id,
+        source_activity="pursue_goal",
+        spontaneous=False,
+        metadata={"goal_id": str(goal.id), "blocker": True},
+    )
+    intention_id = created[0].id if created else 0
+
+    set_goal_task_state(
+        goal.id,
+        status="blocked_on_user",
+        plan=existing_plan,
+        step_index=step_index,
+        blocked_reason=blocked_reason or question,
+        last_cycle_id=cycle_id,
+        blocker={"question": question, "choices": choices, "required": required, "intention_id": intention_id},
+    )
+    return {
+        "status": "completed",
+        "summary": f"Asked Dustin about goal {goal.title!r} and paused it until he replies: {question}",
+        "action": "ask_user",
+        "task_status": "blocked_on_user",
+        "advanced": False,
+        "next_action_updated": False,
+        "document": {},
+        "intentions": created,
+    }
 
 
 QUESTION_MEMORY_STOPWORDS = {

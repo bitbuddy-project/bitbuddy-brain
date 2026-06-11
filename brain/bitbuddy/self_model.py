@@ -637,7 +637,9 @@ def get_goal(goal_id: int) -> Goal:
     return goal_from_row(row)
 
 
-GOAL_TASK_STATUSES = {"in_progress", "blocked", "done"}
+GOAL_TASK_STATUSES = {"in_progress", "blocked", "blocked_on_user", "done"}
+# Task statuses that should be excluded from active autonomy work selection.
+GOAL_TASK_INACTIVE_STATUSES = {"blocked", "blocked_on_user", "done"}
 
 
 def _now_iso() -> str:
@@ -663,15 +665,18 @@ def set_goal_task_state(
     blocked_reason: str = "",
     last_cycle_id: str = "",
     stalled_count: int = 0,
+    blocker: dict[str, Any] | None = None,
 ) -> Goal:
     """Persist task continuity state onto a goal (merged into metadata).
 
     ``stalled_count`` tracks consecutive cycles that failed to advance the plan so the
     autonomy loop can auto-unstick a task (mark it blocked) instead of grinding forever.
+    ``blocker`` records an explicit blocked-on-user question (so autonomy asks once and moves
+    on, instead of parking on a passive "await feedback" next_action that loops forever).
     """
     clean_status = status if status in GOAL_TASK_STATUSES else "in_progress"
     clean_plan = [str(step).strip()[:300] for step in (plan or []) if str(step).strip()][:20]
-    task_state = {
+    task_state: dict[str, Any] = {
         "status": clean_status,
         "plan": clean_plan,
         "step_index": max(0, int(step_index)),
@@ -680,7 +685,29 @@ def set_goal_task_state(
         "stalled_count": max(0, int(stalled_count)),
         "updated_at": _now_iso(),
     }
+    if blocker is not None:
+        task_state["blocker"] = clean_goal_blocker(blocker)
     return update_goal(int(goal_id), {"metadata_patch": {"task_state": task_state}})
+
+
+def clean_goal_blocker(blocker: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a blocked-on-user blocker record stored in a goal's task_state."""
+    choices = blocker.get("choices")
+    clean_choices = [str(choice).strip()[:120] for choice in choices if str(choice).strip()][:6] if isinstance(choices, list) else []
+    return {
+        "question": str(blocker.get("question") or "").strip()[:500],
+        "choices": clean_choices,
+        "required": bool(blocker.get("required")),
+        "asked_at": str(blocker.get("asked_at") or _now_iso()),
+        "intention_id": int(blocker["intention_id"]) if str(blocker.get("intention_id") or "").strip().lstrip("-").isdigit() else 0,
+        "answered": bool(blocker.get("answered")),
+    }
+
+
+def goal_blocker(goal: Goal) -> dict[str, Any]:
+    """The blocked-on-user blocker stored on a goal's task_state, or {} when none."""
+    blocker = goal_task_state(goal).get("blocker")
+    return dict(blocker) if isinstance(blocker, dict) else {}
 
 
 def fetch_goal_row(connection: Any, goal_id: int) -> Any:

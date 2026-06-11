@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -38,6 +39,9 @@ AUTONOMOUS_DELIVERY_COOLDOWN_MINUTES = 45
 ANTI_STARVATION_FLOOR = 3
 _DELIVERY_LOCK = threading.Lock()
 _DELIVERY_TIMER: threading.Timer | None = None
+# Monotonic fire time of the armed timer, so a frequent short re-arm (e.g. the 90s
+# "intention_created" arm) cannot push out a delivery check that is already due sooner.
+_DELIVERY_TIMER_FIRE_AT: float = 0.0
 
 # Active-chat tracking: the UI periodically reports which chat the user is viewing.
 _ACTIVE_CHAT_ID: str = ""
@@ -92,14 +96,31 @@ def schedule_intention_delivery(
     delay = delivery_delay(reason, delay_seconds)
     timer = threading.Timer(delay, run_intention_delivery_check, kwargs={"reason": reason, "chat_id": chat_id, "model": model, "reschedule_on_pending": True})
     timer.daemon = True
+    fire_at = time.monotonic() + delay
     with _DELIVERY_LOCK:
-        global _DELIVERY_TIMER
+        global _DELIVERY_TIMER, _DELIVERY_TIMER_FIRE_AT
+        if _DELIVERY_TIMER is not None and _DELIVERY_TIMER.is_alive() and _DELIVERY_TIMER_FIRE_AT <= fire_at:
+            # An earlier (or equal) delivery check is already armed; don't push it out.
+            return True
         if _DELIVERY_TIMER is not None:
             _DELIVERY_TIMER.cancel()
         _DELIVERY_TIMER = timer
+        _DELIVERY_TIMER_FIRE_AT = fire_at
     timer.start()
     log_autonomy("delivery_scheduled", "Scheduled queued question/comment delivery check", {"reason": reason, "chat_id": chat_id, "delay_seconds": delay})
     return True
+
+
+def start_delivery_heartbeat(model: str | None = None) -> bool:
+    """Arm a self-perpetuating delivery check that runs independently of autonomy cycles.
+
+    Autonomous delivery used to fire only as a side-effect of an autonomy cycle completing
+    (and the repeat chain dies once the user is active), so queued questions could sit
+    forever. This heartbeat gives delivery its own cadence: it re-arms while items are
+    pending (via the reschedule-on-pending plumbing) and goes quiet when the queue drains,
+    so she can deliver a question while also doing autonomy work.
+    """
+    return schedule_intention_delivery("heartbeat", delay_seconds=DEFAULT_DELIVERY_DELAY_SECONDS, model=model)
 
 
 def schedule_startup_intention_delivery(model: str | None = None) -> bool:
@@ -177,13 +198,24 @@ def run_intention_delivery_check(
                 action_url=f"/?chat_id={target_chat_id}",
                 metadata={"reason": reason, "intention_id": delivered.id, "kind": delivered.kind},
             )
+        # Keep draining the queue on its own cadence after a success — but only after a
+        # cooldown so the next check lands roughly when the per-chat/global cooldown lifts
+        # (and the daily cap still gates it). No-ops once the queue is empty.
+        maybe_reschedule_pending_delivery(
+            "heartbeat_after_delivery",
+            chat_id=target_chat_id,
+            model=model,
+            enabled=reschedule_on_pending,
+            delay_seconds=COOLDOWN_RETRY_DELAY_SECONDS,
+        )
     return delivered
 
 
 def clear_current_delivery_timer() -> None:
     with _DELIVERY_LOCK:
-        global _DELIVERY_TIMER
+        global _DELIVERY_TIMER, _DELIVERY_TIMER_FIRE_AT
         _DELIVERY_TIMER = None
+        _DELIVERY_TIMER_FIRE_AT = 0.0
 
 
 def maybe_reschedule_pending_delivery(
@@ -315,6 +347,10 @@ def delivery_delay(reason: str, override: float | None) -> float:
         return STARTUP_DELIVERY_DELAY_SECONDS
     if reason == "lifecycle_awake":
         return WAKE_DELIVERY_DELAY_SECONDS
+    if reason == "heartbeat":
+        # Independent idle cadence: slow, tracks the activity level rather than the
+        # default post-event delay, so the heartbeat does not poll aggressively.
+        return float(getattr(autonomy_profile(), "idle_delay_seconds", DEFAULT_DELIVERY_DELAY_SECONDS))
     if reason.startswith("retry_after_"):
         return RETRY_DELIVERY_DELAY_SECONDS
     return DEFAULT_DELIVERY_DELAY_SECONDS

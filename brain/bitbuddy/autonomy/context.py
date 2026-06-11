@@ -8,7 +8,7 @@ from ..config import load_config
 from ..continuity import build_continuity_digest
 from ..lifecycle import lifecycle_status
 from ..memory.project import list_projects, project_model
-from ..self_model import goal_task_state, list_goals
+from ..self_model import GOAL_TASK_INACTIVE_STATUSES, goal_blocker, goal_task_state, list_goals
 from ..self_notes import select_self_notes_for_context
 from ..workspace import latest_document_for_goal
 from .intentions import list_pending_intentions
@@ -21,7 +21,7 @@ def build_autonomy_context(chat_id: str, consolidation_result: dict[str, object]
     lines = [
         "[Safe Idle Autonomy Context]",
         "Autonomy is safe by construction: only non-destructive built-in capabilities are available.",
-        "This cycle may run exactly one activity and then stop.",
+        "This is the user's away-time: make real, self-directed progress. Going deep on something — or asking a question so the user can unblock you — beats doing nothing.",
         f"Chat id: {chat_id}",
         f"Local time: {now.isoformat()} ({timezone})",
         f"Pending intentions: {len(list_pending_intentions(limit=50))}",
@@ -74,10 +74,25 @@ def build_autonomy_context(chat_id: str, consolidation_result: dict[str, object]
             lines.append(f"  purpose: {card.get('purpose')}")
         if card.get("current_status"):
             lines.append(f"  status: {card.get('current_status')}")
-    actionable_goals = [
+    all_active_goals = [
         goal for goal in list_goals(include_done=False, limit=12)
         if goal.status == "active" and goal.autonomy_allowed and goal.risk_level <= 1 and goal.next_action.strip()
     ]
+    # Goals waiting on the user's answer are not selectable work — list them separately so the
+    # decision model never re-picks them (which is what produced the do_nothing loop).
+    waiting_on_user = [goal for goal in all_active_goals if goal_task_state(goal).get("status") == "blocked_on_user"]
+    actionable_goals = [
+        goal for goal in all_active_goals
+        if goal_task_state(goal).get("status") not in GOAL_TASK_INACTIVE_STATUSES
+    ]
+
+    if waiting_on_user:
+        lines.extend(["", "[Waiting On Your Answer — do not re-select these]"])
+        for goal in waiting_on_user[:4]:
+            blocker = goal_blocker(goal)
+            question = blocker.get("question") or goal_task_state(goal).get("blocked_reason") or goal.next_action
+            lines.append(f"- goal {goal.id}: {goal.title} — asked: {question}")
+        lines.append("These are paused until the user replies; work on something else.")
 
     in_progress = [
         (goal, goal_task_state(goal))

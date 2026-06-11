@@ -17,12 +17,16 @@ from bitbuddy.providers import StreamChunk  # noqa: E402
 from bitbuddy.config import write_config  # noqa: E402
 from bitbuddy.paths import GLOBAL_DB_PATH  # noqa: E402
 from bitbuddy.autonomy import activities  # noqa: E402
-from bitbuddy.autonomy.activities import GOAL_STALL_THRESHOLD, pursue_goal  # noqa: E402
+from bitbuddy.autonomy.activities import GOAL_STALL_THRESHOLD, pursue_goal, select_actionable_goal  # noqa: E402
 from bitbuddy.autonomy.decision import AutonomyActivityType, AutonomyDecision  # noqa: E402
+from bitbuddy.autonomy.intentions import ensure_intentions_database, list_pending_intentions  # noqa: E402
+from bitbuddy.chats.repository import ensure_chat_database  # noqa: E402
+from bitbuddy.autonomy.runner import reactivate_answered_blockers  # noqa: E402
 from bitbuddy.self_model import (  # noqa: E402
     create_goal,
     ensure_self_model_database,
     get_goal,
+    goal_blocker,
     goal_task_state,
     set_goal_task_state,
 )
@@ -59,6 +63,21 @@ def plan_step(step_index: int, total: int, status: str = "in_progress") -> str:
 
 def authored_note(title: str) -> str:
     return json.dumps({"kind": "notes", "title": title, "summary": "one line", "body": f"body for {title}", "tags": []})
+
+
+def plan_block(question: str, *, required: bool = False, choices: list[str] | None = None) -> str:
+    return json.dumps(
+        {
+            "action": "draft",
+            "rationale": "needs Dustin's input",
+            "plan": ["draft", "decide"],
+            "step_index": 0,
+            "task_status": "blocked_on_user",
+            "question": question,
+            "required": required,
+            "choices": choices or [],
+        }
+    )
 
 
 DECISION = AutonomyDecision(AutonomyActivityType.PURSUE_GOAL, "advance it", {})
@@ -130,6 +149,85 @@ class AutonomyDepthTest(unittest.TestCase):
         state = goal_task_state(get_goal(goal.id))
         self.assertEqual(state["status"], "blocked")
         self.assertTrue(state["blocked_reason"])
+
+    def test_step_index_never_runs_past_plan(self) -> None:
+        goal = self._goal()
+        # The model claims a wildly out-of-range step on a 3-step plan; we must clamp it.
+        client = SequencedClient([plan_step(99, 3), authored_note("note")])
+        pursue_goal("cycle-1", client, AutonomyDecision(AutonomyActivityType.PURSUE_GOAL, "go", {"goal_id": str(goal.id)}))
+        state = goal_task_state(get_goal(goal.id))
+        self.assertLessEqual(state["step_index"], len(state["plan"]))
+
+
+class BlockedOnUserTest(unittest.TestCase):
+    def setUp(self) -> None:
+        write_config("none", "", "")
+        ensure_self_model_database()
+        ensure_workspace_database()
+        ensure_intentions_database()
+        ensure_chat_database()
+        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+            connection.execute("delete from goals")
+            connection.execute("delete from workspace_documents")
+            connection.execute("delete from intentions")
+            connection.execute("delete from chat_messages")
+
+    def _goal(self) -> object:
+        return create_goal(
+            "Draft the storage ADR",
+            "To settle the schema.",
+            owner="self",
+            horizon="day",
+            risk_level=1,
+            autonomy_allowed=True,
+            next_action="draft it",
+        )
+
+    def test_block_on_user_asks_a_question_and_pauses_the_goal(self) -> None:
+        goal = self._goal()
+        client = SequencedClient([plan_block("Should the ADR use SQLite or tags?", required=True, choices=["SQLite", "Tags"])])
+        result = pursue_goal("cycle-1", client, AutonomyDecision(AutonomyActivityType.PURSUE_GOAL, "advance", {"goal_id": str(goal.id)}))
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.metadata["task_status"], "blocked_on_user")
+        # The goal is parked and excluded from active selection.
+        state = goal_task_state(get_goal(goal.id))
+        self.assertEqual(state["status"], "blocked_on_user")
+        self.assertEqual(select_actionable_goal(DECISION), None)
+        # A real question reached the queue, tagged back to the goal.
+        pending = list_pending_intentions()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].kind, "question")
+        self.assertTrue(pending[0].content.endswith("?"))
+        self.assertTrue(pending[0].metadata.get("blocker"))
+        self.assertEqual(str(pending[0].metadata.get("goal_id")), str(goal.id))
+        # And the blocker is recorded on the goal with the intention id.
+        blocker = goal_blocker(get_goal(goal.id))
+        self.assertEqual(blocker["intention_id"], pending[0].id)
+        self.assertTrue(blocker["required"])
+
+    def test_reactivates_after_user_replies(self) -> None:
+        goal = self._goal()
+        set_goal_task_state(
+            goal.id,
+            status="blocked_on_user",
+            plan=["draft", "decide"],
+            step_index=1,
+            last_cycle_id="cycle-0",
+            blocker={"question": "SQLite or tags?", "asked_at": "2020-01-01T00:00:00+00:00", "intention_id": 0},
+        )
+        # No user message yet → stays parked.
+        self.assertEqual(reactivate_answered_blockers(), 0)
+        self.assertEqual(goal_task_state(get_goal(goal.id))["status"], "blocked_on_user")
+        # User speaks after the question → goal resumes.
+        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+            connection.execute(
+                "insert into chat_messages (chat_id, role, content, kind, status, sequence) values (?,?,?,?,?,?)",
+                ("c1", "user", "Use SQLite.", "message", "complete", 1),
+            )
+        self.assertEqual(reactivate_answered_blockers(), 1)
+        state = goal_task_state(get_goal(goal.id))
+        self.assertEqual(state["status"], "in_progress")
+        self.assertTrue(state["blocker"]["answered"])
 
 
 if __name__ == "__main__":

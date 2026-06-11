@@ -17,7 +17,13 @@ os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-question-surfacing-test-"
 
 from bitbuddy.activity import ensure_activity_database  # noqa: E402
 from bitbuddy.activity import list_activity  # noqa: E402
-from bitbuddy.autonomy.delivery_scheduler import run_intention_delivery_check, schedule_startup_intention_delivery  # noqa: E402
+from bitbuddy.autonomy.delivery_scheduler import (  # noqa: E402
+    clear_current_delivery_timer,
+    run_intention_delivery_check,
+    schedule_intention_delivery,
+    schedule_startup_intention_delivery,
+    start_delivery_heartbeat,
+)
 from bitbuddy.autonomy.intentions import create_intention, ensure_intentions_database, list_pending_intentions  # noqa: E402
 from bitbuddy.chats.repository import create_chat, ensure_chat_database, get_chat  # noqa: E402
 from bitbuddy.chats.runtime import start_chat_run  # noqa: E402
@@ -61,6 +67,9 @@ class FakeTimer:
     def cancel(self) -> None:
         self.cancelled = True
 
+    def is_alive(self) -> bool:
+        return self.started and not self.cancelled
+
 
 def fake_config() -> SimpleNamespace:
     return SimpleNamespace(
@@ -100,6 +109,7 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
                 """
             )
         ensure_lifecycle_database()
+        clear_current_delivery_timer()
 
     def run_chat(self, chat_id: str, text: str = "Can we talk about apples?") -> ActiveChatRun:
         run = ActiveChatRun(
@@ -250,6 +260,117 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
             scheduled = schedule_startup_intention_delivery()
 
         self.assertTrue(scheduled)
+
+    def test_importance_three_accepted_question_surfaces_in_chat(self) -> None:
+        # Regression: a question accepted at creation with importance 3 used to be
+        # dead-lettered by the delivery gate. It must surface in-chat when relevant.
+        chat = create_chat("Importance three", "chat")
+        create_intention(
+            "question",
+            "Should we cache the apples lookup before editing?",
+            metadata={"quality": {"accepted": True, "importance": 3}, "priority": 3},
+        )
+
+        self.run_chat(chat.id)
+        assistant_text = "\n".join(str(message["content"]) for message in get_chat(chat.id)["messages"] if message["role"] == "assistant")
+
+        self.assertIn("Also, I had a question saved from earlier", assistant_text)
+        self.assertIn("Should we cache the apples lookup before editing?", assistant_text)
+        self.assertEqual(list_pending_intentions(), [])
+
+    def test_importance_three_accepted_question_delivers_autonomously(self) -> None:
+        chat = create_chat("Importance three autonomous", "chat")
+        create_intention(
+            "question",
+            "Should we cache the apples lookup before editing?",
+            metadata={"quality": {"accepted": True, "importance": 3}, "priority": 3},
+        )
+
+        with patch("bitbuddy.autonomy.delivery_scheduler.load_config", return_value=fake_config()), \
+             patch("bitbuddy.autonomy.delivery.load_config", return_value=fake_config()), \
+             patch("bitbuddy.autonomy.delivery.ProviderClient", return_value=FakeClient("Should we cache the apples lookup before editing?")):
+            delivered = run_intention_delivery_check(reason="test", chat_id=chat.id)
+
+        self.assertIsNotNone(delivered)
+        self.assertEqual(list_pending_intentions(), [])
+
+    def test_rejected_quality_question_never_surfaces(self) -> None:
+        chat = create_chat("Rejected quality", "chat")
+        create_intention(
+            "question",
+            "Should we talk about the apples decision?",
+            metadata={"quality": {"accepted": False, "importance": 5}, "priority": 5},
+        )
+
+        self.run_chat(chat.id)
+        assistant_text = "\n".join(str(message["content"]) for message in get_chat(chat.id)["messages"] if message["role"] == "assistant")
+        self.assertNotIn("Also, I had a question saved from earlier", assistant_text)
+
+        with patch("bitbuddy.autonomy.delivery_scheduler.load_config", return_value=fake_config()), \
+             patch("bitbuddy.autonomy.delivery.load_config", return_value=fake_config()), \
+             patch("bitbuddy.autonomy.delivery.ProviderClient", return_value=FakeClient("Rejected.")):
+            delivered = run_intention_delivery_check(reason="test", chat_id=chat.id)
+        self.assertIsNone(delivered)
+        self.assertEqual(len(list_pending_intentions()), 1)
+
+    def test_legacy_row_without_quality_uses_content_gate(self) -> None:
+        # Rows that predate quality metadata still pass through the conservative content
+        # gate, so filler questions stay suppressed.
+        chat = create_chat("Legacy gate", "chat")
+        create_intention("question", "Do you want to revisit apples?", metadata={"priority": 3})
+
+        self.run_chat(chat.id)
+        assistant_text = "\n".join(str(message["content"]) for message in get_chat(chat.id)["messages"] if message["role"] == "assistant")
+        self.assertNotIn("Also, I had a question saved from earlier", assistant_text)
+        self.assertEqual(len(list_pending_intentions()), 1)
+
+    def test_successful_delivery_reschedules_heartbeat(self) -> None:
+        chat = create_chat("Heartbeat after delivery", "chat")
+        create_intention("question", "First autonomous question?", metadata={"priority": 5})
+        create_intention("question", "Second autonomous question?", metadata={"priority": 5})
+
+        with patch("bitbuddy.autonomy.delivery_scheduler.load_config", return_value=fake_config()), \
+             patch("bitbuddy.autonomy.delivery.load_config", return_value=fake_config()), \
+             patch("bitbuddy.autonomy.delivery.ProviderClient", return_value=FakeClient("First autonomous question.")), \
+             patch("bitbuddy.autonomy.delivery_scheduler.threading.Timer", FakeTimer):
+            delivered = run_intention_delivery_check(reason="scheduled:test", chat_id=chat.id, reschedule_on_pending=True)
+
+        self.assertIsNotNone(delivered)
+        scheduled = [item for item in list_activity() if item["kind"] == "autonomy.delivery_scheduled"]
+        self.assertTrue(any(item["metadata"].get("reason") == "heartbeat_after_delivery" for item in scheduled))
+
+    def test_heartbeat_does_not_push_out_nearer_timer(self) -> None:
+        create_chat("Anti starvation", "chat")
+        create_intention("question", "Pending question?", metadata={"priority": 5})
+
+        with patch("bitbuddy.autonomy.delivery_scheduler.load_config", return_value=fake_config()), \
+             patch("bitbuddy.autonomy.delivery_scheduler.threading.Timer", FakeTimer):
+            # A sooner timer (90s) armed first must survive a later heartbeat (idle cadence).
+            schedule_intention_delivery("intention_created", delay_seconds=90)
+            schedule_intention_delivery("heartbeat")
+            scheduled = [item for item in list_activity() if item["kind"] == "autonomy.delivery_scheduled"]
+            reasons = [item["metadata"].get("reason") for item in scheduled]
+            self.assertIn("intention_created", reasons)
+            self.assertNotIn("heartbeat", reasons)
+
+            clear_current_delivery_timer()
+
+            # Reverse: a later timer armed first is replaced by a sooner one.
+            schedule_intention_delivery("heartbeat")
+            schedule_intention_delivery("intention_created", delay_seconds=90)
+            scheduled = [item for item in list_activity() if item["kind"] == "autonomy.delivery_scheduled"]
+            reasons = [item["metadata"].get("reason") for item in scheduled]
+            self.assertEqual(reasons.count("intention_created"), 2)
+
+    def test_start_delivery_heartbeat_arms_and_stops_when_empty(self) -> None:
+        with patch("bitbuddy.autonomy.delivery_scheduler.load_config", return_value=fake_config()), \
+             patch("bitbuddy.autonomy.delivery_scheduler.threading.Timer", FakeTimer):
+            empty = start_delivery_heartbeat()
+            self.assertFalse(empty)
+
+            create_intention("question", "Pending heartbeat question?", metadata={"priority": 5})
+            armed = start_delivery_heartbeat()
+            self.assertTrue(armed)
 
 
 if __name__ == "__main__":

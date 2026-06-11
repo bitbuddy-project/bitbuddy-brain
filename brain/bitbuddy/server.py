@@ -8,7 +8,7 @@ from .http_api import BitBuddyRequestHandler
 from .paths import APP_DIR, ensure_app_dirs
 from .projects.watcher import start_project_monitor
 from .autonomy.runner import schedule_startup_idle_autonomy
-from .autonomy.delivery_scheduler import schedule_startup_intention_delivery
+from .autonomy.delivery_scheduler import schedule_startup_intention_delivery, start_delivery_heartbeat
 from .autonomy.web_search_server import ensure_web_search_server
 from .calendar.scheduler import start_calendar_scheduler
 from .lifecycle import start_lifecycle_monitor
@@ -25,6 +25,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787) -> None:
     start_lifecycle_monitor()
     schedule_startup_idle_autonomy()
     schedule_startup_intention_delivery()
+    start_delivery_heartbeat()
     start_calendar_scheduler()
 
     log_activity(

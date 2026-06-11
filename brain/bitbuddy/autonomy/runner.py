@@ -8,13 +8,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from ..chats.repository import chat_activity_token, chat_window_token
+from ..chats.repository import chat_activity_token, chat_window_token, latest_user_message_at
 from ..config import load_config
 from ..continuity import record_continuity_event
 from ..lifecycle import lifecycle_allows_autonomy, lifecycle_quiet_mode
+from ..paths import GLOBAL_DB_PATH
 from ..providers import ProviderClient
-from ..self_model import goal_task_state, list_goals
-from .activities import run_autonomy_activity
+from ..self_model import goal_blocker, goal_task_state, list_goals, set_goal_task_state
+from .activities import run_autonomy_activity, select_actionable_goal
 from .context import build_autonomy_context
 from .decision import AutonomyActivityType, AutonomyDecision, choose_autonomy_activity
 from .levels import resolve_profile
@@ -255,6 +256,9 @@ def run_autonomy_cycle(
     if not config.autonomy.enabled:
         return {"status": "skipped", "reason": "autonomy disabled"}
     cycle_id = cycle_id or str(uuid.uuid4())
+    # Un-park any goal that was blocked on the user's answer once the user has actually spoken,
+    # so the next step resumes it (with the answer now in recent-conversation context).
+    reactivate_answered_blockers()
     client = ProviderClient(config.provider)
     phase("building_context", "Building safe idle autonomy context.")
     context = build_autonomy_context(chat_id, consolidation_result)
@@ -265,6 +269,9 @@ def run_autonomy_cycle(
     if decision.activity == AutonomyActivityType.NETWORK_OBSERVATION:
         # Explicit placeholder: network metadata observer is not implemented yet.
         decision = AutonomyDecision(decision.activity, decision.reason or "Network observer is not implemented yet.", decision.inputs)
+    if decision.activity == AutonomyActivityType.DO_NOTHING:
+        # do_nothing is not final: if there is real work (or an occasional spark is due), do it.
+        decision = apply_do_nothing_backstop(decision, chat_id, config)
     log_autonomy(
         "decision",
         "Idle autonomy selected an activity",
@@ -360,6 +367,132 @@ def global_chat_activity_advanced(scheduled_token: dict[str, object], current_to
         if int(current_token.get(key) or 0) > int(scheduled_token.get(key) or 0):
             return True
     return str(current_token.get("latest_chat_updated_at") or "") > str(scheduled_token.get("latest_chat_updated_at") or "")
+
+
+# A spark fires at most once per (this multiplier × the level's social cooldown) — "mostly
+# rest, occasional spark" when nothing is pending.
+SPARK_INTERVAL_MULTIPLIER = 2.0
+
+
+def reactivate_answered_blockers() -> int:
+    """Flip goals from blocked_on_user back to in_progress once the user has spoken since asking.
+
+    Resumption is intentionally simple: any new user message after the question was asked makes
+    the goal selectable again, and pursue_goal_step gets the recent conversation in context to pick
+    up the answer (re-asking if it still cannot proceed). Avoids brittle reply-to-question matching.
+    """
+    reactivated = 0
+    try:
+        latest = latest_user_message_at()
+        if not latest:
+            return 0
+        for goal in list_goals(include_done=False, limit=20):
+            if goal.status != "active":
+                continue
+            state = goal_task_state(goal)
+            if state.get("status") != "blocked_on_user":
+                continue
+            blocker = goal_blocker(goal)
+            asked_at = str(blocker.get("asked_at") or "")
+            if asked_at and _isoformat_after(latest, asked_at):
+                set_goal_task_state(
+                    goal.id,
+                    status="in_progress",
+                    plan=[str(step) for step in (state.get("plan") or [])],
+                    step_index=int(state.get("step_index") or 0),
+                    last_cycle_id=str(state.get("last_cycle_id") or ""),
+                    blocker={**blocker, "answered": True},
+                )
+                reactivated += 1
+                log_autonomy(
+                    "blocker_reactivated",
+                    "Resumed a goal that was waiting on the user, now that they have replied",
+                    {"goal_id": goal.id, "question": blocker.get("question", "")},
+                )
+    except Exception as error:
+        log_autonomy("blocker_reactivate_failed", "Could not reactivate blocked-on-user goals", {"error": str(error)})
+    return reactivated
+
+
+def _isoformat_after(candidate: str, reference: str) -> bool:
+    """True when timestamp ``candidate`` is later than ``reference``, tolerating mixed formats.
+
+    chat_messages.created_at is naive-UTC ("2026-06-10 14:00:00"); blocker asked_at is tz-aware
+    ISO ("2026-06-10T14:00:00+00:00"). Normalize both to a comparable naive-UTC string.
+    """
+    def norm(value: str) -> str:
+        text = value.strip().replace("T", " ")
+        for marker in ("+", "Z", "z"):
+            idx = text.find(marker, 10)
+            if idx > 0:
+                text = text[:idx]
+        return text.strip()
+    return norm(candidate) > norm(reference)
+
+
+def apply_do_nothing_backstop(decision: AutonomyDecision, chat_id: str, config: Any) -> AutonomyDecision:
+    """Override a do_nothing decision toward real work, or an occasional curiosity spark.
+
+    Genuinely rest at night/quiet mode and when there is nothing pending and no spark is due.
+    """
+    if lifecycle_quiet_mode():
+        return decision  # the "genuinely rest" half of mostly-rest-occasional-spark
+    goal = select_actionable_goal(AutonomyDecision(AutonomyActivityType.PURSUE_GOAL, "", {}))
+    if goal is not None:
+        log_autonomy(
+            "decision_backstop",
+            "Overrode do_nothing to continue an actionable goal instead of idling",
+            {"chat_id": chat_id, "goal_id": goal.id},
+        )
+        return AutonomyDecision(
+            AutonomyActivityType.PURSUE_GOAL,
+            "Backstop: an actionable goal is available, so continue it instead of doing nothing.",
+            {"goal_id": str(goal.id)},
+        )
+    profile = resolve_profile(config.autonomy)
+    spark_interval = max(30.0, float(getattr(profile, "spontaneous_remark_cooldown_minutes", 90)) * SPARK_INTERVAL_MULTIPLIER)
+    since = _minutes_since_decision({"web_curiosity"})
+    if since is None or since >= spark_interval:
+        likes = list(config.personality.bitbuddy_likes)
+        inputs = {"query": f"new ideas about {likes[0]}"} if likes else {}
+        log_autonomy(
+            "decision_backstop",
+            "Overrode do_nothing with an occasional curiosity spark",
+            {"chat_id": chat_id, "spark_interval_minutes": round(spark_interval, 1)},
+        )
+        return AutonomyDecision(
+            AutonomyActivityType.WEB_CURIOSITY,
+            "Backstop spark: nothing pending, so follow a small curiosity instead of idling.",
+            inputs,
+        )
+    return decision  # nothing to do and a spark is not due yet — rest
+
+
+def _minutes_since_decision(activities: set[str]) -> float | None:
+    """Minutes since the most recent autonomy decision for one of ``activities`` (None if never)."""
+    import json
+    import sqlite3
+    try:
+        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+            rows = connection.execute(
+                "select metadata, created_at from activity where kind = 'autonomy.decision' order by created_at desc limit 60"
+            ).fetchall()
+    except Exception:
+        return None
+    for metadata, created_at in rows:
+        try:
+            meta = json.loads(metadata or "{}")
+        except Exception:
+            meta = {}
+        if meta.get("activity") in activities:
+            try:
+                when = datetime.fromisoformat(str(created_at).replace(" ", "T"))
+            except ValueError:
+                return None
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - when).total_seconds() / 60.0
+    return None
 
 
 def has_in_progress_task() -> bool:

@@ -357,18 +357,19 @@ def next_eligible_intention(
 
 
 def intention_quality_allows_surface(intention: Intention) -> bool:
-    """Respect quality metadata for newly generated intentions while preserving old rows."""
+    """Respect quality metadata for newly generated intentions while preserving old rows.
+
+    An item that passed creation-time quality (``intention_quality``) is deliverable here:
+    re-imposing an importance>=4 bar dead-letters everything queued at importance 3 (the
+    common case), which is why questions stopped reaching the user. Throttling lives where
+    it belongs instead — ``effective_min_autonomous_priority`` + cooldowns for autonomous
+    delivery, and the relevance/priority/quiet-mode gates in ``next_eligible_intention`` for
+    in-chat surfacing.
+    """
     quality = intention.metadata.get("quality") if isinstance(intention.metadata, dict) else None
     if not isinstance(quality, dict):
         return legacy_intention_content_allows_surface(intention)
-    if quality.get("accepted") is False:
-        return False
-    importance = int_value(quality.get("importance"), 3)
-    if intention.kind == "question" and importance < 4:
-        return False
-    if intention.kind in {"comment", "suggestion", "curiosity", "follow_up"} and importance < 4:
-        return False
-    return True
+    return quality.get("accepted") is not False
 
 
 def legacy_intention_content_allows_surface(intention: Intention) -> bool:

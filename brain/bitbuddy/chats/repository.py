@@ -354,6 +354,24 @@ def chat_activity_token() -> dict[str, object]:
     }
 
 
+def latest_user_message_at() -> str:
+    """ISO timestamp of the most recent real user message across all chats ('' if none).
+
+    Used to tell whether the user has spoken since an autonomy blocker question was asked,
+    so a goal blocked on user input can be reactivated once there is something to read.
+    """
+    ensure_chat_database()
+    with db_connection(GLOBAL_DB_PATH) as connection:
+        row = connection.execute(
+            """
+            select coalesce(max(created_at), '')
+            from chat_messages
+            where role = 'user' and kind = 'message'
+            """
+        ).fetchone()
+    return str(row[0] or "") if row else ""
+
+
 def consolidation_message_from_row(row: tuple[Any, ...]) -> dict[str, object] | None:
     message_id, role, content, kind, status, metadata, sequence, created_at = row
     clean_kind = str(kind or "message")
