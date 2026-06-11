@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "brain"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-mcp-test-")
 
-from bitbuddy.config import ProviderConfig, load_config, update_mcp_config, upsert_mcp_server, write_config  # noqa: E402
+from bitbuddy.config import ProviderConfig, load_config, update_mcp_config, update_model_runtime_config, upsert_mcp_server, write_config  # noqa: E402
 from bitbuddy import cli  # noqa: E402
 from bitbuddy.managed_tools import ManagedToolStatus, resolve_managed_command  # noqa: E402
 from bitbuddy.mcp_client import close_mcp_clients  # noqa: E402
@@ -81,6 +81,35 @@ class McpToolsTest(unittest.TestCase):
 
         self.assertEqual(config.name, "Renamed")
         self.assertTrue(any(server.name == "custom_server" for server in config.mcp_servers))
+
+    def test_selective_preserve_keeps_provider_registry_and_scan_interval(self) -> None:
+        write_config("ollama", "http://127.0.0.1:11434", "llama3")
+        update_model_runtime_config(
+            {
+                "providers": [
+                    {"type": "ollama", "url": "http://127.0.0.1:11434", "model": "llama3"},
+                    {"type": "llama.cpp", "url": "http://127.0.0.1:8080", "model": "qwen"},
+                ],
+                "active_provider": "ollama",
+                "project_scan_interval_seconds": 120,
+            }
+        )
+
+        write_config(
+            "ollama",
+            "http://127.0.0.1:11434",
+            "llama3",
+            60,
+            name="Renamed",
+            preserve_existing=True,
+            update_provider=False,
+            update_project_scan_interval=False,
+        )
+        config = load_config()
+
+        self.assertEqual(config.name, "Renamed")
+        self.assertEqual({provider.type for provider in config.providers}, {"ollama", "llama.cpp"})
+        self.assertEqual(config.project_scan_interval_seconds, 120)
 
     def test_mcp_tools_are_discovered_and_callable(self) -> None:
         server_script = write_fake_mcp_server()

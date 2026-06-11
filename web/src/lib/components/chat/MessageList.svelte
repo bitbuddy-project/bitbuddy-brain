@@ -4,7 +4,7 @@
 	import { chatSession, saveChatScrollTop } from '$lib/stores/chat.svelte';
 	import MessageBubble from './MessageBubble.svelte';
 	import ThinkingStream from './ThinkingStream.svelte';
-	import ToolEventCard from './ToolEventCard.svelte';
+	import ToolEventGroup from './ToolEventGroup.svelte';
 	import PermissionRequestCard from './PermissionRequestCard.svelte';
 
 	let { messages, thinking, activeThinkEnabled, error, isStreaming, buddyName, onUserMessageDelete, onUserMessageEdit } = $props<{
@@ -251,6 +251,109 @@
 		if (!isLatestAssistantMessage(message, index)) return false;
 		return Boolean(error || (isStreaming && activeThinkEnabled));
 	}
+
+	type RenderItem =
+		| { type: 'message'; message: ChatMessage; index: number; key: string }
+		| { type: 'tool-group'; messages: ChatMessage[]; startIndex: number; key: string; showFace: boolean };
+
+	let renderItems = $derived.by(() => {
+		const items: RenderItem[] = [];
+		let index = 0;
+		while (index < messages.length) {
+			const message = messages[index];
+			if (isAbsorbableThinkingBeforeTool(index)) {
+				index += 1;
+				continue;
+			}
+			if ((message.kind ?? 'message') === 'tool') {
+				const group: ChatMessage[] = [];
+				const startIndex = index;
+				while (index < messages.length) {
+					const current = messages[index];
+					if ((current.kind ?? 'message') === 'tool') {
+						if (!isHiddenToolMessage(current)) group.push(current);
+						index += 1;
+						continue;
+					}
+					if (isAbsorbableThinkingMessage(current) && nextVisibleToolIndex(index + 1) >= 0) {
+						index += 1;
+						continue;
+					}
+					break;
+				}
+				if (group.length) {
+					items.push({
+						type: 'tool-group',
+						messages: group,
+						startIndex,
+						key: `tools:${startIndex}:${group.map((tool) => tool.id ?? tool.metadata?.tool ?? tool.content).join('|')}`,
+						showFace: shouldShowFaceForToolGroup(startIndex)
+					});
+				}
+				continue;
+			}
+
+			items.push({ type: 'message', message, index, key: messageRenderKey(message, index) });
+			index += 1;
+		}
+		return items;
+	});
+
+	function isHiddenToolMessage(message: ChatMessage) {
+		const metadata = (message.metadata ?? {}) as Record<string, unknown>;
+		return metadata.tool === 'memory_consolidation' || metadata.memory_consolidation === true;
+	}
+
+	function isAbsorbableThinkingBeforeTool(index: number) {
+		return isAbsorbableThinkingMessage(messages[index]) && nextVisibleToolIndex(index + 1) >= 0;
+	}
+
+	function isAbsorbableThinkingMessage(message: ChatMessage | undefined) {
+		if (!message || message.role !== 'assistant' || (message.kind ?? 'message') !== 'message') return false;
+		if (message.content?.trim()) return false;
+		const text = normalizeThinkingText(message.thinking || '');
+		return !text || text === 'running the selected tool.' || text === 'running the tool.' || text === 'using the selected tool.';
+	}
+
+	function normalizeThinkingText(value: string) {
+		return value.replace(/<system-reminder\b[^>]*>[\s\S]*?(?:<\/system-reminder>|$)/gi, '').trim().replace(/\s+/g, ' ').toLowerCase();
+	}
+
+	function nextVisibleToolIndex(startIndex: number) {
+		for (let index = startIndex; index < messages.length; index += 1) {
+			const message = messages[index];
+			if ((message.kind ?? 'message') === 'tool') return isHiddenToolMessage(message) ? -1 : index;
+			if (isAbsorbableThinkingMessage(message)) continue;
+			return -1;
+		}
+		return -1;
+	}
+
+	function toolGroupFollows(index: number) {
+		for (let next = index + 1; next < messages.length; next += 1) {
+			const message = messages[next];
+			if ((message.kind ?? 'message') === 'tool') return !isHiddenToolMessage(message) || toolGroupHasVisibleMessage(next);
+			if (isAbsorbableThinkingMessage(message)) continue;
+			if ((message.kind ?? 'message') !== 'permission') return false;
+		}
+		return false;
+	}
+
+	function toolGroupHasVisibleMessage(startIndex: number) {
+		for (let index = startIndex; index < messages.length && (messages[index].kind ?? 'message') === 'tool'; index += 1) {
+			if (!isHiddenToolMessage(messages[index])) return true;
+		}
+		return false;
+	}
+
+	function shouldShowFaceForToolGroup(startIndex: number) {
+		for (let index = startIndex - 1; index >= 0; index -= 1) {
+			const message = messages[index];
+			if ((message.kind ?? 'message') === 'tool') continue;
+			return message.role === 'assistant' && isLatestAssistantMessage(message, index);
+		}
+		return false;
+	}
 </script>
 
 <div class="message-area" bind:this={messageArea} onscroll={handleScroll}>
@@ -266,11 +369,16 @@
 		{/if}
 	{/if}
 
-	{#each messages as message, index (messageRenderKey(message, index))}
-		<div class="message-turn" class:animate-in={shouldAnimate(message, index)} data-turn-mode={message.mode || 'Chat'}>
-			{#if (message.kind ?? 'message') === 'tool'}
-				<ToolEventCard {message} />
-			{:else if (message.kind ?? 'message') === 'permission'}
+	{#each renderItems as item (item.key)}
+		{#if item.type === 'tool-group'}
+			<div class="message-turn" data-turn-mode={item.messages[0]?.mode || 'Chat'}>
+				<ToolEventGroup messages={item.messages} showFace={item.showFace} />
+			</div>
+		{:else}
+			{@const message = item.message}
+			{@const index = item.index}
+			<div class="message-turn" class:animate-in={shouldAnimate(message, index)} data-turn-mode={message.mode || 'Chat'}>
+			{#if (message.kind ?? 'message') === 'permission'}
 				<PermissionRequestCard {message} {buddyName} />
 			{:else if message.role !== 'system'}
 				{#if shouldRenderThinking(message, index)}
@@ -280,7 +388,7 @@
 						isStreaming={isLatestAssistantMessage(message, index) && isStreaming}
 						autoCollapse={Boolean(message.content?.trim())}
 						storageKey={thinkingStorageKey(message, index)}
-						showFace={isLatestAssistantMessage(message, index)}
+						showFace={isLatestAssistantMessage(message, index) && !toolGroupFollows(index)}
 					/>
 				{/if}
 
@@ -305,6 +413,7 @@
 				{/if}
 			{/if}
 		</div>
+		{/if}
 	{/each}
 
 	{#if !hasAssistantMessage() && (thinking || error || (isStreaming && activeThinkEnabled))}

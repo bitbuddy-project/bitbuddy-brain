@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -36,6 +37,9 @@ from .memory.project import index_project, list_projects, project_map, register_
 from .providers import ProviderClient
 from .server import serve
 from .self_model import record_personality_quirks
+
+
+SERVICE_NAME = "bitbuddy.service"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -88,6 +92,28 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_parser.add_argument("--allow-lan", action="store_true", help="Allow binding the backend to a non-loopback/LAN interface. Requires local API token auth.")
     dashboard_parser.add_argument("--no-open", action="store_true", help="Do not open the dashboard in a browser.")
     dashboard_parser.set_defaults(handler=run_dashboard)
+
+    service_parser = subparsers.add_parser("service", help="Install and control the BitBuddy user systemd service.")
+    service_subparsers = service_parser.add_subparsers(dest="service_command", metavar="command")
+    service_install = service_subparsers.add_parser("install", help="Write the user systemd service file.")
+    service_install.set_defaults(handler=service_install_command)
+    service_enable = service_subparsers.add_parser("enable", help="Enable and start the user systemd service.")
+    service_enable.set_defaults(handler=service_enable_command)
+    service_disable = service_subparsers.add_parser("disable", help="Disable and stop the user systemd service.")
+    service_disable.set_defaults(handler=service_disable_command)
+    for name, help_text in (
+        ("start", "Start the user systemd service."),
+        ("stop", "Stop the user systemd service."),
+        ("restart", "Restart the user systemd service."),
+        ("status", "Show service status."),
+    ):
+        service_action = service_subparsers.add_parser(name, help=help_text)
+        service_action.set_defaults(handler=service_action_command)
+    service_logs = service_subparsers.add_parser("logs", help="Show service logs from journalctl.")
+    service_logs.add_argument("-n", "--lines", type=int, default=100, help="Number of log lines to show.")
+    service_logs.add_argument("-f", "--follow", action="store_true", help="Follow new log lines.")
+    service_logs.set_defaults(handler=service_logs_command)
+    service_parser.set_defaults(handler=service_status_command)
 
     doctor_parser = subparsers.add_parser("doctor", help="Diagnose BitBuddy setup, storage, services, autonomy, and web search.")
     doctor_subparsers = doctor_parser.add_subparsers(dest="doctor_command", metavar="command")
@@ -308,7 +334,7 @@ def run_setup(_args: argparse.Namespace) -> int:
     if current_config is not None:
         setup_action = questionary.select(
             "Existing BitBuddy setup found. What do you want to do?",
-            choices=["Quick: calendar/reminder settings", "Full guided setup", "Keep current setup", "Start new setup"],
+            choices=["Quick: calendar/reminder settings", "Quick: service/autostart settings", "Full guided setup", "Keep current setup", "Start new setup"],
             default="Quick: calendar/reminder settings",
             qmark="◆",
             pointer="›",
@@ -320,6 +346,8 @@ def run_setup(_args: argparse.Namespace) -> int:
             if not configure_calendar_setup(questionary, style, current_config):
                 return 1
             return 0
+        if setup_action == "Quick: service/autostart settings":
+            return 0 if configure_service_setup(questionary, style) else 1
         if setup_action == "Keep current setup":
             print(f"Keeping current setup at {CONFIG_PATH}")
             print("Run `bitbuddy serve` when you are ready.")
@@ -343,6 +371,14 @@ def run_setup(_args: argparse.Namespace) -> int:
     timezone_default = "UTC"
     locale_default = "en-US"
     max_tool_rounds_default = 99
+    configure_profile = True
+    configure_context = True
+    configure_chat = True
+    configure_provider = True
+    configure_scan_interval = True
+    configure_project_memory: bool | None = None
+    configure_calendar: bool | None = None
+    configure_service: bool | None = None
     if setup_action == "Modify current setup" and current_config is not None:
         buddy_name_default = current_config.name
         presentation_default = current_config.presentation.style
@@ -360,151 +396,17 @@ def run_setup(_args: argparse.Namespace) -> int:
         provider_url_default = current_config.provider.url or provider_url_default_for(current_config.provider.type)
         provider_model_default = current_config.provider.model
         scan_interval_default = current_config.project_scan_interval_seconds
-
-    buddy_name = (
-        questionary.text(
-            "What do you want to name your BitBuddy?",
-            default=buddy_name_default,
-            qmark="◆",
-            style=style,
-        ).ask()
-        or buddy_name_default
-    )
-
-    presentation_style = questionary.select(
-        "How should I present myself?",
-        choices=["female", "male", "genderless"],
-        default=presentation_default,
-        qmark="◆",
-        pointer="›",
-        style=style,
-    ).ask()
-    if presentation_style is None:
-        return 1
-
-    default_pronouns = {
-        "female": "she/her",
-        "male": "he/him",
-        "genderless": "they/them",
-    }.get(presentation_style, "they/them")
-    pronouns = pronouns_default if presentation_style == presentation_default else default_pronouns
-
-    personality_choices = [
-        f"{raw['display_name']} ({personality_id})"
-        for personality_id, raw in BUILTIN_PERSONALITIES.items()
-    ]
-    personality_default = next(
-        (
-            choice
-            for choice in personality_choices
-            if choice.endswith(f"({personality_id_default})")
-        ),
-        personality_choices[0],
-    )
-    personality_label = questionary.select(
-        "What kind of companion should I be?",
-        choices=personality_choices,
-        default=personality_default,
-        qmark="◆",
-        pointer="›",
-        style=style,
-    ).ask()
-    if personality_label is None:
-        return 1
-    personality_id = personality_label.rsplit("(", 1)[-1].rstrip(")")
-
-    expressiveness = questionary.select(
-        "How expressive should this personality be?",
-        choices=["subtle", "balanced", "expressive"],
-        default=expressiveness_default,
-        qmark="◆",
-        pointer="›",
-        style=style,
-    ).ask()
-    if expressiveness is None:
-        return 1
-
-    proactivity_label = questionary.select(
-        "How proactive should I be?",
-        choices=["quiet", "helpful nudges", "active coworker"],
-        default={
-            "quiet": "quiet",
-            "helpful_nudges": "helpful nudges",
-            "active_coworker": "active coworker",
-        }.get(proactivity_default, "helpful nudges"),
-        qmark="◆",
-        pointer="›",
-        style=style,
-    ).ask()
-    if proactivity_label is None:
-        return 1
-    proactivity = proactivity_label.replace(" ", "_")
-
-    bitbuddy_likes = parse_setup_quirks(
-        questionary.text(
-            "Optional: up to 3 things BitBuddy likes (comma-separated)",
-            default=", ".join(bitbuddy_likes_default),
-            qmark="◆",
-            style=style,
-        ).ask()
-        or ""
-    )
-    bitbuddy_dislikes = parse_setup_quirks(
-        questionary.text(
-            "Optional: up to 3 things BitBuddy dislikes (comma-separated)",
-            default=", ".join(bitbuddy_dislikes_default),
-            qmark="◆",
-            style=style,
-        ).ask()
-        or ""
-    )
-
-    location_label = (
-        questionary.text(
-            "Where are you based? (optional city/region label)",
-            default=location_label_default,
-            qmark="◆",
-            style=style,
-        ).ask()
-        or location_label_default
-    )
-    timezone = (
-        questionary.text(
-            "Your IANA timezone",
-            default=timezone_default,
-            qmark="◆",
-            style=style,
-        ).ask()
-        or timezone_default
-    ).strip()
-    validate_timezone(timezone)
-    locale = (
-        questionary.text(
-            "Your locale",
-            default=locale_default,
-            qmark="◆",
-            style=style,
-        ).ask()
-        or locale_default
-    )
-    max_tool_rounds_answer = questionary.text(
-        "Max tool calls per chat turn",
-        default=str(max_tool_rounds_default),
-        qmark="◆",
-        style=style,
-    ).ask()
-    max_tool_rounds = parse_tool_round_limit(max_tool_rounds_answer or str(max_tool_rounds_default))
-
-    configure_provider = True
-    configure_project_memory: bool | None = None
-    configure_calendar: bool | None = None
-    if setup_action == "Modify current setup":
         optional_sections = questionary.checkbox(
-            "Which optional setup sections do you want to configure now?",
+            "Which setup sections do you want to revise now? Unchecked sections stay unchanged.",
             choices=[
+                questionary.Choice("Profile and personality", checked=False),
+                questionary.Choice("Local context", checked=False),
+                questionary.Choice("Chat tool budget", checked=False),
                 questionary.Choice("Local model provider", checked=False),
+                questionary.Choice("Project scan interval", checked=False),
                 questionary.Choice("Read-only project memory", checked=False),
                 questionary.Choice("Calendar reminders", checked=False),
+                questionary.Choice("Service/autostart", checked=False),
             ],
             qmark="◆",
             pointer="›",
@@ -512,9 +414,164 @@ def run_setup(_args: argparse.Namespace) -> int:
         ).ask()
         if optional_sections is None:
             return 1
+        configure_profile = "Profile and personality" in optional_sections
+        configure_context = "Local context" in optional_sections
+        configure_chat = "Chat tool budget" in optional_sections
         configure_provider = "Local model provider" in optional_sections
+        configure_scan_interval = "Project scan interval" in optional_sections
         configure_project_memory = "Read-only project memory" in optional_sections
         configure_calendar = "Calendar reminders" in optional_sections
+        configure_service = "Service/autostart" in optional_sections
+
+    buddy_name = buddy_name_default
+    presentation_style = presentation_default
+    pronouns = pronouns_default
+    personality_id = personality_id_default
+    expressiveness = expressiveness_default
+    proactivity = proactivity_default
+    bitbuddy_likes = bitbuddy_likes_default
+    bitbuddy_dislikes = bitbuddy_dislikes_default
+    if configure_profile:
+        buddy_name = (
+            questionary.text(
+                "What do you want to name your BitBuddy?",
+                default=buddy_name_default,
+                qmark="◆",
+                style=style,
+            ).ask()
+            or buddy_name_default
+        )
+
+        presentation_style = questionary.select(
+            "How should I present myself?",
+            choices=["female", "male", "genderless"],
+            default=presentation_default,
+            qmark="◆",
+            pointer="›",
+            style=style,
+        ).ask()
+        if presentation_style is None:
+            return 1
+
+        default_pronouns = {
+            "female": "she/her",
+            "male": "he/him",
+            "genderless": "they/them",
+        }.get(presentation_style, "they/them")
+        pronouns = pronouns_default if presentation_style == presentation_default else default_pronouns
+
+        personality_choices = [
+            f"{raw['display_name']} ({personality_id})"
+            for personality_id, raw in BUILTIN_PERSONALITIES.items()
+        ]
+        personality_default = next(
+            (
+                choice
+                for choice in personality_choices
+                if choice.endswith(f"({personality_id_default})")
+            ),
+            personality_choices[0],
+        )
+        personality_label = questionary.select(
+            "What kind of companion should I be?",
+            choices=personality_choices,
+            default=personality_default,
+            qmark="◆",
+            pointer="›",
+            style=style,
+        ).ask()
+        if personality_label is None:
+            return 1
+        personality_id = personality_label.rsplit("(", 1)[-1].rstrip(")")
+
+        expressiveness = questionary.select(
+            "How expressive should this personality be?",
+            choices=["subtle", "balanced", "expressive"],
+            default=expressiveness_default,
+            qmark="◆",
+            pointer="›",
+            style=style,
+        ).ask()
+        if expressiveness is None:
+            return 1
+
+        proactivity_label = questionary.select(
+            "How proactive should I be?",
+            choices=["quiet", "helpful nudges", "active coworker"],
+            default={
+                "quiet": "quiet",
+                "helpful_nudges": "helpful nudges",
+                "active_coworker": "active coworker",
+            }.get(proactivity_default, "helpful nudges"),
+            qmark="◆",
+            pointer="›",
+            style=style,
+        ).ask()
+        if proactivity_label is None:
+            return 1
+        proactivity = proactivity_label.replace(" ", "_")
+
+        bitbuddy_likes = parse_setup_quirks(
+            questionary.text(
+                "Optional: up to 3 things BitBuddy likes (comma-separated)",
+                default=", ".join(bitbuddy_likes_default),
+                qmark="◆",
+                style=style,
+            ).ask()
+            or ""
+        )
+        bitbuddy_dislikes = parse_setup_quirks(
+            questionary.text(
+                "Optional: up to 3 things BitBuddy dislikes (comma-separated)",
+                default=", ".join(bitbuddy_dislikes_default),
+                qmark="◆",
+                style=style,
+            ).ask()
+            or ""
+        )
+
+    location_label = location_label_default
+    timezone = timezone_default
+    locale = locale_default
+    if configure_context:
+        location_label = (
+            questionary.text(
+                "Where are you based? (optional city/region label)",
+                default=location_label_default,
+                qmark="◆",
+                style=style,
+            ).ask()
+            or location_label_default
+        )
+        timezone = (
+            questionary.text(
+                "Your IANA timezone",
+                default=timezone_default,
+                qmark="◆",
+                style=style,
+            ).ask()
+            or timezone_default
+        ).strip()
+        validate_timezone(timezone)
+        locale = (
+            questionary.text(
+                "Your locale",
+                default=locale_default,
+                qmark="◆",
+                style=style,
+            ).ask()
+            or locale_default
+        )
+
+    max_tool_rounds = max_tool_rounds_default
+    if configure_chat:
+        max_tool_rounds_answer = questionary.text(
+            "Max tool calls per chat turn",
+            default=str(max_tool_rounds_default),
+            qmark="◆",
+            style=style,
+        ).ask()
+        max_tool_rounds = parse_tool_round_limit(max_tool_rounds_answer or str(max_tool_rounds_default))
 
     provider_config = existing_or_empty_provider_config(current_config)
     configured_providers = provider_entries_from_config(current_config)
@@ -565,13 +622,15 @@ def run_setup(_args: argparse.Namespace) -> int:
             provider_url = ""
             provider_model = ""
 
-    scan_interval_answer = questionary.text(
-        "Project memory scan interval in seconds (0 disables monitor)",
-        default=str(scan_interval_default),
-        qmark="◆",
-        style=style,
-    ).ask()
-    scan_interval = parse_scan_interval(scan_interval_answer or str(scan_interval_default))
+    scan_interval = scan_interval_default
+    if configure_scan_interval:
+        scan_interval_answer = questionary.text(
+            "Project memory scan interval in seconds (0 disables monitor)",
+            default=str(scan_interval_default),
+            qmark="◆",
+            style=style,
+        ).ask()
+        scan_interval = parse_scan_interval(scan_interval_answer or str(scan_interval_default))
 
     ensure_app_dirs()
     presentation_config = {"style": presentation_style, "pronouns": pronouns}
@@ -593,48 +652,59 @@ def run_setup(_args: argparse.Namespace) -> int:
     chat_config = {
         "max_tool_rounds": max_tool_rounds,
     }
-    write_config(
-        provider,
-        provider_url,
-        provider_model,
-        scan_interval,
-        buddy_name,
-        presentation_config,
-        personality_config,
-        user_context_config,
-        chat_config,
-        preserve_existing=setup_action == "Modify current setup",
+    should_write_core_config = setup_action != "Modify current setup" or any(
+        [configure_profile, configure_context, configure_chat, configure_provider, configure_scan_interval]
     )
-    record_personality_quirks(personality_id, bitbuddy_likes, bitbuddy_dislikes)
-    update_model_runtime_config(
-        {
-            "providers": configured_providers,
-            "active_provider": active_provider,
-            "project_scan_interval_seconds": scan_interval,
-        }
-    )
+    if should_write_core_config:
+        write_config(
+            provider,
+            provider_url,
+            provider_model,
+            scan_interval,
+            buddy_name,
+            presentation_config,
+            personality_config,
+            user_context_config,
+            chat_config,
+            preserve_existing=setup_action == "Modify current setup",
+            update_provider=setup_action != "Modify current setup" or configure_provider,
+            update_project_scan_interval=setup_action != "Modify current setup" or configure_scan_interval,
+        )
+        if configure_profile:
+            record_personality_quirks(personality_id, bitbuddy_likes, bitbuddy_dislikes)
+        if configure_provider or configure_scan_interval:
+            update_model_runtime_config(
+                {
+                    "providers": configured_providers,
+                    "active_provider": active_provider,
+                    "project_scan_interval_seconds": scan_interval,
+                }
+            )
 
-    print()
-    print(f"Config written: {CONFIG_PATH}")
-    print(f"Personality files available: {PERSONALITIES_DIR}")
-    log_activity(
-        "setup.completed",
-        "BitBuddy setup completed",
-        {
-            "name": buddy_name,
-            "provider": provider,
-            "model": provider_model,
-            "scan_interval_seconds": scan_interval,
-            "presentation_style": presentation_style,
-            "personality_id": personality_id,
-            "expressiveness": expressiveness,
-            "proactivity": proactivity,
-            "location_label": location_label,
-            "timezone": timezone,
-            "locale": locale,
-            "max_tool_rounds": max_tool_rounds,
-        },
-    )
+        print()
+        print(f"Config written: {CONFIG_PATH}")
+        print(f"Personality files available: {PERSONALITIES_DIR}")
+        log_activity(
+            "setup.completed",
+            "BitBuddy setup completed",
+            {
+                "name": buddy_name,
+                "provider": provider,
+                "model": provider_model,
+                "scan_interval_seconds": scan_interval,
+                "presentation_style": presentation_style,
+                "personality_id": personality_id,
+                "expressiveness": expressiveness,
+                "proactivity": proactivity,
+                "location_label": location_label,
+                "timezone": timezone,
+                "locale": locale,
+                "max_tool_rounds": max_tool_rounds,
+            },
+        )
+    else:
+        print()
+        print(f"Core config unchanged: {CONFIG_PATH}")
 
     if provider != "none":
         ok, message = ProviderClient(load_config().provider).health()
@@ -673,7 +743,7 @@ def run_setup(_args: argparse.Namespace) -> int:
     if configure_calendar and not configure_calendar_setup(questionary, style, load_config()):
         return 1
 
-    handle_setup_launch_prompt(questionary, style)
+    handle_setup_launch_prompt(questionary, style, configure_service)
 
     print()
     print("Setup complete.")
@@ -978,10 +1048,64 @@ def configure_calendar_setup(questionary: Any, style: Any, current_config: objec
     return True
 
 
-def handle_setup_launch_prompt(questionary: Any, style: Any) -> None:
+def configure_service_setup(questionary: Any, style: Any) -> bool:
+    if shutil.which("systemctl") is None:
+        print("systemctl was not found. Skipping service/autostart setup.")
+        return True
+
+    enable = questionary.confirm(
+        "Install and enable BitBuddy as a background login service?",
+        default=True,
+        qmark="◆",
+        style=style,
+    ).ask()
+    if enable is None:
+        return False
+    if enable:
+        return enable_service_now()
+
+    disable = questionary.confirm(
+        "Disable the BitBuddy user service if it is already installed?",
+        default=False,
+        qmark="◆",
+        style=style,
+    ).ask()
+    if disable:
+        return systemctl_user("disable", "--now", SERVICE_NAME) == 0
+    print("Leaving service/autostart unchanged.")
+    return True
+
+
+def enable_service_now() -> bool:
+    path = install_service_unit()
+    print(f"Installed user service: {path}")
+    if systemctl_user("daemon-reload") != 0:
+        return False
+    if systemctl_user("enable", "--now", SERVICE_NAME) != 0:
+        return False
+    print("BitBuddy backend service enabled and started.")
+    return True
+
+
+def handle_setup_launch_prompt(questionary: Any, style: Any, service_choice: bool | None = None) -> None:
+    service_managed = False
+    if service_choice is True:
+        service_managed = configure_service_setup(questionary, style)
+    elif service_choice is None and shutil.which("systemctl") is not None:
+        enable_service = questionary.confirm(
+            "Install and enable BitBuddy as a background login service?",
+            default=False,
+            qmark="◆",
+            style=style,
+        ).ask()
+        if enable_service:
+            service_managed = enable_service_now()
+
     token = get_api_token()
     backend_running = check_backend_health(token=token)
-    if backend_running:
+    if service_managed:
+        print("BitBuddy backend is managed by the user systemd service.")
+    elif backend_running:
         restart = questionary.confirm(
             "BitBuddy server is already running. Restart it now to load setup changes?",
             default=False,
@@ -1074,6 +1198,101 @@ def bitbuddy_command() -> str:
         return command
     candidate = Path(sys.executable).with_name("bitbuddy")
     return str(candidate if candidate.exists() else sys.argv[0])
+
+
+def user_systemd_dir() -> Path:
+    return Path.home() / ".config" / "systemd" / "user"
+
+
+def service_unit_path() -> Path:
+    return user_systemd_dir() / SERVICE_NAME
+
+
+def systemd_quote_arg(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def render_service_unit() -> str:
+    command = systemd_quote_arg(bitbuddy_command())
+    return f"""[Unit]
+Description=BitBuddy local backend
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart={command} serve --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def install_service_unit() -> Path:
+    path = service_unit_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_service_unit(), encoding="utf-8")
+    return path
+
+
+def systemctl_user(*args: str) -> int:
+    if shutil.which("systemctl") is None:
+        print("systemctl was not found. User systemd service control is unavailable on this system.", file=sys.stderr)
+        return 1
+    return subprocess.call(["systemctl", "--user", *args])
+
+
+def journalctl_user(*args: str) -> int:
+    if shutil.which("journalctl") is None:
+        print("journalctl was not found. Service logs are unavailable on this system.", file=sys.stderr)
+        return 1
+    return subprocess.call(["journalctl", "--user", "-u", SERVICE_NAME, *args])
+
+
+def service_install_command(_args: argparse.Namespace) -> int:
+    path = install_service_unit()
+    print(f"Installed user service: {path}")
+    daemon_result = systemctl_user("daemon-reload")
+    if daemon_result == 0:
+        print("Reloaded user systemd daemon.")
+    return daemon_result
+
+
+def service_enable_command(_args: argparse.Namespace) -> int:
+    path = install_service_unit()
+    print(f"Installed user service: {path}")
+    daemon_result = systemctl_user("daemon-reload")
+    if daemon_result != 0:
+        return daemon_result
+    return systemctl_user("enable", "--now", SERVICE_NAME)
+
+
+def service_disable_command(_args: argparse.Namespace) -> int:
+    return systemctl_user("disable", "--now", SERVICE_NAME)
+
+
+def service_action_command(args: argparse.Namespace) -> int:
+    command = str(args.service_command or "status")
+    if command in {"start", "restart"} and not service_unit_path().exists():
+        path = install_service_unit()
+        print(f"Installed user service: {path}")
+        daemon_result = systemctl_user("daemon-reload")
+        if daemon_result != 0:
+            return daemon_result
+    return systemctl_user(command, SERVICE_NAME)
+
+
+def service_status_command(_args: argparse.Namespace) -> int:
+    return systemctl_user("status", SERVICE_NAME)
+
+
+def service_logs_command(args: argparse.Namespace) -> int:
+    journal_args = ["-n", str(max(1, int(args.lines)))]
+    if args.follow:
+        journal_args.append("-f")
+    return journalctl_user(*journal_args)
 
 
 def setup_positive_int(questionary: Any, style: Any, prompt: str, default: int) -> int | None:

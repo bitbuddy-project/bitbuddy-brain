@@ -51,10 +51,13 @@ class ActivityLevelTest(unittest.TestCase):
         # untouched knobs still follow the level
         self.assertEqual(cfg.surface_cooldown_minutes, LEVEL_PROFILES["high"].surface_cooldown_minutes)
 
-    def test_level_in_payload_wins_over_same_call_override(self) -> None:
-        # Posting the whole object (level + numerics) — the level is authoritative.
-        update_autonomy_config({"activity_level": "low", "idle_delay_seconds": 5000})
-        self.assertEqual(load_config().autonomy.idle_delay_seconds, LEVEL_PROFILES["low"].idle_delay_seconds)
+    def test_explicit_numeric_in_payload_preserved_with_level(self) -> None:
+        # Posting the whole object (level + numerics): the explicit numeric
+        # override must be preserved (settings UI sends the whole autonomy object
+        # and user-tweaked knobs must survive).
+        update_autonomy_config({"activity_level": "low", "idle_delay_seconds": 5000, "max_autonomous_deliveries_per_day": 10})
+        self.assertEqual(load_config().autonomy.idle_delay_seconds, 5000.0)
+        self.assertEqual(load_config().autonomy.max_autonomous_deliveries_per_day, 10)
 
     def test_pinning_override_without_level_then_level_resets_it(self) -> None:
         update_autonomy_config({"activity_level": "low"})

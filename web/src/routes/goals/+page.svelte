@@ -409,19 +409,21 @@
 	}
 
 	.overview-grid {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+		display: flex;
 		gap: 1rem;
+		overflow-x: auto;
+		overscroll-behavior-x: contain;
+		scroll-snap-type: x mandatory;
+		scrollbar-color: var(--scrollbar-thumb) transparent;
+		scrollbar-width: thin;
+		padding-bottom: 0.25rem;
+		-webkit-overflow-scrolling: touch;
 	}
 
-	@container (max-width: 62rem) {
-		.overview-grid {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-		}
-
-		.focus-card {
-			grid-column: 1 / -1;
-		}
+	.overview-grid > .signal-card {
+		flex: 0 0 22rem;
+		min-width: 18rem;
+		scroll-snap-align: start;
 	}
 
 	.signal-card,
@@ -430,21 +432,25 @@
 	}
 
 	.signal-card {
-		padding: 1rem;
+		padding: 1.15rem 1.25rem;
 		display: grid;
-		gap: 0.45rem;
+		gap: 0.5rem;
 		align-content: start;
 		justify-items: start;
 		text-align: left;
 		min-width: 0;
 		overflow: hidden;
+		border: 1px solid var(--card-border);
+		background: var(--event-bg);
+		box-shadow:
+			inset 0 1px 0 var(--card-inner-line),
+			var(--card-shadow);
 	}
 
 	.signal-copy {
 		display: grid;
 		gap: 0.35rem;
 		min-width: 0;
-		max-width: 24rem;
 	}
 
 	.signal-copy h2,
@@ -780,22 +786,9 @@
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 
-		.overview-grid {
-			grid-template-columns: 1fr;
-		}
-
-		.focus-card {
-			grid-column: auto;
-		}
-	}
-
-	@container (max-width: 34rem) {
-		.overview-grid {
-			grid-template-columns: 1fr;
-		}
-
-		.focus-card {
-			grid-column: auto;
+		.overview-grid > .signal-card {
+			flex: 0 0 80vw;
+			min-width: 16rem;
 		}
 	}
 </style>

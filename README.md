@@ -58,6 +58,21 @@ bitbuddy dashboard
 
 `bitbuddy dashboard` starts the dashboard UI and opens a tokenized localhost URL in your browser. It does not start the backend; keep `bitbuddy serve` running for chat, memory, calendar, and email features.
 
+## Background Service
+
+On Linux systems with user systemd, BitBuddy can keep the backend running after login. `bitbuddy setup` can install and enable this near the end of setup, or you can manage it later from the CLI:
+
+```bash
+bitbuddy service install
+bitbuddy service enable
+bitbuddy service status
+bitbuddy service logs -f
+bitbuddy service restart
+bitbuddy service disable
+```
+
+The service runs the backend only (`bitbuddy serve --host 127.0.0.1 --port 8787`). Open the UI with `bitbuddy dashboard` when you want to use the app.
+
 ## Providers
 
 BitBuddy stores local model provider settings in `~/.bitbuddy/config.yaml`.

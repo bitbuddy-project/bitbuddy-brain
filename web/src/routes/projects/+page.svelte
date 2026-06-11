@@ -189,6 +189,11 @@
 
 <style>
 	.projects-page {
+		--page-accent: var(--accent);
+		--page-soft: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+		--page-border: color-mix(in srgb, var(--accent) 20%, var(--border));
+		--page-glow: color-mix(in srgb, var(--accent) 10%, transparent);
+
 		width: 100%;
 		max-width: 100%;
 		padding: 0 1rem;

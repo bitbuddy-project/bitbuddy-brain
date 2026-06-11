@@ -362,6 +362,8 @@ def write_config(
     user_context: dict[str, Any] | None = None,
     chat_config: dict[str, Any] | None = None,
     preserve_existing: bool = False,
+    update_provider: bool = True,
+    update_project_scan_interval: bool = True,
 ) -> None:
     ensure_app_dirs()
     seed_builtin_personality_files()
@@ -371,11 +373,13 @@ def write_config(
         if isinstance(existing, dict):
             data = deep_merge(data, existing)
             data["name"] = name
-            data["provider"] = {"type": provider, "url": url, "model": model}
-            data["providers"] = [{"type": provider, "url": url, "model": model}] if provider != "none" else []
-            data["active_provider"] = provider if provider != "none" else "none"
+            if update_provider:
+                data["provider"] = {"type": provider, "url": url, "model": model}
+                data["providers"] = [{"type": provider, "url": url, "model": model}] if provider != "none" else []
+                data["active_provider"] = provider if provider != "none" else "none"
             memories = data.get("memories") if isinstance(data.get("memories"), dict) else {}
-            memories["project_scan_interval_seconds"] = project_scan_interval_seconds
+            if update_project_scan_interval:
+                memories["project_scan_interval_seconds"] = project_scan_interval_seconds
             data["memories"] = memories
     if presentation is not None:
         data["presentation"] = presentation
@@ -391,6 +395,7 @@ def write_config(
             "return_greeting_idle_minutes": parsed_chat.return_greeting_idle_minutes,
             "return_greeting_phrases": list(parsed_chat.return_greeting_phrases),
             "max_tool_rounds": parsed_chat.max_tool_rounds,
+            "reasoning_budget_tokens": parsed_chat.reasoning_budget_tokens,
         }
     CONFIG_PATH.write_text(
         yaml.safe_dump(data, sort_keys=False),
@@ -1159,10 +1164,10 @@ def update_autonomy_config(autonomy: dict[str, Any]) -> BitBuddyConfig:
 
     existing = raw.get("autonomy") if isinstance(raw.get("autonomy"), dict) else {}
     next_raw = {**existing}
-    # Level-driven knobs are derived from activity_level. When the caller sets a level
-    # (the normal case from the settings UI, which posts the whole object), the level
-    # wins: drop these so the preset fully applies and stale per-field values can't
-    # shadow it. To pin an explicit value, set it directly in config without a level.
+    # Level-driven knobs default to the activity-level profile, but any
+    # explicit value in the request still wins (the settings UI posts the
+    # entire autonomy object including both activity_level and user-tweaked
+    # knobs; we want the user's manual tweaks to survive).
     level_driven_keys = (
         "idle_delay_seconds",
         "idle_backoff_multiplier",
@@ -1183,14 +1188,25 @@ def update_autonomy_config(autonomy: dict[str, Any]) -> BitBuddyConfig:
         "max_pending_comments",
         "max_new_questions_per_cycle",
     ]
+    # When activity_level is present, start from the level profile so all
+    # derived knobs get sensible defaults, then let any explicit value in
+    # the request override (this way a settings-UI save that bumps e.g.
+    # max_autonomous_deliveries_per_day to 10 keeps that value even though
+    # the whole autonomy object, including activity_level, was posted).
     if "activity_level" in autonomy:
+        profile = profile_for_level(autonomy["activity_level"])
         for key in level_driven_keys:
-            next_raw.pop(key, None)
+            next_raw[key] = getattr(profile, key)
+        for key in level_driven_keys:
+            if key in autonomy:
+                next_raw[key] = autonomy[key]
+        for key in settable_keys:
+            if key in autonomy:
+                next_raw[key] = autonomy[key]
     else:
-        settable_keys.extend(level_driven_keys)
-    for key in settable_keys:
-        if key in autonomy:
-            next_raw[key] = autonomy[key]
+        for key in list(settable_keys) + list(level_driven_keys):
+            if key in autonomy:
+                next_raw[key] = autonomy[key]
 
     existing_web_search = existing.get("web_search") if isinstance(existing.get("web_search"), dict) else {}
     web_search = autonomy.get("web_search") if isinstance(autonomy.get("web_search"), dict) else {}
