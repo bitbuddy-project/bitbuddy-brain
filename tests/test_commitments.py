@@ -121,5 +121,31 @@ class EligibleAtGateTest(unittest.TestCase):
         self.assertEqual(surfaced.id, future.id)
 
 
+class CommitmentOnlyJobTest(unittest.TestCase):
+    """When memory consolidation is off, the job still scans for commitments but skips the heavy loop."""
+
+    def setUp(self) -> None:
+        write_config("none", "", "")
+
+    def test_commitment_only_job_scans_without_consolidating(self) -> None:
+        from bitbuddy.memory import consolidation
+        from bitbuddy.memory.consolidation import ConsolidationJob
+
+        job = ConsolidationJob(
+            chat_id="c1", job_id="j1", model=None, scheduled_token={"t": 1},
+            delay_seconds=0, recent_message_count=10, max_tool_rounds=1, max_actions=1,
+            commitment_only=True,
+        )
+        calls = {"scan": 0, "loop": 0}
+        with patch("bitbuddy.memory.consolidation.job_is_stale", return_value=False), \
+             patch("bitbuddy.memory.consolidation.recent_chat_window", return_value={"token": {"t": 1}, "messages": []}), \
+             patch("bitbuddy.memory.consolidation.ProviderClient"), \
+             patch("bitbuddy.autonomy.commitments.scan_and_queue_commitments", side_effect=lambda *a, **k: calls.__setitem__("scan", calls["scan"] + 1) or []), \
+             patch("bitbuddy.memory.consolidation.run_private_consolidation_loop", side_effect=lambda *a, **k: calls.__setitem__("loop", calls["loop"] + 1) or {}):
+            consolidation.run_memory_consolidation_job(job)
+        self.assertEqual(calls["scan"], 1)
+        self.assertEqual(calls["loop"], 0)  # heavy consolidation loop is skipped
+
+
 if __name__ == "__main__":
     unittest.main()
