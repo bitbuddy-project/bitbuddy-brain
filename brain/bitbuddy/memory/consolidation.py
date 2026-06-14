@@ -52,6 +52,7 @@ class ConsolidationJob:
     timer: threading.Timer | None = None
     thread: threading.Thread | None = None
     status: str = "queued"
+    commitment_only: bool = False
 
 
 _JOBS_LOCK = threading.Lock()
@@ -60,12 +61,17 @@ _JOBS_BY_CHAT_ID: dict[str, ConsolidationJob] = {}
 
 def schedule_memory_consolidation(chat_id: str, model: str | None = None) -> str | None:
     config = load_config()
-    if not config.idle_consolidation_enabled:
+    consolidation_enabled = config.idle_consolidation_enabled
+    commitments_enabled = bool(getattr(config.autonomy, "commitment_tracking_enabled", True))
+    # Commitment tracking rides this same background job but is independent of memory
+    # consolidation: if consolidation is off we still schedule a lightweight scan-only job.
+    if not consolidation_enabled and not commitments_enabled:
         log_activity("memory_consolidation.disabled", "Idle memory consolidation is disabled", {"chat_id": chat_id})
         return None
     if config.provider.type == "none":
         log_activity("memory_consolidation.skipped", "No model provider configured for idle consolidation", {"chat_id": chat_id})
         return None
+    commitment_only = not consolidation_enabled
 
     cancel_memory_consolidation(chat_id, reason="debounced by newer schedule")
     cancel_idle_autonomy(chat_id, reason="debounced by newer chat activity")
@@ -84,6 +90,7 @@ def schedule_memory_consolidation(chat_id: str, model: str | None = None) -> str
         recent_message_count=max(1, int(config.idle_consolidation_recent_message_count)),
         max_tool_rounds=max(1, int(config.idle_consolidation_max_tool_rounds)),
         max_actions=max(1, int(config.idle_consolidation_max_actions)),
+        commitment_only=commitment_only,
     )
     timer = threading.Timer(job.delay_seconds, _start_job_thread, args=(job,))
     timer.daemon = True
@@ -134,6 +141,20 @@ def run_memory_consolidation_job(job: ConsolidationJob) -> None:
         window = recent_chat_window(job.chat_id, limit=job.recent_message_count)
         if window.get("token") != job.scheduled_token:
             log_stale(job, "conversation window token changed")
+            return
+
+        # Notice commitments the user made in this window and schedule gentle follow-ups.
+        # Self-contained and failure-swallowing so it can never disrupt consolidation.
+        try:
+            from ..autonomy.commitments import scan_and_queue_commitments
+
+            scan_and_queue_commitments(window, ProviderClient(load_config().provider), chat_id=job.chat_id, model=job.model)
+        except Exception as error:
+            log_activity("memory_consolidation.commitment_scan_failed", "Commitment scan failed", {"chat_id": job.chat_id, "error": str(error)})
+
+        # When memory consolidation is disabled, this job exists only to track commitments.
+        if job.commitment_only:
+            log_activity("memory_consolidation.commitment_only", "Ran commitment-only scan (consolidation disabled)", {"chat_id": job.chat_id, "job_id": job.job_id})
             return
 
         log_activity(

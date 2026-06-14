@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,7 +33,7 @@ from bitbuddy.autonomy.levels import profile_for_level  # noqa: E402
 
 def reset_intentions() -> None:
     ensure_intentions_database()
-    with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+    with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
         connection.execute("delete from intentions")
         connection.execute("delete from intention_surfaces")
 
@@ -121,6 +122,79 @@ class MorningBriefTest(unittest.TestCase):
     def test_disabled_email_stays_silent(self) -> None:
         with patch("bitbuddy.autonomy.morning_brief.load_config", return_value=SimpleNamespace(email=self._email_cfg(enabled=False))):
             self.assertEqual(morning_brief.build_morning_brief_content(), "")
+
+
+class EmailTriageTest(unittest.TestCase):
+    def setUp(self) -> None:
+        write_config("none", "", "")
+        reset_intentions()
+
+    def _email_cfg(self, enabled: bool = True) -> SimpleNamespace:
+        return SimpleNamespace(enabled=enabled, default_mailbox="INBOX")
+
+    def _msgs(self):
+        return [
+            SimpleNamespace(id="m1", mailbox="INBOX", subject="Invoice due Friday", from_addr="Acme Billing <billing@acme.com>", snippet="Your invoice of $420 is due 2026-06-19.", flags=[]),
+            SimpleNamespace(id="m2", mailbox="INBOX", subject="Weekend sale!", from_addr="deals@shop.com", snippet="50% off everything", flags=[]),
+        ]
+
+    def test_triage_keeps_only_important_decisions(self) -> None:
+        from bitbuddy.autonomy import email_triage
+
+        canned = (
+            '{"important": ['
+            '{"message_id": "m1", "importance": 5, "needs_decision": true, "one_line": "Pay the Acme invoice", "suggested_actions": ["calendar", "reminder"], "due_hint": "Friday"},'
+            '{"message_id": "m2", "importance": 2, "needs_decision": false, "one_line": "marketing", "suggested_actions": ["trash"]},'
+            '{"message_id": "ghost", "importance": 5, "needs_decision": true, "one_line": "hallucinated", "suggested_actions": ["task"]}'
+            ']}'
+        )
+        with patch("bitbuddy.autonomy.email_triage.load_config", return_value=SimpleNamespace(email=self._email_cfg())), \
+             patch("bitbuddy.email.service.list_messages", return_value=self._msgs()), \
+             patch("bitbuddy.autonomy.email_triage.collect_model_text", return_value=canned):
+            results = email_triage.triage_unread(object())
+        self.assertEqual(len(results), 1)
+        item = results[0]
+        self.assertEqual(item.message_id, "m1")
+        self.assertEqual(item.mailbox, "INBOX")
+        self.assertEqual(item.subject, "Invoice due Friday")  # taken from our handle, not the model echo
+        self.assertEqual(item.suggested_actions, ["calendar", "reminder"])
+        self.assertEqual(item.due_hint, "Friday")
+
+    def test_triage_failure_returns_empty(self) -> None:
+        from bitbuddy.autonomy import email_triage
+
+        with patch("bitbuddy.autonomy.email_triage.load_config", return_value=SimpleNamespace(email=self._email_cfg())), \
+             patch("bitbuddy.email.service.list_messages", return_value=self._msgs()), \
+             patch("bitbuddy.autonomy.email_triage.collect_model_text", side_effect=RuntimeError("model down")):
+            self.assertEqual(email_triage.triage_unread(object()), [])
+
+    def test_queue_surfaces_question_with_email_handle(self) -> None:
+        from bitbuddy.autonomy.email_triage import TriagedEmail
+
+        triaged = [TriagedEmail(message_id="m1", mailbox="INBOX", subject="Invoice due Friday", sender="Acme Billing", importance=5, one_line="Pay the Acme invoice", suggested_actions=["calendar", "reminder", "trash"], due_hint="Friday")]
+        with patch("bitbuddy.autonomy.morning_brief.load_config", return_value=SimpleNamespace(email=self._email_cfg(), provider=SimpleNamespace(type="none"))), \
+             patch("bitbuddy.autonomy.morning_brief.triage_unread", return_value=triaged):
+            intention = morning_brief.queue_morning_brief(client=object())
+        self.assertIsNotNone(intention)
+        self.assertEqual(intention.kind, "question")
+        self.assertEqual(intention.metadata.get("source_activity"), "email_triage")
+        self.assertEqual(intention.metadata.get("priority"), morning_brief.TRIAGE_PRIORITY)
+        self.assertEqual(intention.metadata.get("email", {}).get("message_id"), "m1")
+        self.assertIn("Invoice due Friday", intention.content)
+        self.assertIn("filter that sender", intention.content)
+        # throttled: a second wake within the window stays silent
+        with patch("bitbuddy.autonomy.morning_brief.load_config", return_value=SimpleNamespace(email=self._email_cfg(), provider=SimpleNamespace(type="none"))), \
+             patch("bitbuddy.autonomy.morning_brief.triage_unread", return_value=triaged):
+            self.assertIsNone(morning_brief.queue_morning_brief(client=object()))
+
+    def test_queue_falls_back_to_count_when_triage_empty(self) -> None:
+        with patch("bitbuddy.autonomy.morning_brief.load_config", return_value=SimpleNamespace(email=self._email_cfg(), provider=SimpleNamespace(type="none"))), \
+             patch("bitbuddy.autonomy.morning_brief.triage_unread", return_value=[]), \
+             patch("bitbuddy.email.service.list_messages", return_value=self._msgs()):
+            intention = morning_brief.queue_morning_brief(client=object())
+        self.assertIsNotNone(intention)
+        self.assertEqual(intention.kind, "comment")
+        self.assertEqual(intention.metadata.get("source_activity"), "morning_brief")
 
 
 class ShowAndTellGateTest(unittest.TestCase):

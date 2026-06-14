@@ -55,6 +55,15 @@ def deliver_intention(
         except Exception:
             context_lines.append(f"Project context: This is about project id '{project_id}'")
 
+    email_handle = intention.metadata.get("email") if isinstance(intention.metadata, dict) else None
+    if isinstance(email_handle, dict) and email_handle.get("subject"):
+        context_lines.append(
+            "Email context: this is about a specific unread email — "
+            f"“{email_handle.get('subject')}” from {email_handle.get('sender')} in {email_handle.get('mailbox') or 'INBOX'}. "
+            "If the user wants to act on it, you can find it with email_search_messages and add a calendar event, "
+            "set a reminder, save a task, or create an auto-trash rule. Never send or reply to email."
+        )
+
     prompt_parts = [
         "[Intention Delivery]",
         "You have a pending question or comment from idle autonomy.",
@@ -97,6 +106,7 @@ def deliver_intention(
             "autonomy_intention_delivery": True,
             "intention_id": intention.id,
             "intention_kind": intention.kind,
+            **({"email": email_handle} if isinstance(email_handle, dict) and email_handle.get("message_id") else {}),
         },
     )
     record_intention_surface(chat_id, intention.id, metadata={"kind": intention.kind, "delivery_source": delivery_source})
@@ -139,6 +149,8 @@ def surfaced_intention_text(intention: Intention) -> str:
     kind = intention.kind.replace("_", " ")
     if kind == "question":
         label = "a question"
+    elif intention.kind == "follow_up":
+        label = "a reminder"
     elif kind in {"comment", "suggestion"}:
         label = f"a {kind}"
     else:

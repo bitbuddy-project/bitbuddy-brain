@@ -89,6 +89,8 @@ def create_intention(
     source_cycle_id: str | None = None,
     source: str = "autonomy",
     metadata: dict[str, Any] | None = None,
+    eligible_at: str | None = None,
+    expires_at: str | None = None,
 ) -> Intention:
     clean_kind = kind.strip() or "comment"
     clean_content = content.strip()
@@ -108,10 +110,12 @@ def create_intention(
                 set reason = case when reason = '' then ? else reason end,
                     source_cycle_id = coalesce(source_cycle_id, ?),
                     metadata = ?,
+                    eligible_at = coalesce(?, eligible_at),
+                    expires_at = coalesce(?, expires_at),
                     updated_at = current_timestamp
                 where id = ?
                 """,
-                (reason.strip(), source_cycle_id, json.dumps(metadata_patch), existing.id),
+                (reason.strip(), source_cycle_id, json.dumps(metadata_patch), eligible_at, expires_at, existing.id),
             )
             row = connection.execute(
                 """
@@ -130,10 +134,10 @@ def create_intention(
 
         cursor = connection.execute(
             """
-            insert into intentions (kind, content, reason, source, source_cycle_id, status, metadata, updated_at)
-            values (?, ?, ?, ?, ?, 'queued', ?, current_timestamp)
+            insert into intentions (kind, content, reason, source, source_cycle_id, status, metadata, eligible_at, expires_at, updated_at)
+            values (?, ?, ?, ?, ?, 'queued', ?, ?, ?, current_timestamp)
             """,
-            (clean_kind, clean_content, reason.strip(), source, source_cycle_id, json.dumps(metadata or {})),
+            (clean_kind, clean_content, reason.strip(), source, source_cycle_id, json.dumps(metadata or {}), eligible_at, expires_at),
         )
         row = connection.execute(
             """
@@ -348,6 +352,8 @@ def next_eligible_intention(
         if mode == "debug" and relevance <= 0 and priority < 5:
             continue
         eligible_at = parse_timestamp(intention.eligible_at) or parse_timestamp(intention.created_at) or current
+        if eligible_at > current:  # scheduled follow-ups stay hidden until their time arrives
+            continue
         created_at = parse_timestamp(intention.created_at) or current
         ranked.append(((-relevance, -priority, eligible_at, created_at, intention.id), intention))
     if not ranked:
