@@ -351,6 +351,7 @@ def email_capability_context(config: Any) -> str:
         f"Email tools can see or act on at most {tool_limit} message(s) per list/search/auto-trash call by user configuration. "
         "When the user asks about their inbox, email, messages, receipts, appointments, useful emails, or mail-derived calendar items, use email_recent_messages or email_search_messages before answering. "
         "If the user explicitly asks to delete/clean up spam, use email_trash_message for specific individual messages or email_create_auto_trash_rule for sender-based cleanup. Say that this moves mail to Trash; it is recoverable and not permanent delete. "
+        "On wake BitBuddy may already have triaged unread mail and surfaced an important message as a question; when the user responds to such a message, look it up with email_search_messages and follow through with calendar_create_event, a reminder, a saved task/goal, or email_create_auto_trash_rule as they choose. "
         "If permission is ask/denied, let the tool permission flow handle it; do not claim email is unhooked or inaccessible unless the tool reports that. "
         "Never send, reply, permanently delete, archive, mark messages read, or load remote email images."
     )
