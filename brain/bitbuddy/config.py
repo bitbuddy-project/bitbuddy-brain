@@ -129,6 +129,7 @@ class AutonomyConfig:
     surface_cooldown_minutes: int
     spontaneous_remark_cooldown_minutes: int
     min_autonomous_priority: int
+    commitment_tracking_enabled: bool
     web_search: WebSearchConfig
 
 
@@ -722,6 +723,7 @@ def parse_autonomy_config(raw: Any) -> AutonomyConfig:
         surface_cooldown_minutes=max(1, int(raw.get("surface_cooldown_minutes", profile.surface_cooldown_minutes))),
         spontaneous_remark_cooldown_minutes=max(1, int(raw.get("spontaneous_remark_cooldown_minutes", profile.spontaneous_remark_cooldown_minutes))),
         min_autonomous_priority=max(1, min(5, int(raw.get("min_autonomous_priority", profile.min_autonomous_priority)))),
+        commitment_tracking_enabled=bool(raw.get("commitment_tracking_enabled", True)),
         web_search=WebSearchConfig(
             enabled=bool(web_search.get("enabled", True)),
             provider=str(web_search.get("provider") or "searxng"),
@@ -1187,6 +1189,7 @@ def update_autonomy_config(autonomy: dict[str, Any]) -> BitBuddyConfig:
         "max_pending_questions",
         "max_pending_comments",
         "max_new_questions_per_cycle",
+        "commitment_tracking_enabled",
     ]
     # When activity_level is present, start from the level profile so all
     # derived knobs get sensible defaults, then let any explicit value in
@@ -1231,6 +1234,7 @@ def update_autonomy_config(autonomy: dict[str, Any]) -> BitBuddyConfig:
         "surface_cooldown_minutes": parsed.surface_cooldown_minutes,
         "spontaneous_remark_cooldown_minutes": parsed.spontaneous_remark_cooldown_minutes,
         "min_autonomous_priority": parsed.min_autonomous_priority,
+        "commitment_tracking_enabled": parsed.commitment_tracking_enabled,
         "web_search": {
             "enabled": parsed.web_search.enabled,
             "provider": parsed.web_search.provider,

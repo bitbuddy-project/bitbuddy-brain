@@ -149,6 +149,8 @@ def surfaced_intention_text(intention: Intention) -> str:
     kind = intention.kind.replace("_", " ")
     if kind == "question":
         label = "a question"
+    elif intention.kind == "follow_up":
+        label = "a reminder"
     elif kind in {"comment", "suggestion"}:
         label = f"a {kind}"
     else:

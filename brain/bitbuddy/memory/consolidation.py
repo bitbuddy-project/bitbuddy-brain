@@ -136,6 +136,15 @@ def run_memory_consolidation_job(job: ConsolidationJob) -> None:
             log_stale(job, "conversation window token changed")
             return
 
+        # Notice commitments the user made in this window and schedule gentle follow-ups.
+        # Self-contained and failure-swallowing so it can never disrupt consolidation.
+        try:
+            from ..autonomy.commitments import scan_and_queue_commitments
+
+            scan_and_queue_commitments(window, ProviderClient(load_config().provider), chat_id=job.chat_id, model=job.model)
+        except Exception as error:
+            log_activity("memory_consolidation.commitment_scan_failed", "Commitment scan failed", {"chat_id": job.chat_id, "error": str(error)})
+
         log_activity(
             "memory_consolidation.started",
             "Started idle memory consolidation",
