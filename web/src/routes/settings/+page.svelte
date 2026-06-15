@@ -598,7 +598,7 @@
 	function providerModelDefault(type: string): string {
 		if (type === 'openai') return 'gpt-5.5';
 		if (type === 'codex') return 'gpt-5.5';
-		if (type === 'anthropic') return 'claude-sonnet-4-6';
+		if (type === 'anthropic') return 'claude-opus-4-8';
 		return '';
 	}
 
@@ -608,14 +608,47 @@
 		return '';
 	}
 
+	// Recommended models surfaced even before a live /v1/models fetch. Live-discovered
+	// models are merged in on top of these. `disabled` entries appear in the picker but
+	// can't be selected yet (e.g. Fable 5 needs always-on thinking / refusal-fallback /
+	// 30-day-retention handling BitBuddy doesn't implement).
+	const PROVIDER_MODEL_CATALOG: Record<string, { value: string; description?: string; disabled?: boolean }[]> = {
+		openai: [
+			{ value: 'gpt-5.5', description: 'Latest flagship' },
+			{ value: 'gpt-5.4' },
+			{ value: 'gpt-5.4-mini', description: 'Lower latency and cost' }
+		],
+		anthropic: [
+			{ value: 'claude-opus-4-8', description: 'Most capable Opus' },
+			{ value: 'claude-sonnet-4-6', description: 'Balanced speed and intelligence' },
+			{ value: 'claude-haiku-4-5', description: 'Fastest, most cost-effective' },
+			{ value: 'claude-fable-5', description: 'Not yet supported in BitBuddy', disabled: true }
+		]
+	};
+
 	function providerModelOptions(): SelectOption[] {
-		const values: string[] = [];
 		const current = draftProvider.model.trim();
-		if (current) values.push(current);
-		for (const model of providerModels) {
-			if (model && !values.includes(model)) values.push(model);
-		}
-		return values.map((value) => ({ value, label: value }));
+		const catalog = PROVIDER_MODEL_CATALOG[draftProvider.type] ?? [];
+		const meta = new Map(catalog.map((entry) => [entry.value, entry]));
+
+		const values: string[] = [];
+		const push = (value: string) => {
+			if (value && !values.includes(value)) values.push(value);
+		};
+		if (current) push(current);
+		for (const model of providerModels) push(model);
+		for (const entry of catalog) push(entry.value);
+
+		return values.map((value) => {
+			const entry = meta.get(value);
+			return {
+				value,
+				label: value,
+				description: entry?.description,
+				// Never disable the active selection, or the picker can't render it as chosen.
+				disabled: value !== current && Boolean(entry?.disabled)
+			};
+		});
 	}
 
 	function setDraftProviderModel(model: string) {

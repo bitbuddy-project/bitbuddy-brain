@@ -912,7 +912,7 @@ def provider_model_default_for(provider: str) -> str:
     if provider == "codex":
         return "gpt-5.5"
     if provider == "anthropic":
-        return "claude-sonnet-4-6"
+        return "claude-opus-4-8"
     return ""
 
 

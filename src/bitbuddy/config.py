@@ -52,7 +52,7 @@ DEFAULT_PROVIDER_URLS = {
 DEFAULT_PROVIDER_MODELS = {
     "openai": "gpt-5.5",
     "codex": "gpt-5.5",
-    "anthropic": "claude-sonnet-4-6",
+    "anthropic": "claude-opus-4-8",
 }
 
 
