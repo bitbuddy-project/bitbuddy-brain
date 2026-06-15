@@ -50,7 +50,7 @@ DEFAULT_PROVIDER_URLS = {
     "anthropic": "https://api.anthropic.com",
 }
 DEFAULT_PROVIDER_MODELS = {
-    "openai": "gpt-4.1",
+    "openai": "gpt-5.5",
     "codex": "gpt-5.5",
     "anthropic": "claude-sonnet-4-6",
 }

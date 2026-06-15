@@ -596,7 +596,7 @@
 	}
 
 	function providerModelDefault(type: string): string {
-		if (type === 'openai') return 'gpt-4.1';
+		if (type === 'openai') return 'gpt-5.5';
 		if (type === 'codex') return 'gpt-5.5';
 		if (type === 'anthropic') return 'claude-sonnet-4-6';
 		return '';
