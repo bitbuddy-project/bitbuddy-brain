@@ -569,9 +569,10 @@
 		display: inline-flex; align-items: center; gap: 0.4rem;
 		padding: 0.5rem 0.85rem;
 		border: 0; border-radius: 0.75rem;
-		background: #2563eb;
-		color: #fff; font-weight: 800; cursor: pointer;
+		background: var(--accent);
+		color: var(--on-accent); font-weight: 800; cursor: pointer;
 	}
+	.add-btn:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
 
 	.calendar-content {
 		flex: 1 1 auto;
@@ -772,7 +773,7 @@
 	.form-actions .spacer { flex: 1; }
 	.event-form button {
 		padding: 0.55rem 0.85rem; border-radius: 0.7rem; border: 0;
-		background: #2563eb; color: #fff;
+		background: var(--accent); color: var(--on-accent);
 		font-weight: 800; cursor: pointer;
 	}
 	.event-form button:disabled { opacity: 0.5; cursor: not-allowed; }

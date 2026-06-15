@@ -5,11 +5,12 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-memory-stewardship-test-")
 
 from bitbuddy.prompt_builder import build_chat_messages
@@ -118,7 +119,7 @@ Your operational mode has changed from plan to build.
         initialize_project_database(project.database_path)
 
         purpose = "Purpose Fixture is a Wayland compositor test fixture."
-        with sqlite3.connect(project.database_path) as connection:
+        with closing(sqlite3.connect(project.database_path)) as connection, connection:
             connection.execute(
                 """
                 insert into project_profile (

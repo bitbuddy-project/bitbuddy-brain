@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-return-greeting-test-")
 
 from bitbuddy.activity import ensure_activity_database, list_activity  # noqa: E402
@@ -63,7 +64,7 @@ class ReturnGreetingTest(unittest.TestCase):
     def setUp(self) -> None:
         ensure_activity_database()
         ensure_chat_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from activity")
             connection.execute("delete from chat_messages")
             connection.execute("delete from chats")

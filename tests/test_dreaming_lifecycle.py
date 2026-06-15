@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-dream-lifecycle-test-")
 
 from bitbuddy.activity import ensure_activity_database  # noqa: E402
@@ -71,7 +72,7 @@ class DreamingLifecycleTest(unittest.TestCase):
         ensure_intentions_database()
         ensure_lifecycle_database()
         ensure_dream_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from activity")
             connection.execute("delete from intentions")
             connection.execute("delete from chat_messages")
@@ -107,7 +108,7 @@ class DreamingLifecycleTest(unittest.TestCase):
     def test_minidream_cleans_queue_and_enters_sleep(self) -> None:
         now = datetime(2026, 5, 15, 23, 31, tzinfo=ZoneInfo("UTC"))
         create_intention("question", "Should I ask about BitBuddy dreaming?", metadata={"priority": 3})
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute(
                 """
                 insert into intentions (kind, content, reason, source, status, metadata, created_at, updated_at)

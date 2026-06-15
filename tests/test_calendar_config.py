@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-calendar-config-test-")
 
 from bitbuddy.config import load_config, parse_calendar_config, update_calendar_config, write_config  # noqa: E402

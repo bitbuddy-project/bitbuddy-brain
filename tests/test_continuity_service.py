@@ -5,11 +5,12 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-continuity-service-test-")
 
 from bitbuddy.autonomy.context import build_autonomy_context  # noqa: E402
@@ -37,7 +38,7 @@ class ContinuityServiceTest(unittest.TestCase):
         ensure_episodic_memory_database()
         ensure_intentions_database()
         ensure_continuity_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             for table in (
                 "continuity_events",
                 "episodic_memory_capture_log",

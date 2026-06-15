@@ -11,7 +11,7 @@ import time
 import urllib.request
 import webbrowser
 import zipfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -184,6 +184,12 @@ def build_parser() -> argparse.ArgumentParser:
     backup_parser.add_argument("output", nargs="?", help="Output zip path. Defaults to ./bitbuddy-backup-<timestamp>.zip")
     backup_parser.add_argument("--include-secrets", action="store_true", help="Include secrets.json in the backup zip.")
     backup_parser.set_defaults(handler=backup_command)
+
+    update_parser = subparsers.add_parser("update", help="Update a source-installed BitBuddy checkout.")
+    update_parser.add_argument("--branch", default="main", help="Git branch to update from. Defaults to main.")
+    update_parser.add_argument("--no-autostash", action="store_true", help="Refuse local changes instead of stashing and restoring them.")
+    update_parser.add_argument("--skip-doctor", action="store_true", help="Do not run bitbuddy doctor after updating.")
+    update_parser.set_defaults(handler=update_command)
 
     completion_parser = subparsers.add_parser("completion", help="Print a shell completion script.")
     completion_parser.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell to generate completion for.")
@@ -1334,7 +1340,7 @@ def run_dashboard(args: argparse.Namespace) -> int:
     api_token = get_api_token()
     api_url = f"http://{local_browser_host(args.api_host)}:{int(args.api_port)}"
     dashboard_url = f"http://{local_browser_host(args.host)}:{args.port}"
-    launch_url = f"{dashboard_url}?{urlencode({'bitbuddy_token': api_token})}"
+    launch_url = f"{dashboard_url}?{urlencode({'bitbuddy_token': api_token, 'bitbuddy_api': api_url})}"
     dashboard_url_file = write_private_dashboard_url(launch_url)
 
     if check_backend_health(args.api_host, int(args.api_port), token=api_token):
@@ -1700,8 +1706,97 @@ def backup_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def update_command(args: argparse.Namespace) -> int:
+    root = source_checkout_root()
+    branch = str(getattr(args, "branch", "main") or "main").strip()
+    if not branch:
+        raise ValueError("Update branch cannot be blank.")
+    if not (root / ".git").exists():
+        raise ValueError(
+            "BitBuddy update requires a Git source checkout. Reinstall from https://getbitbuddy.com if this install was copied from a wheel or package manager."
+        )
+    if shutil.which("git") is None:
+        raise ValueError("Missing 'git'. Install it, then rerun `bitbuddy update`.")
+    if shutil.which("npm") is None and (root / "web" / "package.json").exists():
+        raise ValueError("Missing 'npm'. Install Node.js LTS, then rerun `bitbuddy update`.")
+
+    dirty = checkout_has_local_changes(root)
+    stash_ref = ""
+    if dirty:
+        if args.no_autostash:
+            raise ValueError("Refusing to update because the BitBuddy checkout has local changes. Commit/stash them or rerun without --no-autostash.")
+        stash_ref = stash_local_changes(root)
+
+    print(f"Updating BitBuddy source checkout: {root}")
+    try:
+        run_update_step(["git", "-C", str(root), "fetch", "--prune", "origin", branch])
+        run_update_step(["git", "-C", str(root), "pull", "--ff-only", "origin", branch])
+        run_update_step([sys.executable, "-m", "pip", "install", "-e", str(root)])
+
+        web_dir = root / "web"
+        if (web_dir / "package.json").exists():
+            run_update_step(["npm", "install", "--prefix", str(web_dir)])
+        else:
+            print("Skipping web dependency update; web/package.json was not found.")
+
+        run_update_step([sys.executable, "-m", "bitbuddy", "--help"])
+        if not args.skip_doctor:
+            doctor = subprocess.run([sys.executable, "-m", "bitbuddy", "doctor"])
+            if doctor.returncode != 0:
+                print("BitBuddy updated, but doctor reported issues. Run `bitbuddy doctor` for details.", file=sys.stderr)
+    finally:
+        if stash_ref:
+            restore_stashed_changes(root, stash_ref)
+
+    print("BitBuddy updated.")
+    return 0
+
+
+def source_checkout_root() -> Path:
+    package_file = Path(__file__).resolve()
+    for parent in package_file.parents:
+        if (parent / "pyproject.toml").exists() and (parent / "src" / "bitbuddy").is_dir():
+            return parent
+    return package_file.parents[2]
+
+
+def checkout_has_local_changes(root: Path) -> bool:
+    result = subprocess.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ValueError("Could not inspect the BitBuddy checkout for local changes.")
+    return bool(result.stdout.strip())
+
+
+def stash_local_changes(root: Path) -> str:
+    stash_name = f"bitbuddy-update-autostash-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
+    print("Local changes detected; stashing before update.")
+    run_update_step(["git", "-C", str(root), "stash", "push", "--include-untracked", "-m", stash_name])
+    return "stash@{0}"
+
+
+def restore_stashed_changes(root: Path, stash_ref: str) -> None:
+    print("Restoring local changes after update.")
+    apply = subprocess.run(["git", "-C", str(root), "stash", "apply", stash_ref])
+    if apply.returncode != 0:
+        print(
+            f"BitBuddy updated, but local changes could not be restored cleanly. They remain in git stash. Resolve manually with: git -C {shlex.quote(str(root))} stash apply {shlex.quote(stash_ref)}",
+            file=sys.stderr,
+        )
+        return
+    drop = subprocess.run(["git", "-C", str(root), "stash", "drop", stash_ref])
+    if drop.returncode != 0:
+        print("Local changes were restored, but the temporary stash could not be dropped automatically.", file=sys.stderr)
+
+
+def run_update_step(command: list[str]) -> None:
+    print(f"$ {shlex.join(command)}")
+    result = subprocess.run(command)
+    if result.returncode != 0:
+        raise ValueError(f"Update step failed: {shlex.join(command)}")
+
+
 def completion_command(args: argparse.Namespace) -> int:
-    commands = "setup serve web dashboard status doctor config model logs sessions backup completion provider mcp projects librarian"
+    commands = "setup serve web dashboard status doctor config model logs sessions backup update completion provider mcp projects librarian"
     if args.shell == "bash":
         print(f"complete -W '{commands}' bitbuddy")
     elif args.shell == "zsh":

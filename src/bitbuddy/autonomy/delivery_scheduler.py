@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ..chats.repository import get_chat_summary, list_recent_chats
+from ..chats.repository import create_chat, get_chat_summary, list_recent_chats
 from ..chats.state import active_chat_run
 from ..config import load_config
 from ..continuity import continuity_state
@@ -185,19 +185,18 @@ def run_intention_delivery_check(
             {"reason": reason, "chat_id": target_chat_id, "intention_id": delivered.id, "kind": delivered.kind},
         )
         active = get_active_visible_chat()
-        if active != target_chat_id:
-            if active:
-                notify_background_delivery(target_chat_id)
-            notify_user(
-                category="autonomy",
-                severity="info",
-                title="BitBuddy added a message",
-                body=f"A queued {delivered.kind} was delivered in the background.",
-                source_kind="autonomy.delivery_completed",
-                chat_id=target_chat_id,
-                action_url=f"/?chat_id={target_chat_id}",
-                metadata={"reason": reason, "intention_id": delivered.id, "kind": delivered.kind},
-            )
+        if active and active != target_chat_id:
+            notify_background_delivery(target_chat_id)
+        notify_user(
+            category="autonomy",
+            severity="info",
+            title="BitBuddy added a message",
+            body=f"A queued {delivered.kind} was delivered in chat.",
+            source_kind="autonomy.delivery_completed",
+            chat_id=target_chat_id,
+            action_url=f"/?chat_id={target_chat_id}",
+            metadata={"reason": reason, "intention_id": delivered.id, "kind": delivered.kind},
+        )
         # Keep draining the queue on its own cadence after a success — but only after a
         # cooldown so the next check lands roughly when the per-chat/global cooldown lifts
         # (and the daily cap still gates it). No-ops once the queue is empty.
@@ -269,7 +268,9 @@ def target_chat_for_delivery(chat_id: str = "") -> str:
     if state_chat and chat_exists(state_chat):
         return state_chat
     chats = list_recent_chats(limit=1)
-    return chats[0].id if chats else ""
+    if chats:
+        return chats[0].id
+    return create_chat("Autonomous messages", "chat").id
 
 
 def chat_exists(chat_id: str) -> bool:

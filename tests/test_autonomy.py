@@ -5,13 +5,14 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-autonomy-test-")
 
 from bitbuddy.activity import ensure_activity_database, list_activity  # noqa: E402
@@ -62,7 +63,7 @@ class AutonomyTest(unittest.TestCase):
         ensure_intentions_database()
         ensure_memory_database()
         ensure_chat_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from activity")
             connection.execute("delete from intentions")
             connection.execute("delete from chat_messages")

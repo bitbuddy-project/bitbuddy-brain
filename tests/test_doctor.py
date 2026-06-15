@@ -6,12 +6,13 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-doctor-test-")
 
 from bitbuddy.doctor.checks import http_search_results_ok, run_doctor_checks  # noqa: E402
@@ -62,7 +63,7 @@ class DoctorTest(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertTrue(GLOBAL_DB_PATH.exists())
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             tables = {row[0] for row in connection.execute("select name from sqlite_master where type = 'table'").fetchall()}
         self.assertIn("activity", tables)
         self.assertIn("chats", tables)

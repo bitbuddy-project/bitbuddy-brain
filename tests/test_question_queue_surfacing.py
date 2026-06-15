@@ -6,13 +6,14 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-question-surfacing-test-")
 
 from bitbuddy.activity import ensure_activity_database  # noqa: E402
@@ -22,14 +23,16 @@ from bitbuddy.autonomy.delivery_scheduler import (  # noqa: E402
     run_intention_delivery_check,
     schedule_intention_delivery,
     schedule_startup_intention_delivery,
+    set_active_visible_chat,
     start_delivery_heartbeat,
 )
 from bitbuddy.autonomy.intentions import create_intention, ensure_intentions_database, list_pending_intentions  # noqa: E402
-from bitbuddy.chats.repository import create_chat, ensure_chat_database, get_chat  # noqa: E402
+from bitbuddy.chats.repository import create_chat, ensure_chat_database, get_chat, list_recent_chats  # noqa: E402
 from bitbuddy.chats.runtime import start_chat_run  # noqa: E402
 from bitbuddy.chats.state import ActiveChatRun  # noqa: E402
 from bitbuddy.continuity import ensure_continuity_database, recent_continuity_events, record_continuity_event  # noqa: E402
 from bitbuddy.lifecycle import ensure_lifecycle_database  # noqa: E402
+from bitbuddy.notifications import ensure_notification_database, list_notifications  # noqa: E402
 from bitbuddy.paths import GLOBAL_DB_PATH  # noqa: E402
 from bitbuddy.providers import StreamChunk  # noqa: E402
 
@@ -87,12 +90,14 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
         ensure_intentions_database()
         ensure_lifecycle_database()
         ensure_continuity_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        ensure_notification_database()
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from activity")
             connection.execute("delete from continuity_events")
             connection.execute("delete from episodic_memory_capture_log")
             connection.execute("delete from intention_surfaces")
             connection.execute("delete from intentions")
+            connection.execute("delete from notifications")
             connection.execute("delete from chat_messages")
             connection.execute("delete from chats")
             connection.execute("delete from lifecycle_state")
@@ -110,6 +115,7 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
             )
         ensure_lifecycle_database()
         clear_current_delivery_timer()
+        set_active_visible_chat("")
 
     def run_chat(self, chat_id: str, text: str = "Can we talk about apples?") -> ActiveChatRun:
         run = ActiveChatRun(
@@ -138,8 +144,24 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
         assistant_text = "\n".join(str(message["content"]) for message in persisted["messages"] if message["role"] == "assistant")
 
         self.assertIn("Here is the normal answer", assistant_text)
+        self.assertIn("Here is the normal answer about apples.\n\nAlso, I had a question saved from earlier", assistant_text)
         self.assertIn("Also, I had a question saved from earlier", assistant_text)
         self.assertIn("Should we preserve the apples decision before editing?", assistant_text)
+        self.assertEqual(list_pending_intentions(), [])
+
+    def test_chat_runtime_keeps_paragraph_break_before_saved_comment(self) -> None:
+        chat = create_chat("Comment spacing", "chat")
+        create_intention(
+            "comment",
+            "Confirmed useful apple project context from the morning brief.",
+            metadata={"quality": {"accepted": True, "importance": 5}, "priority": 5},
+        )
+
+        self.run_chat(chat.id)
+        assistant_text = "\n".join(str(message["content"]) for message in get_chat(chat.id)["messages"] if message["role"] == "assistant")
+
+        self.assertIn("Here is the normal answer about apples.\n\nAlso, I had a comment saved from earlier", assistant_text)
+        self.assertNotIn("answer.Also", assistant_text)
         self.assertEqual(list_pending_intentions(), [])
 
     def test_cooldown_prevents_repeated_surfacing_in_same_chat(self) -> None:
@@ -161,7 +183,7 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
 
         self.run_chat(chat.id)
         activity_kinds = []
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             activity_kinds = [row[0] for row in connection.execute("select kind from activity").fetchall()]
 
         self.assertIn("intention.surfaced", activity_kinds)
@@ -182,6 +204,26 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
         self.assertIn("Should we revisit the continuity queue now?", assistant_text)
         self.assertEqual(list_pending_intentions(), [])
         self.assertTrue(any(event.event_type == "intention_shown" for event in recent_continuity_events(limit=5)))
+
+    def test_delivery_check_creates_chat_when_none_exists(self) -> None:
+        create_intention("question", "Should we schedule the continuity queue review now?", metadata={"priority": 4})
+
+        with patch("bitbuddy.autonomy.delivery_scheduler.load_config", return_value=fake_config()), \
+             patch("bitbuddy.autonomy.delivery.load_config", return_value=fake_config()), \
+             patch("bitbuddy.autonomy.delivery.ProviderClient", return_value=FakeClient("Should we revisit the continuity queue now?")):
+            delivered = run_intention_delivery_check(reason="test")
+
+        chats = list_recent_chats(limit=2)
+        self.assertIsNotNone(delivered)
+        self.assertEqual(len(chats), 1)
+        self.assertEqual(chats[0].title, "Autonomous messages")
+        assistant_text = "\n".join(str(message["content"]) for message in get_chat(chats[0].id)["messages"] if message["role"] == "assistant")
+        self.assertIn("Should we revisit the continuity queue now?", assistant_text)
+        notifications = list_notifications()
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0].category, "autonomy")
+        self.assertEqual(notifications[0].chat_id, chats[0].id)
+        self.assertEqual(list_pending_intentions(), [])
 
     def test_delivery_check_respects_global_cooldown(self) -> None:
         chat = create_chat("Autonomous cooldown", "chat")
@@ -226,7 +268,7 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
     def test_delivery_check_respects_quiet_mode_for_priority_three(self) -> None:
         chat = create_chat("Quiet delivery", "chat")
         create_intention("question", "Low priority quiet question?", metadata={"priority": 3})
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("update lifecycle_state set state = 'NightEligible', quiet_mode = 1 where id = 1")
 
         with patch("bitbuddy.autonomy.delivery_scheduler.load_config", return_value=fake_config()), \
@@ -250,6 +292,12 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
         assistant_text = "\n".join(str(message["content"]) for message in get_chat(chat.id)["messages"] if message["role"] == "assistant")
         self.assertIsNotNone(delivered)
         self.assertIn("continuity target chat", assistant_text)
+        self.assertEqual([item.id for item in list_recent_chats(limit=2)], [chat.id])
+        notifications = list_notifications()
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0].category, "autonomy")
+        self.assertEqual(notifications[0].chat_id, chat.id)
+        self.assertEqual(notifications[0].action_url, f"/?chat_id={chat.id}")
 
     def test_startup_schedules_pending_intention_check(self) -> None:
         create_chat("Startup target", "chat")

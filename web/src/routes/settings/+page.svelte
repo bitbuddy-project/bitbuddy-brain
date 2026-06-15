@@ -103,6 +103,8 @@
 	let personalityStatus = $state('');
 	let personalityDisplayName = $state('');
 	let personalityId = $state('');
+	let personalityOptions = $state<SelectOption[]>([]);
+	let personalitySourceById = $state<Record<string, string>>({});
 	let bitbuddyLikes = $state<string[]>([]);
 	let bitbuddyDislikes = $state<string[]>([]);
 	let quirkAddOpen = $state(false);
@@ -450,6 +452,14 @@
 			userContext = config.user_context ?? userContext;
 			personalityDisplayName = config.personality?.display_name ?? '';
 			personalityId = config.personality?.id ?? '';
+			personalityOptions = config.available_personalities?.map((personality) => ({
+				value: personality.id,
+				label: personality.display_name,
+				description: personality.description
+			})) ?? [];
+			personalitySourceById = Object.fromEntries(
+				(config.available_personalities ?? []).map((personality) => [personality.id, personality.source])
+			);
 			bitbuddyLikes = [...(config.personality?.bitbuddy_likes ?? [])];
 			bitbuddyDislikes = [...(config.personality?.bitbuddy_dislikes ?? [])];
 			chatConfig = config.chat ?? chatConfig;
@@ -1010,26 +1020,57 @@
 		}
 	}
 
-	async function savePersonalityQuirks() {
+	async function savePersonality() {
+		const nextId = personalityId.trim();
+		if (!nextId) {
+			personalityError = 'Choose a personality first.';
+			personalityStatus = '';
+			return;
+		}
+
 		const likes = cleanQuirks(bitbuddyLikes);
 		const dislikes = cleanQuirks(bitbuddyDislikes);
+		const source = personalitySourceById[nextId] ?? 'builtin';
+
 		personalitySaving = true;
 		try {
-			const config = await updatePersonalityConfig({ bitbuddy_likes: likes, bitbuddy_dislikes: dislikes });
-			personalityDisplayName = config.personality?.display_name ?? personalityDisplayName;
-			personalityId = config.personality?.id ?? personalityId;
+			const config = await updatePersonalityConfig({
+				source,
+				id: nextId,
+				bitbuddy_likes: likes,
+				bitbuddy_dislikes: dislikes
+			});
+			personalityId = config.personality?.id ?? nextId;
+			personalityDisplayName = config.personality?.display_name ?? selectedPersonalityLabel(personalityId);
 			bitbuddyLikes = [...(config.personality?.bitbuddy_likes ?? likes)];
 			bitbuddyDislikes = [...(config.personality?.bitbuddy_dislikes ?? dislikes)];
-			personalityStatus = likes.length || dislikes.length
-				? 'Personality quirks saved. BitBuddy will use them lightly in chat and autonomy.'
-				: 'Personality quirks cleared.';
+			personalityStatus = `Personality saved: ${personalityDisplayName || selectedPersonalityLabel(personalityId)}.`;
 			personalityError = '';
 		} catch (caught) {
-			personalityError = caught instanceof Error ? caught.message : 'Could not save personality quirks.';
+			personalityError = caught instanceof Error ? caught.message : 'Could not save personality.';
 			personalityStatus = '';
 		} finally {
 			personalitySaving = false;
 		}
+	}
+
+	function selectedPersonalityLabel(id: string) {
+		return personalityOptions.find((option) => option.value === id)?.label ?? id;
+	}
+
+	function personalityPickerOptions() {
+		if (personalityOptions.length) return personalityOptions;
+		const currentId = personalityId.trim();
+		if (currentId) {
+			return [
+				{
+					value: currentId,
+					label: personalityDisplayName || currentId,
+					description: 'Current personality; restart BitBuddy to load the full list'
+				}
+			];
+		}
+		return [{ value: '', label: 'No personalities reported', description: 'Restart BitBuddy or run Doctor if this stays empty', disabled: true }];
 	}
 
 	async function saveChatConfig() {
@@ -1289,8 +1330,8 @@
 					aria-expanded={personalityQuirksOpen}
 				>
 					<span>
-						Personality quirks
-						<small>Optional likes and dislikes that make BitBuddy feel less generic</small>
+						Personality
+						<small>Base personality plus optional likes and dislikes that make BitBuddy feel less generic</small>
 					</span>
 					<div class="row-meta">
 						{#if personalityDisplayName}<span class="badge">{personalityDisplayName}</span>{/if}
@@ -1314,6 +1355,24 @@
 									<small>{personalityDisplayName || personalityId || 'Selected personality'} · used lightly in chat and autonomy</small>
 								</span>
 							</div>
+							<div class="mock-item field-row">
+								<span>
+									Base personality
+									<small>Choose the base behavior BitBuddy should use before custom quirks.</small>
+								</span>
+								<div class="select-field">
+									<SelectMenu
+										value={personalityId}
+										options={personalityPickerOptions()}
+										ariaLabel="Base personality"
+										disabled={contextLoading || personalitySaving || (!personalityOptions.length && !personalityId.trim())}
+										onChange={(value) => (personalityId = value)}
+									/>
+								</div>
+							</div>
+							{#if !contextLoading && personalityOptions.length === 0}
+								<p class="personality-list-note">Using the current personality only. Restart BitBuddy to load the full personality list from ~/.bitbuddy/personalities.</p>
+							{/if}
 							{#if bitbuddyLikes.length === 0 && bitbuddyDislikes.length === 0}
 								<div class="mock-item empty-quirks">
 									<span>No custom quirks yet<small>Add a like or dislike to make BitBuddy feel more specific.</small></span>
@@ -1345,8 +1404,8 @@
 									</div>
 								{/if}
 							</div>
-							<button class="primary-action" onclick={savePersonalityQuirks} disabled={contextLoading || personalitySaving}>
-								{personalitySaving ? 'Saving...' : 'Save personality quirks'}
+							<button class="primary-action" onclick={savePersonality} disabled={contextLoading || personalitySaving || !personalityId.trim()}>
+								{personalitySaving ? 'Saving...' : 'Save personality'}
 							</button>
 						</div>
 
@@ -2163,7 +2222,7 @@
 				<button class="mock-item settings-row" class:open={emailOpen} onclick={() => (emailOpen = !emailOpen)} aria-expanded={emailOpen}>
 					<span>
 						Email awareness
-						<small>Generic IMAP account, read/search awareness, and safe permission gates</small>
+						<small>Generic IMAP account, dashboard browsing, and assistant tool permission gates</small>
 					</span>
 					<div class="row-meta">
 						<span class="badge">{email.enabled ? 'Enabled' : 'Off'}</span>
@@ -2174,7 +2233,7 @@
 
 				{#if emailOpen}
 					<div class="collapsible-panel">
-						<p class="section-intro">BitBuddy can become email-aware through local IMAP or self-hosted Gmail OAuth. Credentials and tokens stay on this machine. Gmail can read/search mail and, with explicit local permission, perform approved mailbox actions. Sending and other mutating actions should remain behind explicit permission gates.</p>
+						<p class="section-intro">BitBuddy can become email-aware through local IMAP or self-hosted Gmail OAuth. Credentials and tokens stay on this machine. The authenticated dashboard can browse and manage mail; assistant tools still use the permission gates below.</p>
 						{#if emailError}<div class="inline-error">{emailError}</div>{/if}
 
 						<div class="context-panel">
@@ -2182,7 +2241,7 @@
 							<div class="mock-item field-row"><span>Provider<small>Use generic IMAP or Google's Gmail API</small></span><div class="select-field"><SelectMenu value={email.provider} options={emailProviderOptions} ariaLabel="Email provider" disabled={!email.enabled} onChange={(value) => (email.provider = value as EmailConfig['provider'])} /></div></div>
 							<label class="mock-item field-row"><span>Email address<small>The account BitBuddy should know about</small></span><input bind:value={email.email_address} placeholder="you@example.com" disabled={!email.enabled} /></label>
 							<label class="mock-item field-row"><span>Account label<small>A local display name, such as Personal or Work</small></span><input bind:value={email.account_label} placeholder="Personal" disabled={!email.enabled} /></label>
-							<label class="mock-item field-row"><span>BitBuddy email tool limit<small>Maximum messages BitBuddy tools and subagents can list, search, or apply auto-trash rules to in one call. Default is low. Higher values expose more mail to the model, use more context/provider tokens, slow searches, and make broad trash rules affect more messages at once. Trash rules move mail to Trash only; they do not permanently delete it.</small></span><input type="number" min="1" bind:value={email.tool_message_limit} disabled={!email.enabled} /></label>
+							<label class="mock-item field-row"><span>BitBuddy email tool limit<small>Maximum messages BitBuddy assistant tools can list, search, or apply auto-trash rules to in one call. Default is low. Higher values expose more mail to the model, use more context/provider tokens, slow searches, and make broad trash rules affect more messages at once. Trash rules move mail to Trash only; they do not permanently delete it.</small></span><input type="number" min="1" bind:value={email.tool_message_limit} disabled={!email.enabled} /></label>
 							{#if email.provider === 'imap'}
 								<label class="mock-item field-row"><span>IMAP host<small>Your provider's incoming mail server</small></span><input bind:value={email.imap_host} placeholder="imap.example.com" disabled={!email.enabled} /></label>
 								<label class="mock-item field-row"><span>IMAP port<small>Usually 993 for SSL</small></span><input type="number" min="1" bind:value={email.imap_port} disabled={!email.enabled} /></label>
@@ -2245,8 +2304,8 @@
 						{#if emailStatus}<p class="save-status">{emailStatus}</p>{/if}
 
 						<div class="calendar-access email-access">
-							<div class="access-heading">Email access</div>
-							<p class="section-intro">Control what BitBuddy may do with email. Trash access only moves messages to Trash; it does not permanently delete mail.</p>
+							<div class="access-heading">Assistant email access</div>
+							<p class="section-intro">Control what BitBuddy's assistant tools may do with email. These gates do not block your authenticated dashboard actions. Trash access only moves messages to Trash; it does not permanently delete mail.</p>
 							{#if emailPermError}<div class="inline-error">{emailPermError}</div>{/if}
 							{#if emailPermissions}
 								<div class="scope-list">
@@ -2812,6 +2871,13 @@
 
 	.quirk-panel {
 		overflow: visible;
+	}
+
+	.personality-list-note {
+		margin: 0.65rem 1rem 0.85rem;
+		color: var(--text-soft);
+		font-size: 0.78rem;
+		line-height: 1.35;
 	}
 
 	.empty-quirks span {

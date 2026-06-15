@@ -5,11 +5,12 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-notifications-test-")
 
 from bitbuddy.memory.consolidation import ConsolidationJob, notify_memory_consolidation_completed  # noqa: E402
@@ -30,7 +31,7 @@ from bitbuddy.paths import GLOBAL_DB_PATH  # noqa: E402
 class NotificationsTest(unittest.TestCase):
     def setUp(self) -> None:
         ensure_notification_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from notifications")
 
     def test_notifications_can_be_read_and_dismissed(self) -> None:

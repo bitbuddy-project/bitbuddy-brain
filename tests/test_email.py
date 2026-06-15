@@ -8,6 +8,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 import unittest
+from contextlib import closing
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
@@ -15,7 +16,7 @@ from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-email-test-")
 
 from bitbuddy.config import load_config, parse_email_config, update_email_config, write_config  # noqa: E402
@@ -31,13 +32,14 @@ from bitbuddy.prompt_builder import email_capability_context  # noqa: E402
 from bitbuddy.projects.routing import clean_model_thinking_text  # noqa: E402
 from bitbuddy.toolbox.base import ToolDefinition  # noqa: E402
 from bitbuddy.toolbox.handlers import email_recent_messages_tool, email_tool_limit, email_trash_message_tool  # noqa: E402
+from bitbuddy.workspace import read_workspace_document, write_workspace_document  # noqa: E402
 
 
 class EmailTest(unittest.TestCase):
     def setUp(self) -> None:
         ensure_email_database()
         GMAIL_AUTH_FLOWS.clear()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from email_permissions")
             connection.execute("delete from email_rules")
 
@@ -521,6 +523,7 @@ class EmailTest(unittest.TestCase):
                 urllib.request.urlopen(f"{base_url}/config", timeout=5)
 
             self.assertEqual(caught.exception.code, 401)
+            caught.exception.close()
 
             request = urllib.request.Request(f"{base_url}/config", headers={API_TOKEN_HEADER: get_api_token()})
             with urllib.request.urlopen(request, timeout=5) as response:
@@ -536,6 +539,7 @@ class EmailTest(unittest.TestCase):
                 urllib.request.urlopen(request, timeout=5)
 
             self.assertEqual(caught.exception.code, 403)
+            caught.exception.close()
 
     def test_empty_trash_requires_server_side_confirmation(self) -> None:
         with running_api_server() as base_url:
@@ -549,6 +553,24 @@ class EmailTest(unittest.TestCase):
                 urllib.request.urlopen(request, timeout=5)
 
             self.assertEqual(caught.exception.code, 400)
+            caught.exception.close()
+
+    def test_workspace_pin_endpoint_updates_document(self) -> None:
+        document = write_workspace_document("notes", "Pin endpoint test", "body")
+        with running_api_server() as base_url:
+            for pinned in (True, False):
+                request = urllib.request.Request(
+                    f"{base_url}/workspace/{urllib.parse.quote(document.id)}/pin",
+                    data=("{\"pinned\": %s}" % ("true" if pinned else "false")).encode("utf-8"),
+                    headers={API_TOKEN_HEADER: get_api_token(), "Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+
+                updated = read_workspace_document(document.id)
+                self.assertIsNotNone(updated)
+                self.assertEqual(updated.pinned, pinned)
 
     def test_thinking_cleanup_strips_system_reminders(self) -> None:
         clean = clean_model_thinking_text("before\n<system-reminder>secret\nmore</system-reminder>\nafter")

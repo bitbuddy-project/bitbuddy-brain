@@ -631,10 +631,10 @@ def rebuild_read_rules(connection: sqlite3.Connection, paths: list[str]) -> None
     rules: dict[str, tuple[str, str]] = {}
 
     # 1. Self-referential memory system rules (if BitBuddy project)
-    if any("brain/bitbuddy" in str(p) for p in paths):
-        rules["project-memory"] = ("brain/bitbuddy/memory/project.py", "Before changing project memory behavior, read the implementation logic.")
-        rules["memory-storage"] = ("brain/bitbuddy/paths.py, brain/bitbuddy/memory/project.py", "Read config/storage files that control memory paths or SQLite.")
-        rules["memory-api"] = ("brain/bitbuddy/server.py", "Read server.py if memory is exposed through the backend API.")
+    if any("src/bitbuddy" in str(p) for p in paths):
+        rules["project-memory"] = ("src/bitbuddy/memory/project.py", "Before changing project memory behavior, read the implementation logic.")
+        rules["memory-storage"] = ("src/bitbuddy/paths.py, src/bitbuddy/memory/project.py", "Read config/storage files that control memory paths or SQLite.")
+        rules["memory-api"] = ("src/bitbuddy/server.py", "Read server.py if memory is exposed through the backend API.")
         rules["memory-frontend"] = ("web/src/lib/api/bitbuddy.ts", "Read bitbuddy.ts if the frontend consumes memory.")
 
     role_groups: dict[str, list[str]] = {}

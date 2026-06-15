@@ -30,7 +30,7 @@
 </script>
 
 <div class="permissions-page">
-	<PageHeader icon={ShieldCheck} eyebrow="Security & Control" title="Permissions" subtitle="Review and audit tool permission requests.">
+	<PageHeader icon={ShieldCheck} eyebrow="Security & Control" title="Permissions" subtitle="Review and audit assistant tool permission requests.">
 		{#snippet action()}
 				<div class="log-status">
 					<ClockCounterClockwise size={18} />
@@ -52,8 +52,8 @@
 					<div class="empty-icon" aria-hidden="true">
 						<ShieldCheck size={42} weight="duotone" />
 					</div>
-					<h2>No permissions for this session</h2>
-					<p>Permission requests will appear here when BitBuddy needs approval for a protected action.</p>
+					<h2>No assistant permission requests for this session</h2>
+					<p>Requests appear here when BitBuddy's assistant tools need approval for a protected action.</p>
 				</div>
 			{:else}
 				<ActivityList {activity} {error} />

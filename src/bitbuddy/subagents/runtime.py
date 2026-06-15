@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -9,7 +8,7 @@ from typing import Any
 from ..database import db_connection
 from ..paths import GLOBAL_DB_PATH, ensure_app_dirs
 from ..providers import ProviderClient
-from ..toolbox.base import ToolCall, ToolExecutor, ToolParseError, ToolRegistry, ToolResult, parse_tool_calls, tool_instruction_message
+from ..toolbox.base import READ_ONLY_TOOLS, ToolCall, ToolExecutor, ToolParseError, ToolRegistry, ToolResult, is_mcp_read_only_tool, parse_tool_calls, tool_instruction_message
 from ..utils import log_activity
 
 
@@ -29,9 +28,9 @@ DEFAULT_SUBAGENT_TOOLS = {
     "email_recent_messages",
     "email_search_messages",
     "email_read_message",
-    "email_trash_message",
-    "email_create_auto_trash_rule",
 }
+SUBAGENT_UNSAFE_READ_ONLY_TOOLS = {"run_shell_command", "run_subagent"}
+SUBAGENT_SAFE_BUILTIN_TOOLS = READ_ONLY_TOOLS - SUBAGENT_UNSAFE_READ_ONLY_TOOLS
 
 
 @dataclass(frozen=True)
@@ -154,7 +153,15 @@ def selected_tool_names(registry: ToolRegistry, requested: list[str] | None) -> 
         names = available.intersection(DEFAULT_SUBAGENT_TOOLS)
     else:
         names = {name for name in requested if name in available and name != "run_subagent"}
-    return {name for name in names if not is_desktop_control_tool(registry.definition(name), name)}
+    return {name for name in names if is_subagent_safe_tool(registry.definition(name), name)}
+
+
+def is_subagent_safe_tool(definition: Any, tool_name: str) -> bool:
+    if is_desktop_control_tool(definition, tool_name):
+        return False
+    if is_mcp_read_only_tool(definition):
+        return True
+    return tool_name in SUBAGENT_SAFE_BUILTIN_TOOLS
 
 
 def filtered_registry(registry: ToolRegistry, allowed: set[str]) -> ToolRegistry:
@@ -189,7 +196,7 @@ def collect_response(client: ProviderClient, messages: list[dict[str, str]], mod
 
 
 def insert_run(run_id: str, agent_type: str, task: str, metadata: dict[str, Any]) -> None:
-    with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+    with db_connection(GLOBAL_DB_PATH) as connection:
         connection.execute(
             "insert into subagent_runs (id, agent_type, task, status, metadata) values (?, ?, ?, 'running', ?)",
             (run_id, agent_type, task, json.dumps(metadata)),
@@ -197,7 +204,7 @@ def insert_run(run_id: str, agent_type: str, task: str, metadata: dict[str, Any]
 
 
 def complete_run(run_id: str, status: str, report: str, error: str) -> None:
-    with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+    with db_connection(GLOBAL_DB_PATH) as connection:
         connection.execute(
             "update subagent_runs set status = ?, completed_at = current_timestamp, report = ?, error = ? where id = ?",
             (status, report[:12000], error[:2000], run_id),
@@ -205,7 +212,7 @@ def complete_run(run_id: str, status: str, report: str, error: str) -> None:
 
 
 def insert_step(run_id: str, sequence: int, result: ToolResult) -> None:
-    with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+    with db_connection(GLOBAL_DB_PATH) as connection:
         connection.execute(
             "insert into subagent_steps (run_id, sequence, tool, status, summary, metadata) values (?, ?, ?, ?, ?, ?)",
             (

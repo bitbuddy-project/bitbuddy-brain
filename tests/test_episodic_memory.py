@@ -4,11 +4,12 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-episodic-test-")
 
 from bitbuddy.memory.episodic import (
@@ -54,7 +55,7 @@ class EpisodicMemoryTest(unittest.TestCase):
         # Clear episodes table between tests to avoid cross-test contamination
         from bitbuddy.paths import GLOBAL_DB_PATH
         import sqlite3
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from episodes")
             connection.execute("delete from memories")
             try:

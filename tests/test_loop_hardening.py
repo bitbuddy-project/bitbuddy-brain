@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-loop-hardening-test-")
 
 from bitbuddy.chats.runtime import post_result_response_is_nonsense, recovery_message_from_tool_result  # noqa: E402
@@ -56,49 +56,56 @@ class LoopHardeningTest(unittest.TestCase):
         self.assertIn("Useful result", message)
         self.assertNotIn("couldn’t parse", message.lower())
 
-    def test_subagents_block_desktop_control_tools_only(self) -> None:
+    def test_subagents_filter_unsafe_requested_tools(self) -> None:
         registry = ToolRegistry()
-        registry.register(
-            ToolDefinition(
-                name="mcp_computer_use_linux_click",
-                description="Click desktop",
-                arguments_schema={"type": "object"},
-                max_chars=1000,
-                annotations={"mcp": True, "mcp_server": "computer_use_linux", "mcp_tool": "click"},
-            ),
-            lambda _args, definition: ToolResult(definition.name, True, "", "ok"),
-        )
-        registry.register(
-            ToolDefinition(
-                name="run_shell_command",
-                description="Run shell",
-                arguments_schema={"type": "object"},
-                max_chars=1000,
-            ),
-            lambda _args, definition: ToolResult(definition.name, True, "", "ok"),
-        )
-        registry.register(
-            ToolDefinition(
-                name="email_trash_message",
-                description="Trash email",
-                arguments_schema={"type": "object"},
-                max_chars=1000,
-            ),
-            lambda _args, definition: ToolResult(definition.name, True, "", "ok"),
-        )
+        for name, annotations in (
+            ("read_file", {}),
+            ("write_file", {}),
+            ("patch_file", {}),
+            ("run_shell_command", {}),
+            ("email_trash_message", {}),
+            ("email_create_auto_trash_rule", {}),
+            ("calendar_create_event", {}),
+            ("calendar_modify_event", {}),
+            ("calendar_delete_event", {}),
+            ("mcp_read_status", {"mcp": True, "readOnlyHint": True}),
+            ("mcp_mutate_status", {"mcp": True, "readOnlyHint": False}),
+            ("mcp_computer_use_linux_click", {"mcp": True, "mcp_server": "computer_use_linux", "mcp_tool": "click"}),
+        ):
+            registry.register(
+                ToolDefinition(
+                    name=name,
+                    description=name,
+                    arguments_schema={"type": "object"},
+                    max_chars=1000,
+                    annotations=annotations,
+                ),
+                lambda _args, definition: ToolResult(definition.name, True, "", "ok"),
+            )
 
         self.assertTrue(is_desktop_control_tool(registry.definition("mcp_computer_use_linux_click"), "mcp_computer_use_linux_click"))
 
         selected = selected_tool_names(
             registry,
-            ["mcp_computer_use_linux_click", "run_shell_command", "email_trash_message"],
+            [
+                "read_file",
+                "write_file",
+                "patch_file",
+                "run_shell_command",
+                "email_trash_message",
+                "email_create_auto_trash_rule",
+                "calendar_create_event",
+                "calendar_modify_event",
+                "calendar_delete_event",
+                "mcp_read_status",
+                "mcp_mutate_status",
+                "mcp_computer_use_linux_click",
+            ],
         )
 
-        self.assertNotIn("mcp_computer_use_linux_click", selected)
-        self.assertIn("run_shell_command", selected)
-        self.assertIn("email_trash_message", selected)
+        self.assertEqual(selected, {"read_file", "mcp_read_status"})
 
-    def test_default_subagent_tools_include_email_but_not_desktop(self) -> None:
+    def test_default_subagent_tools_include_email_read_only_but_not_mutations(self) -> None:
         registry = ToolRegistry()
         for name in (
             "email_list_mailboxes",
@@ -127,8 +134,8 @@ class LoopHardeningTest(unittest.TestCase):
         self.assertIn("email_recent_messages", selected)
         self.assertIn("email_search_messages", selected)
         self.assertIn("email_read_message", selected)
-        self.assertIn("email_trash_message", selected)
-        self.assertIn("email_create_auto_trash_rule", selected)
+        self.assertNotIn("email_trash_message", selected)
+        self.assertNotIn("email_create_auto_trash_rule", selected)
         self.assertNotIn("mcp_computer_use_linux_click", selected)
 
 

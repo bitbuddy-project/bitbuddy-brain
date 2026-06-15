@@ -11,6 +11,7 @@ from typing import Any
 from ..chats.repository import chat_activity_token, chat_window_token, latest_user_message_at
 from ..config import load_config
 from ..continuity import record_continuity_event
+from ..database import db_connection
 from ..lifecycle import lifecycle_allows_autonomy, lifecycle_quiet_mode
 from ..paths import GLOBAL_DB_PATH
 from ..providers import ProviderClient
@@ -471,9 +472,8 @@ def apply_do_nothing_backstop(decision: AutonomyDecision, chat_id: str, config: 
 def _minutes_since_decision(activities: set[str]) -> float | None:
     """Minutes since the most recent autonomy decision for one of ``activities`` (None if never)."""
     import json
-    import sqlite3
     try:
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with db_connection(GLOBAL_DB_PATH) as connection:
             rows = connection.execute(
                 "select metadata, created_at from activity where kind = 'autonomy.decision' order by created_at desc limit 60"
             ).fetchall()

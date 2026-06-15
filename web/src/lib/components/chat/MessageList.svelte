@@ -268,14 +268,18 @@
 			if ((message.kind ?? 'message') === 'tool') {
 				const group: ChatMessage[] = [];
 				const startIndex = index;
+				let lastVisibleToolIndex = -1;
 				while (index < messages.length) {
 					const current = messages[index];
 					if ((current.kind ?? 'message') === 'tool') {
-						if (!isHiddenToolMessage(current)) group.push(current);
+						if (!isHiddenToolMessage(current)) {
+							group.push(current);
+							lastVisibleToolIndex = index;
+						}
 						index += 1;
 						continue;
 					}
-					if (isAbsorbableThinkingMessage(current) && nextVisibleToolIndex(index + 1) >= 0) {
+					if (isAbsorbableThinkingAt(index, lastVisibleToolIndex) && nextVisibleToolIndex(index + 1, lastVisibleToolIndex) >= 0) {
 						index += 1;
 						continue;
 					}
@@ -305,7 +309,7 @@
 	}
 
 	function isAbsorbableThinkingBeforeTool(index: number) {
-		return isAbsorbableThinkingMessage(messages[index]) && nextVisibleToolIndex(index + 1) >= 0;
+		return isAbsorbableThinkingAt(index) && nextVisibleToolIndex(index + 1) >= 0;
 	}
 
 	function isAbsorbableThinkingMessage(message: ChatMessage | undefined) {
@@ -315,15 +319,36 @@
 		return !text || text === 'running the selected tool.' || text === 'running the tool.' || text === 'using the selected tool.';
 	}
 
+	function isAbsorbableThinkingAt(index: number, previousVisibleToolIndex = -1) {
+		const message = messages[index];
+		if (isAbsorbableThinkingMessage(message)) return true;
+		if (!isProjectMemoryProgressThinking(message)) return false;
+		const previousTool = previousVisibleToolIndex >= 0 ? messages[previousVisibleToolIndex] : undefined;
+		const nextToolIndex = nextVisibleToolIndex(index + 1, previousVisibleToolIndex, false);
+		const nextTool = nextToolIndex >= 0 ? messages[nextToolIndex] : undefined;
+		return isProjectMemoryTool(previousTool) || isProjectMemoryTool(nextTool);
+	}
+
+	function isProjectMemoryProgressThinking(message: ChatMessage | undefined) {
+		if (!message || message.role !== 'assistant' || (message.kind ?? 'message') !== 'message') return false;
+		if (message.content?.trim()) return false;
+		return normalizeThinkingText(message.thinking || '').startsWith('loading deeper project memory for ');
+	}
+
+	function isProjectMemoryTool(message: ChatMessage | undefined) {
+		return (message?.kind ?? 'message') === 'tool' && String(message?.metadata?.tool || '').toLowerCase() === 'get_project_memory';
+	}
+
 	function normalizeThinkingText(value: string) {
 		return value.replace(/<system-reminder\b[^>]*>[\s\S]*?(?:<\/system-reminder>|$)/gi, '').trim().replace(/\s+/g, ' ').toLowerCase();
 	}
 
-	function nextVisibleToolIndex(startIndex: number) {
+	function nextVisibleToolIndex(startIndex: number, previousVisibleToolIndex = -1, allowProjectMemoryProgress = true) {
 		for (let index = startIndex; index < messages.length; index += 1) {
 			const message = messages[index];
 			if ((message.kind ?? 'message') === 'tool') return isHiddenToolMessage(message) ? -1 : index;
 			if (isAbsorbableThinkingMessage(message)) continue;
+			if (allowProjectMemoryProgress && isProjectMemoryProgressThinking(message) && isProjectMemoryTool(previousVisibleToolIndex >= 0 ? messages[previousVisibleToolIndex] : undefined)) continue;
 			return -1;
 		}
 		return -1;
@@ -333,7 +358,7 @@
 		for (let next = index + 1; next < messages.length; next += 1) {
 			const message = messages[next];
 			if ((message.kind ?? 'message') === 'tool') return !isHiddenToolMessage(message) || toolGroupHasVisibleMessage(next);
-			if (isAbsorbableThinkingMessage(message)) continue;
+			if (isAbsorbableThinkingAt(next)) continue;
 			if ((message.kind ?? 'message') !== 'permission') return false;
 		}
 		return false;

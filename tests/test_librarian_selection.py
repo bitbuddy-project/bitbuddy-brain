@@ -5,11 +5,12 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-librarian-selection-test-")
 
 from bitbuddy.librarian import build_advisory_whisper_message, regenerate_card, select_project_context
@@ -35,7 +36,7 @@ class LibrarianSelectionTest(unittest.TestCase):
         (root / "README.md").write_text(f"# {name}\n", encoding="utf-8")
         project = register_project(name, [str(root)])
         initialize_project_database(project.database_path)
-        with sqlite3.connect(project.database_path) as connection:
+        with closing(sqlite3.connect(project.database_path)) as connection, connection:
             connection.execute(
                 """
                 insert into project_profile (

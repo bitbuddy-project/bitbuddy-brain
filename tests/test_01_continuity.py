@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ.setdefault("HOME", tempfile.mkdtemp(prefix="bitbuddy-continuity-test-"))
 
 from bitbuddy.chats.repository import create_chat, recent_continuity_context, replace_chat_messages, update_tool_event, create_tool_event  # noqa: E402

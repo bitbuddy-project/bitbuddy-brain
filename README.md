@@ -28,6 +28,16 @@ Setup creates `~/.bitbuddy`, asks what to name your BitBuddy, writes `config.yam
 
 If `~/.bitbuddy/config.yaml` already exists, setup asks whether to modify the current setup, keep it, or start a new setup. The project memory scan interval is configurable during setup; `60` seconds is the default and `0` disables the monitor.
 
+## Update
+
+If BitBuddy was installed from the public source installer, update the local checkout and dependencies with:
+
+```bash
+bitbuddy update
+```
+
+`bitbuddy update` requires a Git checkout, stashes and restores local uncommitted changes by default, reinstalls the Python package, refreshes web dependencies, smoke-checks the CLI, and runs `bitbuddy doctor` when it finishes. Use `--no-autostash` if you prefer the update to refuse local changes instead.
+
 ## Server
 
 Start the BitBuddy backend server:

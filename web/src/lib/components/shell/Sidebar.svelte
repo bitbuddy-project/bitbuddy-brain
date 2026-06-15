@@ -7,7 +7,7 @@
 	import BookOpenIcon from 'phosphor-svelte/lib/BookOpenIcon';
 	import BrainIcon from 'phosphor-svelte/lib/BrainIcon';
 	import BlueprintIcon from 'phosphor-svelte/lib/BlueprintIcon';
-	import CalendarBlankIcon from 'phosphor-svelte/lib/CalendarBlankIcon';
+	import CalendarDotsIcon from 'phosphor-svelte/lib/CalendarDotsIcon';
 	import ChatCircleTextIcon from 'phosphor-svelte/lib/ChatCircleTextIcon';
 	import ClockCounterClockwiseIcon from 'phosphor-svelte/lib/ClockCounterClockwiseIcon';
 	import DevicesIcon from 'phosphor-svelte/lib/DevicesIcon';
@@ -35,7 +35,7 @@
 				{ label: 'Chat', href: '/', icon: ChatCircleTextIcon, hint: 'Talk' },
 				{ label: 'History', href: '/history', icon: ClockCounterClockwiseIcon, hint: 'Past chats' },
 				{ label: 'Goals', href: '/goals', icon: TargetIcon, hint: 'Self direction' },
-				{ label: 'Calendar', href: '/calendar', icon: CalendarBlankIcon, hint: 'Schedule' },
+				{ label: 'Calendar', href: '/calendar', icon: CalendarDotsIcon, hint: 'Schedule' },
 				{ label: 'Email', href: '/email', icon: EnvelopeSimpleIcon, hint: 'Inbox' },
 				{ label: 'Autonomy', href: '/autonomy', icon: SparkleIcon, hint: 'Background life' }
 			]

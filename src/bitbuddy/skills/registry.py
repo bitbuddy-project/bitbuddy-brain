@@ -241,7 +241,7 @@ metadata:
 
 ## Overview
 
-BitBuddy is a local-first companion with a Python backend under `brain/bitbuddy`, a SvelteKit web app under `web/`, and user data under `~/.bitbuddy`.
+BitBuddy is a local-first companion with a Python backend under `src/bitbuddy`, a SvelteKit web app under `web/`, and user data under `~/.bitbuddy`.
 
 ## When To Use
 
@@ -260,10 +260,10 @@ BitBuddy is a local-first companion with a Python backend under `brain/bitbuddy`
 
 ## Key Paths
 
-- Backend: `brain/bitbuddy/`
-- Tools: `brain/bitbuddy/toolbox/`
-- Prompt construction: `brain/bitbuddy/prompt_builder.py`
-- HTTP API: `brain/bitbuddy/http_api.py`
+- Backend: `src/bitbuddy/`
+- Tools: `src/bitbuddy/toolbox/`
+- Prompt construction: `src/bitbuddy/prompt_builder.py`
+- HTTP API: `src/bitbuddy/http_api.py`
 - Frontend: `web/src/`
 - Local user data: `~/.bitbuddy/`
 

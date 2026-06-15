@@ -82,7 +82,7 @@ def record_loop_incident(
     clean_model = clean_label(model)
     clean_recovery = str(recovery or "").strip()[:160]
     clean_metadata = metadata if isinstance(metadata, dict) else {}
-    with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+    with db_connection(GLOBAL_DB_PATH) as connection:
         connection.execute(
             """
             insert into loop_incidents (provider, model, mode, reason, tools, recovery, chat_id, run_id, metadata)
@@ -118,7 +118,7 @@ def upsert_loop_lesson(*, provider: str, model: str, reason: str, tool: str, les
     if not clean_lesson:
         return
     params = (clean_label(provider), clean_label(model), clean_label(reason), clean_label(tool), clean_lesson)
-    with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+    with db_connection(GLOBAL_DB_PATH) as connection:
         connection.execute(
             """
             insert into loop_lessons (provider, model, reason, tool, lesson)
@@ -137,8 +137,7 @@ def select_loop_lessons(provider: str, model: str, *, reason: str = "", tools: l
     clean_model = clean_label(model)
     clean_reason = clean_label(reason)
     clean_tools = {clean_label(tool) for tool in tools if clean_label(tool)}
-    with sqlite3.connect(GLOBAL_DB_PATH) as connection:
-        connection.row_factory = sqlite3.Row
+    with db_connection(GLOBAL_DB_PATH, row_factory=sqlite3.Row) as connection:
         rows = connection.execute(
             """
             select id, provider, model, reason, tool, lesson, evidence_count

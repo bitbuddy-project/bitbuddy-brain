@@ -6,11 +6,12 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-memory-layers-test-")
 
 from bitbuddy.memory.layers import MEMORY_LAYER_VALUES, MemoryLayer, memory_layer
@@ -31,7 +32,7 @@ from bitbuddy.tools import ToolCall, ToolExecutor, default_tool_registry, tool_i
 class MemoryLayerTest(unittest.TestCase):
     def setUp(self) -> None:
         ensure_memory_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from memory_reclassifications")
             connection.execute("delete from memory_merges")
             connection.execute("delete from memories")
@@ -176,7 +177,7 @@ class MemoryLayerTest(unittest.TestCase):
         self.assertIn("If it is a reusable method", content)
 
     def test_conservative_legacy_episode_migration(self) -> None:
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute(
                 """
                 create table if not exists episodes (

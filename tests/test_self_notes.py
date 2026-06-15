@@ -5,12 +5,13 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-self-notes-test-")
 
 from bitbuddy.paths import GLOBAL_DB_PATH  # noqa: E402
@@ -20,7 +21,7 @@ from bitbuddy.self_notes import create_self_note, ensure_self_notes_database, ge
 class SelfNotesTest(unittest.TestCase):
     def setUp(self) -> None:
         ensure_self_notes_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from self_notes")
 
     def test_create_and_list_active_self_note(self) -> None:

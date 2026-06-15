@@ -6,11 +6,12 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-autonomy-depth-test-")
 
 from bitbuddy.providers import StreamChunk  # noqa: E402
@@ -88,7 +89,7 @@ class AutonomyDepthTest(unittest.TestCase):
         write_config("none", "", "")
         ensure_self_model_database()
         ensure_workspace_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from goals")
             connection.execute("delete from workspace_documents")
 
@@ -166,7 +167,7 @@ class BlockedOnUserTest(unittest.TestCase):
         ensure_workspace_database()
         ensure_intentions_database()
         ensure_chat_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from goals")
             connection.execute("delete from workspace_documents")
             connection.execute("delete from intentions")
@@ -219,7 +220,7 @@ class BlockedOnUserTest(unittest.TestCase):
         self.assertEqual(reactivate_answered_blockers(), 0)
         self.assertEqual(goal_task_state(get_goal(goal.id))["status"], "blocked_on_user")
         # User speaks after the question → goal resumes.
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute(
                 "insert into chat_messages (chat_id, role, content, kind, status, sequence) values (?,?,?,?,?,?)",
                 ("c1", "user", "Use SQLite.", "message", "complete", 1),

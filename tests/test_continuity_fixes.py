@@ -5,11 +5,12 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-continuity-test-")
 
 from bitbuddy.chats.runtime import (  # noqa: E402
@@ -67,7 +68,7 @@ class FileEditClaimDetectionTest(unittest.TestCase):
 class GoalTaskStateTest(unittest.TestCase):
     def setUp(self) -> None:
         ensure_self_model_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from goals")
 
     def test_task_state_round_trip_and_advance(self) -> None:

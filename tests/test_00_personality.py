@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-personality-test-")
 
 from bitbuddy.config import load_config, update_user_context, write_config  # noqa: E402
@@ -175,6 +175,34 @@ dislikes:
         self.assertIn("Dislikes and aversions", prompt)
         self.assertIn("hand-wavy claims", prompt)
         self.assertNotIn("You are Sharp Technical Partner", prompt)
+
+    def test_lazy_senior_dev_builtin_encourages_senior_restraint(self) -> None:
+        selection = PersonalitySelection(source="builtin", id="lazy-senior-dev", proactivity="quiet")
+        profile = load_selected_personality(selection)
+        prompt = build_personality_prompt("BitBuddy", PresentationConfig(), selection, profile)
+
+        self.assertEqual(profile.display_name, "Lazy Senior Dev")
+        self.assertIn("minimum_viable_change", prompt)
+        self.assertIn("low_unless_material", prompt)
+        self.assertIn("performative productivity", prompt)
+        self.assertIn("prefer direct answers, pushback, or no-op", prompt)
+
+    def test_config_exposes_available_builtin_personalities(self) -> None:
+        from bitbuddy.http_api import config_to_json  # noqa: E402
+
+        lazy_path = PERSONALITIES_DIR / "lazy-senior-dev.yaml"
+        if lazy_path.exists():
+            lazy_path.unlink()
+        write_config("none", "", personality={"source": "builtin", "id": "lazy-senior-dev"})
+        data = config_to_json(load_config())
+
+        options = {item["id"]: item for item in data["available_personalities"]}
+        self.assertTrue(lazy_path.is_file())
+        self.assertGreaterEqual(len(options), 9)
+        self.assertIn("sharp-technical-partner", options)
+        self.assertIn("lazy-senior-dev", options)
+        self.assertEqual(options["lazy-senior-dev"]["display_name"], "Lazy Senior Dev")
+        self.assertEqual(data["personality"]["display_name"], "Lazy Senior Dev")
 
     def test_every_builtin_personality_has_dislikes(self) -> None:
         from bitbuddy.personality import BUILTIN_PERSONALITIES  # noqa: E402

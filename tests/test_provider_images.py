@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-provider-images-test-")
 
 from bitbuddy.config import ProviderConfig  # noqa: E402
@@ -28,8 +28,12 @@ class ProviderImageTest(unittest.TestCase):
             }
         ]
 
-        with patch("bitbuddy.providers.post_json_lines", side_effect=HTTPError("http://provider.test/api/chat", 400, "Bad Request", {}, None)):
-            chunks = list(client.stream_chat(messages))
+        error = HTTPError("http://provider.test/api/chat", 400, "Bad Request", {}, None)
+        try:
+            with patch("bitbuddy.providers.post_json_lines", side_effect=error):
+                chunks = list(client.stream_chat(messages))
+        finally:
+            error.close()
 
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0].kind, "response")

@@ -44,6 +44,7 @@ from .chats.state import (
     register_chat_run,
 )
 from .config import BitBuddyConfig, ProviderConfig, load_config, load_personality, update_autonomy_config, update_calendar_config, update_chat_config, update_dreaming_config, update_email_config, update_mcp_config, update_model_runtime_config, update_personality_config, update_user_context, upsert_mcp_server
+from .database import db_connection
 from .calendar.permissions import CALENDAR_SCOPES, CalendarPermissionRequired, all_permissions as calendar_permissions, set_permission as set_calendar_permission
 from .calendar.providers import EventDraft, EventPatch
 from .calendar.secrets import get_credentials, put_credentials, delete_credentials
@@ -53,7 +54,7 @@ from .email.models import mailbox_to_json, message_page_to_json, message_to_json
 from .email.permissions import EMAIL_SCOPES, EmailPermissionRequired, all_permissions as email_permissions, set_permission as set_email_permission
 from .email.service import create_sender_trash_rule as email_create_sender_trash_rule, delete_message as email_delete_message, delete_rule as email_delete_rule, email_account_id, email_overview, empty_trash as email_empty_trash, list_mailboxes as email_list_mailboxes, list_messages_page as email_list_messages_page, list_rules as email_list_rules, read_message as email_read_message, search_messages_page as email_search_messages_page, trash_message as email_trash_message
 from .continuity import record_continuity_event
-from .personality import load_selected_personality, selected_personality_to_legacy_dict
+from .personality import BUILTIN_PERSONALITIES, list_available_personalities, load_selected_personality, selected_personality_to_legacy_dict
 from .paths import APP_DIR, CONFIG_PATH, PERSONALITIES_DIR, PERSONALITY_PATH
 from .skills import archive_skill, create_skill, list_skills, load_skill, patch_skill, skill_to_json, validate_skill
 from .workspace import archive_workspace_document, list_workspace_documents, read_workspace_document, set_workspace_document_pinned, workspace_document_to_json
@@ -576,7 +577,7 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
             if path.startswith("/workspace/") and path.endswith("/pin"):
                 doc_id = unquote(path.removeprefix("/workspace/").removesuffix("/pin").strip("/"))
-                body = self.read_json_body()
+                body = self.read_json()
                 set_workspace_document_pinned(doc_id, bool(body.get("pinned", True)))
                 self.send_json({"ok": True})
                 return
@@ -1610,6 +1611,15 @@ def config_to_json(config: BitBuddyConfig) -> dict[str, Any]:
             "display_name": selected_personality.display_name,
             "dislikes": selected_personality.dislikes,
         },
+        "available_personalities": [
+            {
+                "id": profile.id,
+                "display_name": profile.display_name,
+                "description": profile.description,
+                "source": "builtin" if profile.id in BUILTIN_PERSONALITIES else "user",
+            }
+            for profile in list_available_personalities()
+        ],
     }
 
 
@@ -2229,8 +2239,7 @@ def list_subagent_runs(limit: int = 20) -> list[dict[str, Any]]:
     import sqlite3
     from .paths import GLOBAL_DB_PATH
     try:
-        with sqlite3.connect(GLOBAL_DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
+        with db_connection(GLOBAL_DB_PATH, row_factory=sqlite3.Row) as conn:
             run_rows = conn.execute(
                 "select id, agent_type, task, status, created_at, completed_at, report, error, metadata from subagent_runs order by created_at desc limit ?",
                 (limit,),

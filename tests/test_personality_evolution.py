@@ -5,11 +5,12 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-personality-evolution-test-")
 
 from bitbuddy.activity import ensure_activity_database, log_activity  # noqa: E402
@@ -28,7 +29,7 @@ class PersonalityEvolutionTest(unittest.TestCase):
     def setUp(self) -> None:
         ensure_self_model_database()
         ensure_activity_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from personality_evolution")
             connection.execute("delete from self_journal")
             connection.execute("delete from goals")

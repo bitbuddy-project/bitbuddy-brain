@@ -116,6 +116,12 @@ export type BitBuddyConfig = {
 		display_name?: string;
 		dislikes?: string[];
 	};
+	available_personalities?: {
+		id: string;
+		display_name: string;
+		description: string;
+		source: string;
+	}[];
 };
 
 export type McpConfig = {
@@ -572,8 +578,35 @@ export type ProjectMemoryResponse = {
 	memory: ProjectMemory;
 };
 
-export const BITBUDDY_API = 'http://127.0.0.1:8787';
+const DEFAULT_BITBUDDY_API = 'http://127.0.0.1:8787';
+const BITBUDDY_API_KEY = 'bitbuddy:api-url';
+export const BITBUDDY_API = apiBaseUrl();
 const BITBUDDY_TOKEN_KEY = 'bitbuddy:api-token';
+
+function apiBaseUrl() {
+	if (typeof window === 'undefined') return DEFAULT_BITBUDDY_API;
+	const url = new URL(window.location.href);
+	const apiUrl = normalizeApiUrl(url.searchParams.get('bitbuddy_api') ?? '');
+	if (apiUrl) {
+		window.localStorage.setItem(BITBUDDY_API_KEY, apiUrl);
+		url.searchParams.delete('bitbuddy_api');
+		window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+		return apiUrl;
+	}
+	return window.localStorage.getItem(BITBUDDY_API_KEY) ?? window.sessionStorage.getItem(BITBUDDY_API_KEY) ?? DEFAULT_BITBUDDY_API;
+}
+
+function normalizeApiUrl(value: string) {
+	const clean = value.trim();
+	if (!clean) return '';
+	try {
+		const url = new URL(clean);
+		if (!['http:', 'https:'].includes(url.protocol)) return '';
+		return url.origin;
+	} catch {
+		return '';
+	}
+}
 
 function apiToken() {
 	if (typeof window === 'undefined') return '';

@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-intention-cleanup-test-")
 
 from bitbuddy.autonomy.intentions import cleanup_intention_queue, create_intention, ensure_intentions_database, list_pending_intentions, mark_intention_shown, next_eligible_intention, record_intention_surface  # noqa: E402
@@ -29,11 +30,11 @@ def config(max_questions: int = 12) -> SimpleNamespace:
 class IntentionQueueCleanupTest(unittest.TestCase):
     def setUp(self) -> None:
         ensure_intentions_database()
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from intentions")
 
     def test_existing_pending_status_migrates_to_queued(self) -> None:
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute(
                 "insert into intentions (kind, content, reason, source, status, metadata) values ('question', 'Old item?', '', 'test', 'pending', '{}')"
             )
@@ -52,7 +53,7 @@ class IntentionQueueCleanupTest(unittest.TestCase):
 
     def test_cleanup_stales_normalized_duplicate_intentions(self) -> None:
         create_intention("question", "Should I ask about Dreaming Mode?")
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute(
                 """
                 insert into intentions (kind, content, reason, source, status, metadata)
@@ -67,7 +68,7 @@ class IntentionQueueCleanupTest(unittest.TestCase):
         self.assertEqual(len(list_pending_intentions()), 1)
 
     def test_cleanup_expires_low_priority_old_items(self) -> None:
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute(
                 """
                 insert into intentions (kind, content, reason, source, status, metadata, created_at, updated_at)
@@ -104,7 +105,7 @@ class IntentionQueueCleanupTest(unittest.TestCase):
         self.assertNotEqual(selected.id, high_priority.id)
 
     def test_next_eligible_priority_beats_age_after_relevance(self) -> None:
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute(
                 """
                 insert into intentions (kind, content, reason, source, status, metadata, created_at, eligible_at, updated_at)

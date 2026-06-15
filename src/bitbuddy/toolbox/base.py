@@ -810,11 +810,12 @@ def needs_permission(call: ToolCall, definition: ToolDefinition | None = None) -
         if is_path_outside_home(path_str):
             return True, f"Tool `{call.tool}` is attempting to access a path outside your home directory: `{path_str}`."
 
-    # Scenario 2: Edit/delete/create files (or other destructive actions)
+    # Scenario 2: shell commands can mutate through many indirect forms, so only
+    # the strict read-only allowlist runs without an explicit approval prompt.
     if call.tool == "run_shell_command":
         command = str(call.arguments.get("command", ""))
-        if is_destructive_command(command):
-            return True, f"The command `{command}` appears to be destructive (e.g., editing, deleting, or creating files)."
+        if not is_plan_safe_command(command):
+            return True, f"The command `{command}` is not on the read-only shell allowlist and needs your permission before BitBuddy can run it."
 
     return False, ""
 
@@ -930,7 +931,7 @@ def is_plan_safe_command(command: str) -> bool:
     if not clean:
         return True
 
-    if re.search(r"(;|&&|\|\||`|\$\(|>|>>|<\(|\btee\b)", clean):
+    if re.search(r"(;|&&|\||`|\$\(|>|>>|<\(|\btee\b)", clean):
         return False
 
     mutation_patterns = [

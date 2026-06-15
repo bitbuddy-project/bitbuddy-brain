@@ -5,13 +5,14 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "brain"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-calendar-scheduler-test-")
 
 from bitbuddy.autonomy.delivery_scheduler import set_active_visible_chat  # noqa: E402
@@ -31,7 +32,7 @@ class CalendarSchedulerTest(unittest.TestCase):
         ensure_notification_database()
         ensure_intentions_database()
         set_active_visible_chat("")
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute("delete from calendar_reminders")
             connection.execute("delete from calendar_events")
             connection.execute("delete from chat_messages")
@@ -68,7 +69,7 @@ class CalendarSchedulerTest(unittest.TestCase):
 
     def test_reminder_notification_does_not_depend_on_autonomy_or_intention_cooldown(self) -> None:
         self._insert_event("Cooldown proof appointment", minutes_out=5)
-        with sqlite3.connect(GLOBAL_DB_PATH) as connection:
+        with closing(sqlite3.connect(GLOBAL_DB_PATH)) as connection, connection:
             connection.execute(
                 "insert into intention_surfaces (chat_id, intention_id, surfaced_at, metadata) values (?, ?, current_timestamp, ?)",
                 ("chat-1", 1, "{}"),

@@ -359,7 +359,7 @@
 </svelte:head>
 
 <div class="email-page">
-	<PageHeader icon={EnvelopeSimpleIcon} eyebrow="Inbox" title="Email" subtitle="Read-only mail awareness will live here. Account setup is in Settings.">
+	<PageHeader icon={EnvelopeSimpleIcon} eyebrow="Inbox" title="Email" subtitle="Browse mail locally and manage safe mailbox actions. Account setup is in Settings.">
 		{#snippet action()}
 			<a class="settings-link" href="/settings">Email settings</a>
 		{/snippet}
@@ -376,7 +376,7 @@
 					<div>
 						<p class="eyebrow">Not Connected</p>
 						<h2>Email is not configured yet</h2>
-						<p>Connect IMAP or Gmail in Settings when you want BitBuddy to read/search mail safely.</p>
+						<p>Connect IMAP or Gmail in Settings when you want local mail browsing and assistant-aware read/search tools.</p>
 					</div>
 					<a href="/settings">Open Settings</a>
 				</section>
@@ -386,7 +386,7 @@
 					<div>
 						<p class="eyebrow">Gmail Ready</p>
 						<h2>Gmail is configured but not connected</h2>
-						<p>Connect Gmail in Settings to authorize read-only inbox access.</p>
+						<p>Connect Gmail in Settings to authorize inbox access for the dashboard and assistant-aware tools.</p>
 					</div>
 					<a href="/settings">Open Settings</a>
 				</section>
@@ -407,7 +407,7 @@
 						<div class="rail-heading">
 							<p class="eyebrow"><EnvelopeSimpleIcon size={13} weight="bold" /> Account</p>
 							<strong>{overview.account_label || overview.email_address || 'Email account'}</strong>
-							<small>{overview.provider.toUpperCase()} · read-only</small>
+							<small>{overview.provider.toUpperCase()} · local dashboard access</small>
 						</div>
 						<div class="mailbox-list" aria-label="Mailboxes">
 							{#if mailboxLoading && mailboxes.length === 0}

@@ -701,7 +701,10 @@ def start_chat_run(run: ActiveChatRun) -> None:
             throw_if_cancelled()
             ensure_assistant_message()
 
+            leading_separator = leading_text_separator(text)
             text = strip_live_system_reminder_response(text)
+            if leading_separator and text and run.assistant_text and not run.assistant_text[-1].isspace():
+                text = leading_separator + text.lstrip()
             if not text:
                 return
 
@@ -709,6 +712,13 @@ def start_chat_run(run: ActiveChatRun) -> None:
 
             persist(force=True)
             run.broadcast({"kind": "response", "text": text})
+
+        def leading_text_separator(text: str) -> str:
+            if text.startswith("\n\n"):
+                return "\n\n"
+            if text[:1].isspace():
+                return " "
+            return ""
 
         def strip_live_system_reminder_response(text: str) -> str:
             nonlocal suppress_system_reminder_response
