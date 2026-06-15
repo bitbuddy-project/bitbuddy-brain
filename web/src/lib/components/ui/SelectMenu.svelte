@@ -35,6 +35,21 @@
 	let open = $state(false);
 	let rootEl: HTMLDivElement | undefined;
 	let triggerEl: HTMLButtonElement | undefined;
+	let listEl = $state<HTMLDivElement | undefined>(undefined);
+
+	// Move the dropdown list to <body> so it escapes ancestors that establish a
+	// containing block for fixed positioning (any `transform`, `filter`, or
+	// `backdrop-filter` — the composer wraps and the sidebar both have these) and
+	// the `overflow: hidden` that clips it. Without this, `position: fixed` is
+	// trapped inside the transformed ancestor and the menu appears empty/clipped.
+	function portal(node: HTMLElement) {
+		document.body.appendChild(node);
+		return {
+			destroy() {
+				node.remove();
+			}
+		};
+	}
 	// Inline style for the dropdown list. The list is positioned with `position: fixed`
 	// from the trigger's rect so it escapes any `overflow: hidden` ancestor (the chat
 	// composer bar and the sidebar both clip), and flips upward when there isn't room
@@ -71,7 +86,11 @@
 
 	function handleWindowPointerDown(event: PointerEvent) {
 		if (!open) return;
-		if (rootEl && !rootEl.contains(event.target as Node)) open = false;
+		const target = event.target as Node;
+		// The list is portaled to <body>, so it is no longer a DOM descendant of
+		// rootEl — check it separately or an option click counts as "outside".
+		if (rootEl?.contains(target) || listEl?.contains(target)) return;
+		open = false;
 	}
 
 	function handleWindowKeydown(event: KeyboardEvent) {
@@ -114,7 +133,7 @@
 	</button>
 
 	{#if open}
-		<div class="select-list" role="listbox" aria-label={ariaLabel} style={listStyle}>
+		<div class="select-list" role="listbox" aria-label={ariaLabel} style={listStyle} bind:this={listEl} use:portal>
 			{#each options as option}
 				<button
 					class="select-option"

@@ -907,15 +907,47 @@
 		overflow: visible;
 	}
 
-	/* Compact level pill (Off/Low/Medium/High) inside the dark composer bar. */
+	/* Compact level pill (Off/Low/Medium/High) inside the dark composer bar, with a
+	   yellow outline to match the thinking accent. */
 	.level-select {
 		width: 100%;
 		min-width: 0;
 		font-size: 0.82rem;
 	}
 
+	.level-select :global(.select-trigger) {
+		min-height: 2.42rem;
+		border-color: rgba(202, 124, 0, 0.6);
+		background: rgba(202, 124, 0, 0.14);
+		color: #ffb72e;
+	}
+
+	.level-select :global(.select-menu.open .select-trigger),
+	.level-select :global(.select-trigger:hover) {
+		border-color: #ffb72e;
+		background: rgba(202, 124, 0, 0.22);
+	}
+
+	.level-select :global(.trigger-copy strong),
+	.level-select :global(.trigger-leading),
+	.level-select :global(.trigger-caret) {
+		color: #ffb72e;
+	}
+
 	.level-select.off {
 		opacity: 0.72;
+	}
+
+	:global(:root.light) .level-select :global(.select-trigger) {
+		border-color: rgba(202, 124, 0, 0.5);
+		background: rgba(202, 124, 0, 0.14);
+		color: #6d3f00;
+	}
+
+	:global(:root.light) .level-select :global(.trigger-copy strong),
+	:global(:root.light) .level-select :global(.trigger-leading),
+	:global(:root.light) .level-select :global(.trigger-caret) {
+		color: #6d3f00;
 	}
 
 	.controls-right .level-select {
