@@ -55,6 +55,7 @@
 	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import Overlay from '$lib/components/ui/Overlay.svelte';
 	import SelectMenu, { type SelectOption } from '$lib/components/ui/SelectMenu.svelte';
+	import { buildProviderModelOptions } from '$lib/providerModels';
 	import SunIcon from 'phosphor-svelte/lib/SunIcon';
 	import MoonIcon from 'phosphor-svelte/lib/MoonIcon';
 	import DesktopIcon from 'phosphor-svelte/lib/DesktopIcon';
@@ -608,47 +609,8 @@
 		return '';
 	}
 
-	// Recommended models surfaced even before a live /v1/models fetch. Live-discovered
-	// models are merged in on top of these. `disabled` entries appear in the picker but
-	// can't be selected yet (e.g. Fable 5 needs always-on thinking / refusal-fallback /
-	// 30-day-retention handling BitBuddy doesn't implement).
-	const PROVIDER_MODEL_CATALOG: Record<string, { value: string; description?: string; disabled?: boolean }[]> = {
-		openai: [
-			{ value: 'gpt-5.5', description: 'Latest flagship' },
-			{ value: 'gpt-5.4' },
-			{ value: 'gpt-5.4-mini', description: 'Lower latency and cost' }
-		],
-		anthropic: [
-			{ value: 'claude-opus-4-8', description: 'Most capable Opus' },
-			{ value: 'claude-sonnet-4-6', description: 'Balanced speed and intelligence' },
-			{ value: 'claude-haiku-4-5', description: 'Fastest, most cost-effective' },
-			{ value: 'claude-fable-5', description: 'Not yet supported in BitBuddy', disabled: true }
-		]
-	};
-
 	function providerModelOptions(): SelectOption[] {
-		const current = draftProvider.model.trim();
-		const catalog = PROVIDER_MODEL_CATALOG[draftProvider.type] ?? [];
-		const meta = new Map(catalog.map((entry) => [entry.value, entry]));
-
-		const values: string[] = [];
-		const push = (value: string) => {
-			if (value && !values.includes(value)) values.push(value);
-		};
-		if (current) push(current);
-		for (const model of providerModels) push(model);
-		for (const entry of catalog) push(entry.value);
-
-		return values.map((value) => {
-			const entry = meta.get(value);
-			return {
-				value,
-				label: value,
-				description: entry?.description,
-				// Never disable the active selection, or the picker can't render it as chosen.
-				disabled: value !== current && Boolean(entry?.disabled)
-			};
-		});
+		return buildProviderModelOptions(draftProvider.type, providerModels, draftProvider.model);
 	}
 
 	function setDraftProviderModel(model: string) {

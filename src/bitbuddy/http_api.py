@@ -1485,6 +1485,7 @@ def config_to_json(config: BitBuddyConfig) -> dict[str, Any]:
             "type": config.provider.type,
             "url": config.provider.url,
             "model": config.provider.model,
+            "reasoning_effort": config.provider.reasoning_effort,
             "has_api_key": config.provider.has_api_key,
         },
         "providers": [provider_to_json(provider) for provider in config.providers],
@@ -1629,6 +1630,7 @@ def provider_to_json(provider: Any) -> dict[str, Any]:
         "type": provider.type,
         "url": provider.url,
         "model": provider.model,
+        "reasoning_effort": provider.reasoning_effort,
         "has_api_key": provider.has_api_key,
     }
 

@@ -9,6 +9,7 @@
 		scheduleContextUsage,
 		sendMessage,
 		setMode,
+		setReasoningEffort,
 		startNewChat,
 		steerPendingMessage,
 		stopActiveResponse,
@@ -19,6 +20,9 @@
 	import ChatHeader from './ChatHeader.svelte';
 	import MessageList from './MessageList.svelte';
 	import SteeringCard from './SteeringCard.svelte';
+	import { PROVIDER_SUPPORTS_EFFORT } from '$lib/providerModels';
+
+	let reasoningEffortVisible = $derived(PROVIDER_SUPPORTS_EFFORT.has(chatSession.contextUsage?.provider ?? ''));
 </script>
 
 <section class="chat-wrap" aria-label="BitBuddy chat">
@@ -54,12 +58,15 @@
 				buddyName={chatSession.buddyName}
 				contextUsage={chatSession.contextUsage}
 				thinkEnabled={chatSession.thinkEnabled}
+				reasoningEffort={chatSession.reasoningEffort}
+				reasoningEffortVisible={reasoningEffortVisible}
 				disabled={false}
 				isStreaming={chatSession.isStreaming}
 				onDraftChange={scheduleContextUsage}
 				onSend={sendMessage}
 				onStop={stopActiveResponse}
 				onThinkToggle={toggleThink}
+				onReasoningEffortChange={setReasoningEffort}
 			/>
 		</div>
 	</div>

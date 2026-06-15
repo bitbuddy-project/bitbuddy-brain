@@ -10,6 +10,7 @@
 		type ProviderHealth
 	} from '$lib/api/bitbuddy';
 	import SelectMenu, { type SelectOption } from '$lib/components/ui/SelectMenu.svelte';
+	import { buildProviderModelOptions } from '$lib/providerModels';
 	import CaretUpIcon from 'phosphor-svelte/lib/CaretUpIcon';
 	import CaretRightIcon from 'phosphor-svelte/lib/CaretRightIcon';
 	import CpuIcon from 'phosphor-svelte/lib/CpuIcon';
@@ -23,6 +24,7 @@
 	let providers = $state<ProviderEntry[]>([]);
 	let activeProvider = $state('none');
 	let draftProvider = $state('none');
+	let draftModel = $state('');
 	let scanInterval = $state(60);
 	let health = $state<ProviderHealth | null>(null);
 
@@ -40,6 +42,11 @@
 			label: `${providerLabel(entry.type)}${entry.model ? ` · ${entry.model}` : ''}`,
 			description: entry.url
 		}))
+	);
+
+	let selectedEntry = $derived(providers.find((entry) => providerKey(entry) === draftProvider) ?? null);
+	let modelOptions = $derived.by<SelectOption[]>(() =>
+		selectedEntry ? buildProviderModelOptions(selectedEntry.type, [], draftModel || selectedEntry.model) : []
 	);
 
 	let typeLabel = $derived(providerLabel(provider.type));
@@ -71,6 +78,7 @@
 			providers = (config.providers?.length ? config.providers : config.provider.type !== 'none' ? [config.provider] : []).map((entry) => ({ ...entry }));
 			activeProvider = config.active_provider ?? providerKey(provider);
 			draftProvider = activeProvider;
+			draftModel = modelForKey(activeProvider);
 			scanInterval = config.runtime?.project_scan_interval_seconds ?? scanInterval;
 		} catch {
 			// Keep the last known display; the sidebar owns server availability.
@@ -105,10 +113,20 @@
 		error = '';
 		await loadConfig();
 		draftProvider = activeProvider;
+		draftModel = modelForKey(activeProvider);
+	}
+
+	function modelForKey(key: string) {
+		return providers.find((entry) => providerKey(entry) === key)?.model ?? '';
 	}
 
 	function selectProvider(value: string) {
 		draftProvider = value;
+		draftModel = modelForKey(value);
+	}
+
+	function selectModel(value: string) {
+		draftModel = value;
 	}
 
 	async function save() {
@@ -118,9 +136,15 @@
 			error = 'Choose a configured provider.';
 			return;
 		}
+		// Apply the chosen model onto the active provider; preserve every other field
+		// (api key ref, reasoning effort, …) via spread.
+		const nextProviders = providers.map((entry) =>
+			providerKey(entry) === draftProvider ? { ...entry, model: draftModel || entry.model } : entry
+		);
+		const selectedUpdated = nextProviders.find((entry) => providerKey(entry) === draftProvider) ?? selected;
 		const next = {
-			provider: selected,
-			providers,
+			provider: selectedUpdated,
+			providers: nextProviders,
 			active_provider: draftProvider,
 			project_scan_interval_seconds: scanInterval
 		};
@@ -209,6 +233,20 @@
 					<small class="field-note">Add providers in full settings first.</small>
 				{/if}
 			</div>
+
+			{#if selectedEntry}
+				<div class="pop-field">
+					<span class="field-label">Model</span>
+					<SelectMenu
+						value={draftModel}
+						options={modelOptions}
+						placeholder="Choose model"
+						disabled={loadingConfig || saving || modelOptions.length === 0}
+						ariaLabel="Model"
+						onChange={selectModel}
+					/>
+				</div>
+			{/if}
 
 			{#if error}
 				<p class="pop-error">{error}</p>

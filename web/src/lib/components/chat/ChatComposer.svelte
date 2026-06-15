@@ -8,18 +8,23 @@
 	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import type { ChatAttachment, ProviderContext } from '$lib/api/bitbuddy';
 	import { chatSession, type PendingChatAttachment } from '$lib/stores/chat.svelte';
+	import SelectMenu from '$lib/components/ui/SelectMenu.svelte';
+	import { REASONING_EFFORT_OPTIONS } from '$lib/providerModels';
 
-	let { mode, buddyName, contextUsage, thinkEnabled, disabled, isStreaming, onDraftChange, onSend, onStop, onThinkToggle } = $props<{
+	let { mode, buddyName, contextUsage, thinkEnabled, reasoningEffort, reasoningEffortVisible, disabled, isStreaming, onDraftChange, onSend, onStop, onThinkToggle, onReasoningEffortChange } = $props<{
 		mode: string;
 		buddyName: string;
 		contextUsage: ProviderContext | null;
 		thinkEnabled: boolean;
+		reasoningEffort: string;
+		reasoningEffortVisible: boolean;
 		disabled: boolean;
 		isStreaming: boolean;
 		onDraftChange: (draft: string) => void;
 		onSend: (message: string, attachments?: ChatAttachment[]) => void;
 		onStop: () => void;
 		onThinkToggle: () => void;
+		onReasoningEffortChange: (level: string) => void;
 	}>();
 
 	let draft = $derived.by(() => chatSession.draft);
@@ -54,6 +59,7 @@
 	// layout so the component cannot flicker between one-line and multi-line.
 	const INLINE_PLUS_REM = 4.35;
 	const INLINE_THINK_REM = 5.45;
+	const INLINE_REASON_REM = 7.4;
 	const INLINE_ACTIONS_REM = 7.35;
 	const INPUT_WRAP_HORIZONTAL_PADDING_REM = 2.9;
 	const MIN_MEASURE_WIDTH = 120;
@@ -106,7 +112,8 @@
 		const barStyle = getComputedStyle(composerBar);
 		const barPadding = parseFloat(barStyle.paddingLeft) + parseFloat(barStyle.paddingRight);
 		const contentWidth = composerBar.clientWidth - barPadding;
-		const inlineControlsWidth = remToPx(INLINE_PLUS_REM + INLINE_THINK_REM + INLINE_ACTIONS_REM + INPUT_WRAP_HORIZONTAL_PADDING_REM);
+		const reasonWidth = reasoningEffortVisible ? INLINE_REASON_REM : 0;
+		const inlineControlsWidth = remToPx(INLINE_PLUS_REM + INLINE_THINK_REM + reasonWidth + INLINE_ACTIONS_REM + INPUT_WRAP_HORIZONTAL_PADDING_REM);
 		return Math.max(MIN_MEASURE_WIDTH, Math.floor(contentWidth - inlineControlsWidth));
 	}
 
@@ -466,6 +473,17 @@
 	</button>
 {/snippet}
 
+{#snippet ReasoningSelect()}
+	<div class="reason-select">
+		<SelectMenu
+			value={reasoningEffort}
+			options={REASONING_EFFORT_OPTIONS}
+			ariaLabel="Reasoning effort"
+			onChange={onReasoningEffortChange}
+		/>
+	</div>
+{/snippet}
+
 {#snippet RightButtons()}
 	<div class="right-actions-group">
 		<button class="composer-icon mic-button" type="button" aria-label="Start voice input">
@@ -535,6 +553,12 @@
 					onkeydown={handleKeydown}
 				></textarea>
 
+				{#if reasoningEffortVisible}
+					<div class="inline-reason-wrap" aria-hidden={isMultiLine}>
+						{@render ReasoningSelect()}
+					</div>
+				{/if}
+
 				<div class="inline-think-wrap" aria-hidden={isMultiLine}>
 					{@render ThinkButton()}
 				</div>
@@ -551,6 +575,9 @@
 					{@render PlusButton()}
 				</div>
 				<div class="controls-right">
+					{#if reasoningEffortVisible}
+						{@render ReasoningSelect()}
+					{/if}
 					{@render ThinkButton()}
 					{@render RightButtons()}
 				</div>
@@ -863,6 +890,34 @@
 			transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
 	}
 
+	.inline-reason-wrap {
+		width: 7.4rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+		min-width: 0;
+		opacity: 1;
+		overflow: visible;
+		transform: translateX(0) scale(1);
+
+		transition:
+			width 180ms cubic-bezier(0.22, 1, 0.36, 1),
+			opacity 120ms ease,
+			transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	/* Keep the effort dropdown compact and on-brand inside the dark composer bar. */
+	.reason-select {
+		width: 100%;
+		min-width: 0;
+		font-size: 0.82rem;
+	}
+
+	.controls-right .reason-select {
+		width: 7.4rem;
+	}
+
 	.inline-actions-wrap {
 		box-sizing: border-box;
 		display: flex;
@@ -891,6 +946,13 @@
 	}
 
 	.multi-line .inline-think-wrap {
+		width: 0;
+		opacity: 0;
+		transform: translateX(0.35rem) scale(0.82);
+		pointer-events: none;
+	}
+
+	.multi-line .inline-reason-wrap {
 		width: 0;
 		opacity: 0;
 		transform: translateX(0.35rem) scale(0.82);

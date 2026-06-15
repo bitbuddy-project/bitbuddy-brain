@@ -556,8 +556,9 @@ class ProviderClient:
         }
         if instructions:
             payload["instructions"] = instructions
-        if thinking_enabled and openai_supports_reasoning_summaries(model):
-            payload["reasoning"] = {"effort": "medium", "summary": "auto"}
+        effort = self.config.reasoning_effort
+        if thinking_enabled and effort != "off" and openai_supports_reasoning_summaries(model):
+            payload["reasoning"] = {"effort": effort, "summary": "auto"}
         responses_tools = openai_responses_tools(tools or [])
         if responses_tools:
             payload["tools"] = responses_tools
@@ -671,6 +672,9 @@ class ProviderClient:
             thinking_config = anthropic_thinking_payload(model, max_tokens)
             if thinking_config:
                 payload["thinking"] = thinking_config
+            effort = self.config.reasoning_effort
+            if effort != "off" and anthropic_uses_adaptive_thinking(model):
+                payload["output_config"] = {"effort": effort}
         if system:
             payload["system"] = system
         anthropic_tools = anthropic_tool_schema(tools or [])
@@ -738,6 +742,7 @@ class ProviderClient:
         access_token = credentials.get("access_token", "")
         account_id = credentials.get("account_id") or "ChatGPT"
         instructions, input_items = codex_response_payload(messages)
+        codex_effort = "minimal" if self.config.reasoning_effort == "off" else self.config.reasoning_effort
         payload = {
             "model": codex_model(model),
             "store": False,
@@ -745,7 +750,7 @@ class ProviderClient:
             "instructions": instructions,
             "input": input_items,
             "text": {"verbosity": "medium"},
-            "reasoning": {"effort": "medium", "summary": "auto"},
+            "reasoning": {"effort": codex_effort, "summary": "auto"},
             "include": OPENAI_RESPONSES_REASONING_INCLUDE,
             "prompt_cache_key": str(uuid.uuid4()),
         }
