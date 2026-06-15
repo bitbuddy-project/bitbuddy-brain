@@ -391,6 +391,12 @@ export function toggleThink() {
 	saveThinkPreference();
 }
 
+export function setThinkEnabled(value: boolean) {
+	if (chatSession.thinkEnabled === value) return;
+	chatSession.thinkEnabled = value;
+	saveThinkPreference();
+}
+
 async function refreshReasoningEffort() {
 	try {
 		const config = await getConfig();

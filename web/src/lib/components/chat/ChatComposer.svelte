@@ -11,12 +11,12 @@
 	import SelectMenu from '$lib/components/ui/SelectMenu.svelte';
 	import { REASONING_EFFORT_OPTIONS } from '$lib/providerModels';
 
-	let { mode, buddyName, contextUsage, thinkEnabled, reasoningEffort, reasoningEffortVisible, disabled, isStreaming, onDraftChange, onSend, onStop, onThinkToggle, onReasoningEffortChange } = $props<{
+	let { mode, buddyName, contextUsage, thinkEnabled, thinkingLevel, reasoningEffortVisible, disabled, isStreaming, onDraftChange, onSend, onStop, onThinkToggle, onThinkingLevelChange } = $props<{
 		mode: string;
 		buddyName: string;
 		contextUsage: ProviderContext | null;
 		thinkEnabled: boolean;
-		reasoningEffort: string;
+		thinkingLevel: string;
 		reasoningEffortVisible: boolean;
 		disabled: boolean;
 		isStreaming: boolean;
@@ -24,8 +24,9 @@
 		onSend: (message: string, attachments?: ChatAttachment[]) => void;
 		onStop: () => void;
 		onThinkToggle: () => void;
-		onReasoningEffortChange: (level: string) => void;
+		onThinkingLevelChange: (level: string) => void;
 	}>();
+
 
 	let draft = $derived.by(() => chatSession.draft);
 	let attachments = $derived.by(() => chatSession.attachments);
@@ -59,7 +60,8 @@
 	// layout so the component cannot flicker between one-line and multi-line.
 	const INLINE_PLUS_REM = 4.35;
 	const INLINE_THINK_REM = 5.45;
-	const INLINE_REASON_REM = 7.4;
+	// Combined thinking-level pill (cloud providers) replaces the Think button slot.
+	const INLINE_LEVEL_REM = 6.6;
 	const INLINE_ACTIONS_REM = 7.35;
 	const INPUT_WRAP_HORIZONTAL_PADDING_REM = 2.9;
 	const MIN_MEASURE_WIDTH = 120;
@@ -112,8 +114,9 @@
 		const barStyle = getComputedStyle(composerBar);
 		const barPadding = parseFloat(barStyle.paddingLeft) + parseFloat(barStyle.paddingRight);
 		const contentWidth = composerBar.clientWidth - barPadding;
-		const reasonWidth = reasoningEffortVisible ? INLINE_REASON_REM : 0;
-		const inlineControlsWidth = remToPx(INLINE_PLUS_REM + INLINE_THINK_REM + reasonWidth + INLINE_ACTIONS_REM + INPUT_WRAP_HORIZONTAL_PADDING_REM);
+		// Cloud providers show the combined level pill in place of the Think button.
+		const thinkSlotWidth = reasoningEffortVisible ? INLINE_LEVEL_REM : INLINE_THINK_REM;
+		const inlineControlsWidth = remToPx(INLINE_PLUS_REM + thinkSlotWidth + INLINE_ACTIONS_REM + INPUT_WRAP_HORIZONTAL_PADDING_REM);
 		return Math.max(MIN_MEASURE_WIDTH, Math.floor(contentWidth - inlineControlsWidth));
 	}
 
@@ -473,15 +476,31 @@
 	</button>
 {/snippet}
 
-{#snippet ReasoningSelect()}
-	<div class="reason-select">
+{#snippet LevelIcon()}
+	<LightbulbIcon size={18} />
+{/snippet}
+
+{#snippet ThinkingLevel()}
+	<div class="level-select" class:off={thinkingLevel === 'off'}>
 		<SelectMenu
-			value={reasoningEffort}
+			value={thinkingLevel}
 			options={REASONING_EFFORT_OPTIONS}
-			ariaLabel="Reasoning effort"
-			onChange={onReasoningEffortChange}
+			ariaLabel="Thinking level"
+			compact
+			leading={LevelIcon}
+			onChange={onThinkingLevelChange}
 		/>
 	</div>
+{/snippet}
+
+<!-- Cloud providers expose reasoning levels, so the Think on/off toggle and the level
+     are merged into one control; local providers keep the plain Think toggle. -->
+{#snippet ThinkControl()}
+	{#if reasoningEffortVisible}
+		{@render ThinkingLevel()}
+	{:else}
+		{@render ThinkButton()}
+	{/if}
 {/snippet}
 
 {#snippet RightButtons()}
@@ -553,14 +572,8 @@
 					onkeydown={handleKeydown}
 				></textarea>
 
-				{#if reasoningEffortVisible}
-					<div class="inline-reason-wrap" aria-hidden={isMultiLine}>
-						{@render ReasoningSelect()}
-					</div>
-				{/if}
-
-				<div class="inline-think-wrap" aria-hidden={isMultiLine}>
-					{@render ThinkButton()}
+				<div class="inline-think-wrap" class:level={reasoningEffortVisible} aria-hidden={isMultiLine}>
+					{@render ThinkControl()}
 				</div>
 			</div>
 
@@ -575,10 +588,7 @@
 					{@render PlusButton()}
 				</div>
 				<div class="controls-right">
-					{#if reasoningEffortVisible}
-						{@render ReasoningSelect()}
-					{/if}
-					{@render ThinkButton()}
+					{@render ThinkControl()}
 					{@render RightButtons()}
 				</div>
 			</div>
@@ -890,32 +900,26 @@
 			transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
 	}
 
-	.inline-reason-wrap {
-		width: 7.4rem;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		flex-shrink: 0;
-		min-width: 0;
-		opacity: 1;
+	/* Cloud providers swap the Think button for the combined level pill, which needs
+	   a touch more room than the plain toggle. */
+	.inline-think-wrap.level {
+		width: 6.6rem;
 		overflow: visible;
-		transform: translateX(0) scale(1);
-
-		transition:
-			width 180ms cubic-bezier(0.22, 1, 0.36, 1),
-			opacity 120ms ease,
-			transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
 	}
 
-	/* Keep the effort dropdown compact and on-brand inside the dark composer bar. */
-	.reason-select {
+	/* Compact level pill (Off/Low/Medium/High) inside the dark composer bar. */
+	.level-select {
 		width: 100%;
 		min-width: 0;
 		font-size: 0.82rem;
 	}
 
-	.controls-right .reason-select {
-		width: 7.4rem;
+	.level-select.off {
+		opacity: 0.72;
+	}
+
+	.controls-right .level-select {
+		width: 7rem;
 	}
 
 	.inline-actions-wrap {
@@ -946,13 +950,6 @@
 	}
 
 	.multi-line .inline-think-wrap {
-		width: 0;
-		opacity: 0;
-		transform: translateX(0.35rem) scale(0.82);
-		pointer-events: none;
-	}
-
-	.multi-line .inline-reason-wrap {
 		width: 0;
 		opacity: 0;
 		transform: translateX(0.35rem) scale(0.82);
