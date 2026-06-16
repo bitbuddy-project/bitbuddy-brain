@@ -1,11 +1,19 @@
 # Changelog
 
-## v0.2.0
+All notable changes to this project will be documented in this file.
 
+## [v0.2.0] - 2026-06-15
+
+### Added
+- Add per-provider reasoning effort (off / low / medium / high), set from a chat-bar dropdown shown only for cloud providers (OpenAI, Codex, Claude) and applied via OpenAI/Codex `reasoning.effort` and Anthropic `output_config.effort`.
+- Add curated recommended model catalogs for Settings and the sidebar model picker, including Codex defaults and a disabled Claude Fable 5 entry until BitBuddy supports its requirements.
+- Add cloud provider context usage estimates so Codex, OpenAI, and Anthropic prompts show local used-token estimates instead of `unknown`.
+
+### Changed
 - Default the OpenAI provider to `gpt-5.5` and the Anthropic provider to `claude-opus-4-8` (was `gpt-4.1` / `claude-sonnet-4-6`).
-- Settings model picker now surfaces recommended models per provider even before a live fetch; Claude Fable 5 is listed but disabled (not yet supported).
-- Sidebar provider switcher now lets you pick any of the active provider's models, not just the saved one.
-- Per-provider reasoning level (off / low / medium / high), set from a chat-bar dropdown shown only for cloud providers (OpenAI, Codex, Claude) — applied via OpenAI/Codex `reasoning.effort` and Anthropic `output_config.effort`.
-- Sidebar provider/model dropdowns now survive portaled option clicks, avoid first-open layout jumps, and merge live model lists for OpenAI, Codex, and Anthropic.
-- Chat-bar reasoning-level control now sizes to its label on desktop and uses compact tablet/mobile sizing.
-- Cloud provider context usage now shows a local token estimate instead of `unknown` for Codex, OpenAI, and Anthropic prompts.
+- Let the sidebar provider switcher pick from live model lists for the selected provider instead of only showing the saved model.
+- Size the chat-bar reasoning-level control to its label on desktop while using compact tablet and mobile sizing.
+
+### Fixed
+- Keep sidebar provider/model dropdowns open when choosing portaled options, avoid first-open layout jumps, and stabilize dropdown positioning before rendering the option list.
+- Preserve cloud provider model options while live model fetches are in flight so the sidebar select text does not churn while opening.
