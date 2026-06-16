@@ -27,6 +27,11 @@ class CliUpdateTest(unittest.TestCase):
         self.assertEqual(args.branch, "release")
         self.assertTrue(args.skip_doctor)
 
+    def test_update_defaults_to_stable_branch(self) -> None:
+        args = cli.build_parser().parse_args(["update", "--skip-doctor"])
+
+        self.assertEqual(args.branch, "stable")
+
     def test_completion_includes_update(self) -> None:
         output = io.StringIO()
 

@@ -36,7 +36,7 @@ If BitBuddy was installed from the public source installer, update the local che
 bitbuddy update
 ```
 
-`bitbuddy update` requires a Git checkout, stashes and restores local uncommitted changes by default, reinstalls the Python package, refreshes web dependencies, smoke-checks the CLI, and runs `bitbuddy doctor` when it finishes. Use `--no-autostash` if you prefer the update to refuse local changes instead.
+`bitbuddy update` follows the `stable` release branch by default. It requires a Git checkout, stashes and restores local uncommitted changes by default, reinstalls the Python package, refreshes web dependencies, smoke-checks the CLI, and runs `bitbuddy doctor` when it finishes. Use `--branch main` for development builds, or `--no-autostash` if you prefer the update to refuse local changes instead.
 
 ## Server
 

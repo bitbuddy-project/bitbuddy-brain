@@ -186,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     backup_parser.set_defaults(handler=backup_command)
 
     update_parser = subparsers.add_parser("update", help="Update a source-installed BitBuddy checkout.")
-    update_parser.add_argument("--branch", default="main", help="Git branch to update from. Defaults to main.")
+    update_parser.add_argument("--branch", default="stable", help="Git branch to update from. Defaults to stable.")
     update_parser.add_argument("--no-autostash", action="store_true", help="Refuse local changes instead of stashing and restoring them.")
     update_parser.add_argument("--skip-doctor", action="store_true", help="Do not run bitbuddy doctor after updating.")
     update_parser.set_defaults(handler=update_command)
@@ -1708,7 +1708,7 @@ def backup_command(args: argparse.Namespace) -> int:
 
 def update_command(args: argparse.Namespace) -> int:
     root = source_checkout_root()
-    branch = str(getattr(args, "branch", "main") or "main").strip()
+    branch = str(getattr(args, "branch", "stable") or "stable").strip()
     if not branch:
         raise ValueError("Update branch cannot be blank.")
     if not (root / ".git").exists():

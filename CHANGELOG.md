@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.2.1] - 2026-06-15
+
+### Changed
+- Change `bitbuddy update` to follow the `stable` release branch by default instead of `main`; use `--branch main` for development builds.
+
 ## [v0.2.0] - 2026-06-15
 
 ### Added
