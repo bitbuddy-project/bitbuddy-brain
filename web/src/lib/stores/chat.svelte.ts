@@ -1,5 +1,5 @@
 import type { ChatAttachment, ChatMessage, ChatMode, ChatSummary, ProviderContext, StreamChunk } from '$lib/api/bitbuddy';
-import { ApiError, cancelChat, deleteChat, deleteChatMessageTurn, getActiveChatNotifications, getChat, getChatContextUsage, getConfig, getProviderContext, getRecentChats, grantPermission, sendActiveChat, streamChat, trimChatFromMessage } from '$lib/api/bitbuddy';
+import { ApiError, cancelChat, deleteChat, deleteChatMessageTurn, getActiveChatNotifications, getChat, getChatContextUsage, getConfig, getProviderContext, getRecentChats, grantPermission, sendActiveChat, streamChat, trimChatFromMessage, updateModelRuntimeConfig } from '$lib/api/bitbuddy';
 
 let contextTimer: number | undefined;
 let externalChatSyncTimer: number | undefined;
@@ -58,6 +58,9 @@ export const chatSession = $state({
 	pendingSteer: null as PendingSteerMessage | null,
 	backgroundNotifications: {} as Record<string, number>,
 	thinkEnabled: true,
+	// Reasoning effort for the active provider (off|low|medium|high). Mirrors the
+	// active provider's persisted reasoning_effort; the chat-bar dropdown edits it.
+	reasoningEffort: 'medium',
 	// Thinking setting captured at the start of the active stream. Visibility of the
 	// in-flight thinking stream is gated on this, so toggling thinkEnabled mid-response
 	// does not tear down the thinking already being shown for the current run.
@@ -193,6 +196,7 @@ export async function initializeChat() {
 	try {
 		const config = await getConfig();
 		chatSession.buddyName = config.name || 'BitBuddy';
+		chatSession.reasoningEffort = config.provider?.reasoning_effort || 'medium';
 		chatSession.serverAvailable = true;
 	} catch {
 		chatSession.buddyName = 'BitBuddy';
@@ -387,6 +391,48 @@ export function toggleThink() {
 	saveThinkPreference();
 }
 
+export function setThinkEnabled(value: boolean) {
+	if (chatSession.thinkEnabled === value) return;
+	chatSession.thinkEnabled = value;
+	saveThinkPreference();
+}
+
+async function refreshReasoningEffort() {
+	try {
+		const config = await getConfig();
+		chatSession.reasoningEffort = config.provider?.reasoning_effort || 'medium';
+	} catch { /* keep last known value */ }
+}
+
+// Persist the active provider's reasoning effort. Optimistic: update locally, then
+// PATCH the active provider entry (preserving every other field) via the runtime config.
+export async function setReasoningEffort(level: string) {
+	if (level === chatSession.reasoningEffort) return;
+	chatSession.reasoningEffort = level;
+	try {
+		const config = await getConfig();
+		const activeKey = config.active_provider ?? config.provider?.key ?? config.provider?.type ?? '';
+		const providers = (config.providers?.length
+			? config.providers
+			: config.provider?.type && config.provider.type !== 'none'
+				? [config.provider]
+				: []
+		).map((entry) => ({ ...entry }));
+		const keyOf = (entry: { key?: string; type: string }) => entry.key ?? entry.type;
+		const next = providers.map((entry) =>
+			keyOf(entry) === activeKey ? { ...entry, reasoning_effort: level } : entry
+		);
+		const active = next.find((entry) => keyOf(entry) === activeKey);
+		if (!active) return;
+		await updateModelRuntimeConfig({
+			provider: active,
+			providers: next,
+			active_provider: activeKey,
+			project_scan_interval_seconds: config.runtime?.project_scan_interval_seconds ?? 60
+		});
+	} catch { /* keep the optimistic value; it will resync on next load */ }
+}
+
 export async function sendMessage(content: string, attachments: ChatAttachment[] = []) {
 	if (chatSession.isStreaming) {
 		queuePendingSteer(content, attachments);
@@ -524,6 +570,8 @@ export async function refreshContextUsage(draft = '', options: { providerOnly?: 
 	try {
 		if (options.providerOnly) {
 			chatSession.contextUsage = await getProviderContext();
+			// The active provider may have changed (sidebar switch) — resync its effort.
+			void refreshReasoningEffort();
 			return;
 		}
 		const draftMessage = draft.trim() ? [{ role: 'user' as const, content: draft.trim() }] : [];

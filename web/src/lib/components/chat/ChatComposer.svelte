@@ -8,19 +8,25 @@
 	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import type { ChatAttachment, ProviderContext } from '$lib/api/bitbuddy';
 	import { chatSession, type PendingChatAttachment } from '$lib/stores/chat.svelte';
+	import SelectMenu from '$lib/components/ui/SelectMenu.svelte';
+	import { REASONING_EFFORT_OPTIONS } from '$lib/providerModels';
 
-	let { mode, buddyName, contextUsage, thinkEnabled, disabled, isStreaming, onDraftChange, onSend, onStop, onThinkToggle } = $props<{
+	let { mode, buddyName, contextUsage, thinkEnabled, thinkingLevel, reasoningEffortVisible, disabled, isStreaming, onDraftChange, onSend, onStop, onThinkToggle, onThinkingLevelChange } = $props<{
 		mode: string;
 		buddyName: string;
 		contextUsage: ProviderContext | null;
 		thinkEnabled: boolean;
+		thinkingLevel: string;
+		reasoningEffortVisible: boolean;
 		disabled: boolean;
 		isStreaming: boolean;
 		onDraftChange: (draft: string) => void;
 		onSend: (message: string, attachments?: ChatAttachment[]) => void;
 		onStop: () => void;
 		onThinkToggle: () => void;
+		onThinkingLevelChange: (level: string) => void;
 	}>();
+
 
 	let draft = $derived.by(() => chatSession.draft);
 	let attachments = $derived.by(() => chatSession.attachments);
@@ -54,6 +60,8 @@
 	// layout so the component cannot flicker between one-line and multi-line.
 	const INLINE_PLUS_REM = 4.35;
 	const INLINE_THINK_REM = 5.45;
+	// Combined thinking-level pill (cloud providers) replaces the Think button slot.
+	const INLINE_LEVEL_REM = 6.6;
 	const INLINE_ACTIONS_REM = 7.35;
 	const INPUT_WRAP_HORIZONTAL_PADDING_REM = 2.9;
 	const MIN_MEASURE_WIDTH = 120;
@@ -106,7 +114,9 @@
 		const barStyle = getComputedStyle(composerBar);
 		const barPadding = parseFloat(barStyle.paddingLeft) + parseFloat(barStyle.paddingRight);
 		const contentWidth = composerBar.clientWidth - barPadding;
-		const inlineControlsWidth = remToPx(INLINE_PLUS_REM + INLINE_THINK_REM + INLINE_ACTIONS_REM + INPUT_WRAP_HORIZONTAL_PADDING_REM);
+		// Cloud providers show the combined level pill in place of the Think button.
+		const thinkSlotWidth = reasoningEffortVisible ? INLINE_LEVEL_REM : INLINE_THINK_REM;
+		const inlineControlsWidth = remToPx(INLINE_PLUS_REM + thinkSlotWidth + INLINE_ACTIONS_REM + INPUT_WRAP_HORIZONTAL_PADDING_REM);
 		return Math.max(MIN_MEASURE_WIDTH, Math.floor(contentWidth - inlineControlsWidth));
 	}
 
@@ -466,6 +476,33 @@
 	</button>
 {/snippet}
 
+{#snippet LevelIcon()}
+	<LightbulbIcon size={18} />
+{/snippet}
+
+{#snippet ThinkingLevel()}
+	<div class="level-select" class:off={thinkingLevel === 'off'}>
+		<SelectMenu
+			value={thinkingLevel}
+			options={REASONING_EFFORT_OPTIONS}
+			ariaLabel="Thinking level"
+			compact
+			leading={LevelIcon}
+			onChange={onThinkingLevelChange}
+		/>
+	</div>
+{/snippet}
+
+<!-- Cloud providers expose reasoning levels, so the Think on/off toggle and the level
+     are merged into one control; local providers keep the plain Think toggle. -->
+{#snippet ThinkControl()}
+	{#if reasoningEffortVisible}
+		{@render ThinkingLevel()}
+	{:else}
+		{@render ThinkButton()}
+	{/if}
+{/snippet}
+
 {#snippet RightButtons()}
 	<div class="right-actions-group">
 		<button class="composer-icon mic-button" type="button" aria-label="Start voice input">
@@ -535,8 +572,8 @@
 					onkeydown={handleKeydown}
 				></textarea>
 
-				<div class="inline-think-wrap" aria-hidden={isMultiLine}>
-					{@render ThinkButton()}
+				<div class="inline-think-wrap" class:level={reasoningEffortVisible} aria-hidden={isMultiLine}>
+					{@render ThinkControl()}
 				</div>
 			</div>
 
@@ -551,7 +588,7 @@
 					{@render PlusButton()}
 				</div>
 				<div class="controls-right">
-					{@render ThinkButton()}
+					{@render ThinkControl()}
 					{@render RightButtons()}
 				</div>
 			</div>
@@ -861,6 +898,64 @@
 			width 180ms cubic-bezier(0.22, 1, 0.36, 1),
 			opacity 120ms ease,
 			transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	/* Cloud providers swap the Think button for the combined level pill, which needs
+	   a touch more room than the plain toggle. */
+	.inline-think-wrap.level {
+		width: fit-content;
+		min-width: 5.6rem;
+		overflow: visible;
+	}
+
+	/* Compact level pill (Off/Low/Medium/High) inside the dark composer bar, with a
+	   yellow outline to match the thinking accent. */
+	.level-select {
+		width: 100%;
+		min-width: 0;
+		font-size: 0.82rem;
+	}
+
+	.level-select :global(.select-trigger) {
+		width: max-content;
+		min-width: 100%;
+		min-height: 2.42rem;
+		border-color: rgba(202, 124, 0, 0.6);
+		background: rgba(202, 124, 0, 0.14);
+		color: #ffb72e;
+	}
+
+	.level-select :global(.select-menu.open .select-trigger),
+	.level-select :global(.select-trigger:hover) {
+		border-color: #ffb72e;
+		background: rgba(202, 124, 0, 0.22);
+	}
+
+	.level-select :global(.trigger-copy strong),
+	.level-select :global(.trigger-leading),
+	.level-select :global(.trigger-caret) {
+		color: #ffb72e;
+	}
+
+	.level-select.off {
+		opacity: 0.72;
+	}
+
+	:global(:root.light) .level-select :global(.select-trigger) {
+		border-color: rgba(202, 124, 0, 0.5);
+		background: rgba(202, 124, 0, 0.14);
+		color: #6d3f00;
+	}
+
+	:global(:root.light) .level-select :global(.trigger-copy strong),
+	:global(:root.light) .level-select :global(.trigger-leading),
+	:global(:root.light) .level-select :global(.trigger-caret) {
+		color: #6d3f00;
+	}
+
+	.controls-right .level-select {
+		width: fit-content;
+		min-width: 5.6rem;
 	}
 
 	.inline-actions-wrap {
@@ -1244,6 +1339,17 @@
 		opacity: 0.68;
 	}
 
+	@media (max-width: 1024px) {
+		.inline-think-wrap.level,
+		.controls-right .level-select {
+			width: 6.2rem;
+		}
+
+		.level-select :global(.select-trigger) {
+			width: 100%;
+		}
+	}
+
 	@media (max-width: 760px) {
 		.composer {
 			padding-inline: 0.8rem;
@@ -1259,6 +1365,20 @@
 
 		.inline-think-wrap {
 			width: 2.42rem;
+		}
+
+		.inline-think-wrap.level,
+		.controls-right .level-select {
+			width: 4.6rem;
+		}
+
+		.level-select :global(.select-trigger) {
+			padding-inline: 0.48rem;
+			gap: 0.36rem;
+		}
+
+		.level-select :global(.trigger-leading) {
+			display: none;
 		}
 
 		.think-button {

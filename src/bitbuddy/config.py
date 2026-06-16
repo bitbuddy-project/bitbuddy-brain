@@ -50,9 +50,9 @@ DEFAULT_PROVIDER_URLS = {
     "anthropic": "https://api.anthropic.com",
 }
 DEFAULT_PROVIDER_MODELS = {
-    "openai": "gpt-4.1",
+    "openai": "gpt-5.5",
     "codex": "gpt-5.5",
-    "anthropic": "claude-sonnet-4-6",
+    "anthropic": "claude-opus-4-8",
 }
 
 
@@ -64,6 +64,7 @@ class ProviderConfig:
     embedding_model: str = "nomic-embed-text"
     embedding_url: str = ""
     native_tools: str = "auto"
+    reasoning_effort: str = "medium"
     key: str = ""
     api_key: str = ""
     api_key_ref: str = ""
@@ -459,6 +460,7 @@ def parse_provider_entry(raw: Any) -> ProviderConfig:
         embedding_model=str(raw.get("embedding_model") or "nomic-embed-text"),
         embedding_url=str(raw.get("embedding_url") or ""),
         native_tools=str(raw.get("native_tools") or "auto").strip().lower(),
+        reasoning_effort=normalize_reasoning_effort(raw.get("reasoning_effort")),
         key=key,
         api_key=api_key,
         api_key_ref=api_key_ref,
@@ -506,6 +508,8 @@ def provider_to_raw(provider: ProviderConfig) -> dict[str, Any]:
         raw["embedding_url"] = provider.embedding_url
     if provider.native_tools != "auto":
         raw["native_tools"] = provider.native_tools
+    if provider.reasoning_effort != "medium":
+        raw["reasoning_effort"] = provider.reasoning_effort
     if provider.api_key_ref:
         raw["api_key_ref"] = provider.api_key_ref
     return raw
@@ -552,6 +556,7 @@ def provider_from_update(entry: dict[str, Any], existing_raw: dict[str, Any] | N
         "embedding_model": str(entry.get("embedding_model") or existing_raw.get("embedding_model") or "nomic-embed-text"),
         "embedding_url": str(entry.get("embedding_url") or existing_raw.get("embedding_url") or ""),
         "native_tools": str(entry.get("native_tools") or existing_raw.get("native_tools") or "auto"),
+        "reasoning_effort": str(entry.get("reasoning_effort") or existing_raw.get("reasoning_effort") or "medium"),
     }
     return parse_provider_entry(raw)
 
@@ -913,6 +918,15 @@ def normalize_reasoning_budget(value: Any) -> int:
     if budget < 0:
         return -1
     return budget
+
+
+REASONING_EFFORT_LEVELS = ("off", "low", "medium", "high")
+
+
+def normalize_reasoning_effort(value: Any) -> str:
+    """Per-provider reasoning effort: off | low | medium | high (default medium)."""
+    level = str(value or "").strip().lower()
+    return level if level in REASONING_EFFORT_LEVELS else "medium"
 
 
 def parse_chat_config(raw: Any) -> ChatConfig:

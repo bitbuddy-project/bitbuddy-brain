@@ -8,6 +8,8 @@
 </script>
 
 <script lang="ts">
+	import { tick } from 'svelte';
+	import type { Snippet } from 'svelte';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
 	import CheckIcon from 'phosphor-svelte/lib/CheckIcon';
 
@@ -16,24 +18,74 @@
 		options = [],
 		placeholder = 'Select',
 		disabled = false,
+		compact = false,
 		ariaLabel = 'Select option',
-		onChange = () => {}
+		onChange = () => {},
+		leading = undefined
 	} = $props<{
 		value?: string;
 		options?: SelectOption[];
 		placeholder?: string;
 		disabled?: boolean;
+		compact?: boolean;
 		ariaLabel?: string;
 		onChange?: (value: string) => void;
+		leading?: Snippet;
 	}>();
 
 	let open = $state(false);
 	let rootEl: HTMLDivElement | undefined;
+	let triggerEl: HTMLButtonElement | undefined;
+	let listEl = $state<HTMLDivElement | undefined>(undefined);
+	let listPositioned = $state(false);
+
+	// Move the dropdown list to <body> so it escapes ancestors that establish a
+	// containing block for fixed positioning (any `transform`, `filter`, or
+	// `backdrop-filter` — the composer wraps and the sidebar both have these) and
+	// the `overflow: hidden` that clips it. Without this, `position: fixed` is
+	// trapped inside the transformed ancestor and the menu appears empty/clipped.
+	function portal(node: HTMLElement) {
+		document.body.appendChild(node);
+		return {
+			destroy() {
+				node.remove();
+			}
+		};
+	}
+	// Inline style for the dropdown list. The list is positioned with `position: fixed`
+	// from the trigger's rect so it escapes any `overflow: hidden` ancestor (the chat
+	// composer bar and the sidebar both clip), and flips upward when there isn't room
+	// below — e.g. the composer sits at the bottom of the screen.
+	let listStyle = $state('');
 	let selected = $derived(options.find((option: SelectOption) => option.value === value));
 
-	function toggle() {
+	const MAX_LIST_HEIGHT = 13 * 16; // matches .select-list max-height (13rem)
+
+	function positionList() {
+		if (!triggerEl) return;
+		const rect = triggerEl.getBoundingClientRect();
+		const spaceBelow = window.innerHeight - rect.bottom;
+		const spaceAbove = rect.top;
+		const flipUp = spaceBelow < MAX_LIST_HEIGHT + 8 && spaceAbove > spaceBelow;
+		const maxHeight = Math.max(120, Math.min(MAX_LIST_HEIGHT, (flipUp ? spaceAbove : spaceBelow) - 12));
+		const vertical = flipUp
+			? `bottom: ${Math.round(window.innerHeight - rect.top + 6)}px;`
+			: `top: ${Math.round(rect.bottom + 6)}px;`;
+		listStyle = `position: fixed; left: ${Math.round(rect.left)}px; width: ${Math.round(rect.width)}px; ${vertical} max-height: ${Math.round(maxHeight)}px;`;
+	}
+
+	async function toggle() {
 		if (disabled) return;
-		open = !open;
+		if (open) {
+			open = false;
+			return;
+		}
+		listPositioned = false;
+		open = true;
+		await tick();
+		positionList();
+		listPositioned = true;
+		requestAnimationFrame(positionList);
 	}
 
 	function choose(option: SelectOption) {
@@ -44,18 +96,32 @@
 
 	function handleWindowPointerDown(event: PointerEvent) {
 		if (!open) return;
-		if (rootEl && !rootEl.contains(event.target as Node)) open = false;
+		const target = event.target as Node;
+		// The list is portaled to <body>, so it is no longer a DOM descendant of
+		// rootEl — check it separately or an option click counts as "outside".
+		if (rootEl?.contains(target) || listEl?.contains(target)) return;
+		open = false;
 	}
 
 	function handleWindowKeydown(event: KeyboardEvent) {
 		if (event.key === 'Escape') open = false;
 	}
+
+	function handleReposition() {
+		if (open) positionList();
+	}
 </script>
 
-<svelte:window onpointerdown={handleWindowPointerDown} onkeydown={handleWindowKeydown} />
+<svelte:window
+	onpointerdown={handleWindowPointerDown}
+	onkeydown={handleWindowKeydown}
+	onscroll={handleReposition}
+	onresize={handleReposition}
+/>
 
 <div class="select-menu" class:open class:disabled bind:this={rootEl}>
 	<button
+		bind:this={triggerEl}
 		class="select-trigger"
 		type="button"
 		onclick={toggle}
@@ -64,9 +130,12 @@
 		aria-label={ariaLabel}
 		disabled={disabled}
 	>
+		{#if leading}
+			<span class="trigger-leading">{@render leading()}</span>
+		{/if}
 		<span class="trigger-copy">
 			<strong>{selected?.label ?? placeholder}</strong>
-			{#if selected?.description}
+			{#if selected?.description && !compact}
 				<small>{selected.description}</small>
 			{/if}
 		</span>
@@ -74,7 +143,17 @@
 	</button>
 
 	{#if open}
-		<div class="select-list" role="listbox" aria-label={ariaLabel}>
+		<div
+			class="select-list"
+			class:positioned={listPositioned}
+			role="listbox"
+			aria-label={ariaLabel}
+			tabindex="-1"
+			style={listStyle}
+			bind:this={listEl}
+			use:portal
+			onpointerdown={(event) => event.stopPropagation()}
+		>
 			{#each options as option}
 				<button
 					class="select-option"
@@ -163,6 +242,13 @@
 		white-space: nowrap;
 	}
 
+	.trigger-leading {
+		flex: 0 0 auto;
+		display: inline-flex;
+		align-items: center;
+		color: var(--text-soft);
+	}
+
 	.trigger-caret {
 		flex: 0 0 auto;
 		color: var(--text-soft);
@@ -175,8 +261,8 @@
 	}
 
 	.select-list {
-		position: absolute;
-		inset: calc(100% + 0.35rem) 0 auto 0;
+		/* Positioned via inline `position: fixed` style (see positionList) so the menu
+		   escapes `overflow: hidden` ancestors and can flip above the trigger. */
 		z-index: 5001;
 		max-height: 13rem;
 		padding: 0.32rem;
@@ -190,6 +276,11 @@
 		box-shadow: 0 18px 38px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.055);
 		overflow-y: auto;
 		animation: menu-in 120ms ease;
+	}
+
+	.select-list:not(.positioned) {
+		visibility: hidden;
+		animation: none;
 	}
 
 	.select-option {

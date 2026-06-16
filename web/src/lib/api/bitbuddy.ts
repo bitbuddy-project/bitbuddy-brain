@@ -226,6 +226,7 @@ export type ProviderEntry = {
 	type: string;
 	url: string;
 	model: string;
+	reasoning_effort?: string;
 	has_api_key?: boolean;
 	api_key?: string;
 };

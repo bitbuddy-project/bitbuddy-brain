@@ -55,6 +55,7 @@
 	import Checkbox from '$lib/components/ui/Checkbox.svelte';
 	import Overlay from '$lib/components/ui/Overlay.svelte';
 	import SelectMenu, { type SelectOption } from '$lib/components/ui/SelectMenu.svelte';
+	import { buildProviderModelOptions } from '$lib/providerModels';
 	import SunIcon from 'phosphor-svelte/lib/SunIcon';
 	import MoonIcon from 'phosphor-svelte/lib/MoonIcon';
 	import DesktopIcon from 'phosphor-svelte/lib/DesktopIcon';
@@ -596,9 +597,9 @@
 	}
 
 	function providerModelDefault(type: string): string {
-		if (type === 'openai') return 'gpt-4.1';
+		if (type === 'openai') return 'gpt-5.5';
 		if (type === 'codex') return 'gpt-5.5';
-		if (type === 'anthropic') return 'claude-sonnet-4-6';
+		if (type === 'anthropic') return 'claude-opus-4-8';
 		return '';
 	}
 
@@ -609,13 +610,7 @@
 	}
 
 	function providerModelOptions(): SelectOption[] {
-		const values: string[] = [];
-		const current = draftProvider.model.trim();
-		if (current) values.push(current);
-		for (const model of providerModels) {
-			if (model && !values.includes(model)) values.push(model);
-		}
-		return values.map((value) => ({ value, label: value }));
+		return buildProviderModelOptions(draftProvider.type, providerModels, draftProvider.model);
 	}
 
 	function setDraftProviderModel(model: string) {

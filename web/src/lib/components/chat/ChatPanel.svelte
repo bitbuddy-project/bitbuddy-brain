@@ -9,6 +9,8 @@
 		scheduleContextUsage,
 		sendMessage,
 		setMode,
+		setReasoningEffort,
+		setThinkEnabled,
 		startNewChat,
 		steerPendingMessage,
 		stopActiveResponse,
@@ -19,6 +21,28 @@
 	import ChatHeader from './ChatHeader.svelte';
 	import MessageList from './MessageList.svelte';
 	import SteeringCard from './SteeringCard.svelte';
+	import { PROVIDER_SUPPORTS_EFFORT } from '$lib/providerModels';
+
+	let reasoningEffortVisible = $derived(PROVIDER_SUPPORTS_EFFORT.has(chatSession.contextUsage?.provider ?? ''));
+
+	// Combined thinking control for level-providing providers: "off" means thinking is
+	// disabled; a level means thinking on at that effort.
+	let thinkingLevel = $derived(
+		!chatSession.thinkEnabled
+			? 'off'
+			: ['low', 'medium', 'high'].includes(chatSession.reasoningEffort)
+				? chatSession.reasoningEffort
+				: 'medium'
+	);
+
+	function setThinkingLevel(level: string) {
+		if (level === 'off') {
+			setThinkEnabled(false);
+			return;
+		}
+		setThinkEnabled(true);
+		void setReasoningEffort(level);
+	}
 </script>
 
 <section class="chat-wrap" aria-label="BitBuddy chat">
@@ -54,12 +78,15 @@
 				buddyName={chatSession.buddyName}
 				contextUsage={chatSession.contextUsage}
 				thinkEnabled={chatSession.thinkEnabled}
+				thinkingLevel={thinkingLevel}
+				reasoningEffortVisible={reasoningEffortVisible}
 				disabled={false}
 				isStreaming={chatSession.isStreaming}
 				onDraftChange={scheduleContextUsage}
 				onSend={sendMessage}
 				onStop={stopActiveResponse}
 				onThinkToggle={toggleThink}
+				onThinkingLevelChange={setThinkingLevel}
 			/>
 		</div>
 	</div>

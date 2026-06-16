@@ -240,6 +240,7 @@ class ProviderClient:
         result: dict[str, object] = {
             "provider": self.config.type,
             "model": selected_model,
+            "used_tokens": 0,
             "context_window_tokens": None,
             "source": "unknown",
         }
@@ -317,7 +318,8 @@ class ProviderClient:
             result["source"] = "llama.cpp /tokenize" if result["used_tokens"] is not None else "llama.cpp token count unavailable"
             return result
         if self.config.type in {"openai", "codex", "anthropic"}:
-            result["source"] = f"{self.config.type} token count unavailable"
+            result["used_tokens"] = estimate_cloud_tokens(messages)
+            result["source"] = f"{self.config.type} token estimate"
             return result
         return result
 
@@ -556,8 +558,9 @@ class ProviderClient:
         }
         if instructions:
             payload["instructions"] = instructions
-        if thinking_enabled and openai_supports_reasoning_summaries(model):
-            payload["reasoning"] = {"effort": "medium", "summary": "auto"}
+        effort = self.config.reasoning_effort
+        if thinking_enabled and effort != "off" and openai_supports_reasoning_summaries(model):
+            payload["reasoning"] = {"effort": effort, "summary": "auto"}
         responses_tools = openai_responses_tools(tools or [])
         if responses_tools:
             payload["tools"] = responses_tools
@@ -671,6 +674,9 @@ class ProviderClient:
             thinking_config = anthropic_thinking_payload(model, max_tokens)
             if thinking_config:
                 payload["thinking"] = thinking_config
+            effort = self.config.reasoning_effort
+            if effort != "off" and anthropic_uses_adaptive_thinking(model):
+                payload["output_config"] = {"effort": effort}
         if system:
             payload["system"] = system
         anthropic_tools = anthropic_tool_schema(tools or [])
@@ -738,6 +744,7 @@ class ProviderClient:
         access_token = credentials.get("access_token", "")
         account_id = credentials.get("account_id") or "ChatGPT"
         instructions, input_items = codex_response_payload(messages)
+        codex_effort = "minimal" if self.config.reasoning_effort == "off" else self.config.reasoning_effort
         payload = {
             "model": codex_model(model),
             "store": False,
@@ -745,7 +752,7 @@ class ProviderClient:
             "instructions": instructions,
             "input": input_items,
             "text": {"verbosity": "medium"},
-            "reasoning": {"effort": "medium", "summary": "auto"},
+            "reasoning": {"effort": codex_effort, "summary": "auto"},
             "include": OPENAI_RESPONSES_REASONING_INCLUDE,
             "prompt_cache_key": str(uuid.uuid4()),
         }
@@ -1449,6 +1456,16 @@ def http_error_detail(error: urllib.error.HTTPError) -> str:
 
 def serialize_messages_for_token_count(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(f"{message.get('role', 'user')}:\n{message.get('content', '')}" for message in messages)
+
+
+def estimate_cloud_tokens(messages: list[dict[str, Any]]) -> int:
+    if not messages:
+        return 0
+    # Cloud providers do not expose a shared tokenizer/count endpoint here. This
+    # keeps the UI useful without making network calls: roughly 4 chars/token plus
+    # a small per-message framing allowance.
+    text = serialize_messages_for_token_count(messages)
+    return max(1, (len(text) + 3) // 4 + len(messages) * 4)
 
 
 def longest_tag_prefix(text: str, tag: str) -> int:
