@@ -903,7 +903,8 @@
 	/* Cloud providers swap the Think button for the combined level pill, which needs
 	   a touch more room than the plain toggle. */
 	.inline-think-wrap.level {
-		width: 6.6rem;
+		width: fit-content;
+		min-width: 5.6rem;
 		overflow: visible;
 	}
 
@@ -916,6 +917,8 @@
 	}
 
 	.level-select :global(.select-trigger) {
+		width: max-content;
+		min-width: 100%;
 		min-height: 2.42rem;
 		border-color: rgba(202, 124, 0, 0.6);
 		background: rgba(202, 124, 0, 0.14);
@@ -951,7 +954,8 @@
 	}
 
 	.controls-right .level-select {
-		width: 7rem;
+		width: fit-content;
+		min-width: 5.6rem;
 	}
 
 	.inline-actions-wrap {
@@ -1335,6 +1339,17 @@
 		opacity: 0.68;
 	}
 
+	@media (max-width: 1024px) {
+		.inline-think-wrap.level,
+		.controls-right .level-select {
+			width: 6.2rem;
+		}
+
+		.level-select :global(.select-trigger) {
+			width: 100%;
+		}
+	}
+
 	@media (max-width: 760px) {
 		.composer {
 			padding-inline: 0.8rem;
@@ -1350,6 +1365,20 @@
 
 		.inline-think-wrap {
 			width: 2.42rem;
+		}
+
+		.inline-think-wrap.level,
+		.controls-right .level-select {
+			width: 4.6rem;
+		}
+
+		.level-select :global(.select-trigger) {
+			padding-inline: 0.48rem;
+			gap: 0.36rem;
+		}
+
+		.level-select :global(.trigger-leading) {
+			display: none;
 		}
 
 		.think-button {

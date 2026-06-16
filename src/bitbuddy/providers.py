@@ -240,6 +240,7 @@ class ProviderClient:
         result: dict[str, object] = {
             "provider": self.config.type,
             "model": selected_model,
+            "used_tokens": 0,
             "context_window_tokens": None,
             "source": "unknown",
         }
@@ -317,7 +318,8 @@ class ProviderClient:
             result["source"] = "llama.cpp /tokenize" if result["used_tokens"] is not None else "llama.cpp token count unavailable"
             return result
         if self.config.type in {"openai", "codex", "anthropic"}:
-            result["source"] = f"{self.config.type} token count unavailable"
+            result["used_tokens"] = estimate_cloud_tokens(messages)
+            result["source"] = f"{self.config.type} token estimate"
             return result
         return result
 
@@ -1454,6 +1456,16 @@ def http_error_detail(error: urllib.error.HTTPError) -> str:
 
 def serialize_messages_for_token_count(messages: list[dict[str, Any]]) -> str:
     return "\n\n".join(f"{message.get('role', 'user')}:\n{message.get('content', '')}" for message in messages)
+
+
+def estimate_cloud_tokens(messages: list[dict[str, Any]]) -> int:
+    if not messages:
+        return 0
+    # Cloud providers do not expose a shared tokenizer/count endpoint here. This
+    # keeps the UI useful without making network calls: roughly 4 chars/token plus
+    # a small per-message framing allowance.
+    text = serialize_messages_for_token_count(messages)
+    return max(1, (len(text) + 3) // 4 + len(messages) * 4)
 
 
 def longest_tag_prefix(text: str, tag: str) -> int:

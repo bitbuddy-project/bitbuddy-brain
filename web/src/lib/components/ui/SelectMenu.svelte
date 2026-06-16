@@ -8,6 +8,7 @@
 </script>
 
 <script lang="ts">
+	import { tick } from 'svelte';
 	import type { Snippet } from 'svelte';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
 	import CheckIcon from 'phosphor-svelte/lib/CheckIcon';
@@ -36,6 +37,7 @@
 	let rootEl: HTMLDivElement | undefined;
 	let triggerEl: HTMLButtonElement | undefined;
 	let listEl = $state<HTMLDivElement | undefined>(undefined);
+	let listPositioned = $state(false);
 
 	// Move the dropdown list to <body> so it escapes ancestors that establish a
 	// containing block for fixed positioning (any `transform`, `filter`, or
@@ -72,10 +74,18 @@
 		listStyle = `position: fixed; left: ${Math.round(rect.left)}px; width: ${Math.round(rect.width)}px; ${vertical} max-height: ${Math.round(maxHeight)}px;`;
 	}
 
-	function toggle() {
+	async function toggle() {
 		if (disabled) return;
-		open = !open;
-		if (open) positionList();
+		if (open) {
+			open = false;
+			return;
+		}
+		listPositioned = false;
+		open = true;
+		await tick();
+		positionList();
+		listPositioned = true;
+		requestAnimationFrame(positionList);
 	}
 
 	function choose(option: SelectOption) {
@@ -133,7 +143,17 @@
 	</button>
 
 	{#if open}
-		<div class="select-list" role="listbox" aria-label={ariaLabel} style={listStyle} bind:this={listEl} use:portal>
+		<div
+			class="select-list"
+			class:positioned={listPositioned}
+			role="listbox"
+			aria-label={ariaLabel}
+			tabindex="-1"
+			style={listStyle}
+			bind:this={listEl}
+			use:portal
+			onpointerdown={(event) => event.stopPropagation()}
+		>
 			{#each options as option}
 				<button
 					class="select-option"
@@ -256,6 +276,11 @@
 		box-shadow: 0 18px 38px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.055);
 		overflow-y: auto;
 		animation: menu-in 120ms ease;
+	}
+
+	.select-list:not(.positioned) {
+		visibility: hidden;
+		animation: none;
 	}
 
 	.select-option {

@@ -5,6 +5,7 @@
 	import {
 		getConfig,
 		getProviderHealth,
+		getProviderModels,
 		updateModelRuntimeConfig,
 		type ProviderEntry,
 		type ProviderHealth
@@ -27,6 +28,9 @@
 	let draftModel = $state('');
 	let scanInterval = $state(60);
 	let health = $state<ProviderHealth | null>(null);
+	let liveModels = $state<string[]>([]);
+	let modelLoadingModels = $state(false);
+	let modelLoadKey = $state('');
 
 	let open = $state(false);
 	let loadingConfig = $state(false);
@@ -46,7 +50,7 @@
 
 	let selectedEntry = $derived(providers.find((entry) => providerKey(entry) === draftProvider) ?? null);
 	let modelOptions = $derived.by<SelectOption[]>(() =>
-		selectedEntry ? buildProviderModelOptions(selectedEntry.type, [], draftModel || selectedEntry.model) : []
+		selectedEntry ? buildProviderModelOptions(selectedEntry.type, liveModels, draftModel || selectedEntry.model) : []
 	);
 
 	let typeLabel = $derived(providerLabel(provider.type));
@@ -79,6 +83,9 @@
 			activeProvider = config.active_provider ?? providerKey(provider);
 			draftProvider = activeProvider;
 			draftModel = modelForKey(activeProvider);
+			liveModels = [];
+			modelLoadingModels = false;
+			modelLoadKey = '';
 			scanInterval = config.runtime?.project_scan_interval_seconds ?? scanInterval;
 		} catch {
 			// Keep the last known display; the sidebar owns server availability.
@@ -107,13 +114,17 @@
 			void goto('/settings');
 			return;
 		}
-		open = !open;
-		if (!open) return;
+		if (open) {
+			open = false;
+			return;
+		}
 
 		error = '';
 		await loadConfig();
 		draftProvider = activeProvider;
 		draftModel = modelForKey(activeProvider);
+		open = true;
+		void loadModelsForProvider(providers.find((entry) => providerKey(entry) === activeProvider) ?? null);
 	}
 
 	function modelForKey(key: string) {
@@ -123,10 +134,35 @@
 	function selectProvider(value: string) {
 		draftProvider = value;
 		draftModel = modelForKey(value);
+		void loadModelsForProvider(providers.find((entry) => providerKey(entry) === value) ?? null);
 	}
 
 	function selectModel(value: string) {
 		draftModel = value;
+	}
+
+	function modelFetchKey(entry: ProviderEntry | null) {
+		if (!entry) return '';
+		return `${providerKey(entry)}|${entry.type}|${entry.url}|${entry.has_api_key ? 'saved-key' : 'no-key'}`;
+	}
+
+	async function loadModelsForProvider(entry: ProviderEntry | null) {
+		const key = modelFetchKey(entry);
+		modelLoadKey = key;
+		if (!entry || !chatSession.serverAvailable) {
+			modelLoadingModels = false;
+			return;
+		}
+
+		modelLoadingModels = true;
+		try {
+			const models = await getProviderModels(entry);
+			if (modelLoadKey === key) liveModels = models;
+		} catch {
+			if (modelLoadKey === key) liveModels = [];
+		} finally {
+			if (modelLoadKey === key) modelLoadingModels = false;
+		}
 	}
 
 	async function save() {
@@ -155,6 +191,9 @@
 			providers = (config.providers?.length ? config.providers : [config.provider]).map((entry) => ({ ...entry }));
 			activeProvider = config.active_provider ?? providerKey(provider);
 			draftProvider = activeProvider;
+			liveModels = [];
+			modelLoadingModels = false;
+			modelLoadKey = '';
 			open = false;
 			void refreshContextUsage('', { providerOnly: true });
 			void refreshHealth();

@@ -6,3 +6,6 @@
 - Settings model picker now surfaces recommended models per provider even before a live fetch; Claude Fable 5 is listed but disabled (not yet supported).
 - Sidebar provider switcher now lets you pick any of the active provider's models, not just the saved one.
 - Per-provider reasoning level (off / low / medium / high), set from a chat-bar dropdown shown only for cloud providers (OpenAI, Codex, Claude) — applied via OpenAI/Codex `reasoning.effort` and Anthropic `output_config.effort`.
+- Sidebar provider/model dropdowns now survive portaled option clicks, avoid first-open layout jumps, and merge live model lists for OpenAI, Codex, and Anthropic.
+- Chat-bar reasoning-level control now sizes to its label on desktop and uses compact tablet/mobile sizing.
+- Cloud provider context usage now shows a local token estimate instead of `unknown` for Codex, OpenAI, and Anthropic prompts.

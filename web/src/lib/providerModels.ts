@@ -12,6 +12,11 @@ export const PROVIDER_MODEL_CATALOG: Record<string, ModelCatalogEntry[]> = {
 		{ value: 'gpt-5.4' },
 		{ value: 'gpt-5.4-mini', description: 'Lower latency and cost' }
 	],
+	codex: [
+		{ value: 'gpt-5.5', description: 'ChatGPT Codex default' },
+		{ value: 'gpt-5.4' },
+		{ value: 'gpt-5.4-mini', description: 'Lower latency' }
+	],
 	anthropic: [
 		{ value: 'claude-opus-4-8', description: 'Most capable Opus' },
 		{ value: 'claude-sonnet-4-6', description: 'Balanced speed and intelligence' },
