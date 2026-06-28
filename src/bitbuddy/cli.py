@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+from . import __version__
 from .activity import list_activity, log_activity
 from .auth import API_TOKEN_HEADER, api_token_path, get_api_token, is_loopback_host, rotate_api_token
 from .chats.repository import delete_chat, get_chat, list_recent_chats
@@ -68,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="bitbuddy",
         description="Your local companion that learns, grows with you, and is built for fully autonomous workflows.",
     )
+    parser.add_argument("-V", "--version", action="version", version=f"BitBuddy {__version__}")
     subparsers = parser.add_subparsers(dest="command", metavar="command")
 
     setup_parser = subparsers.add_parser("setup", help="Initialize BitBuddy config, personality, and memories.")
@@ -84,11 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument("--port", default="5173", help="Port for the dev server.")
     web_parser.set_defaults(handler=run_web)
 
-    dashboard_parser = subparsers.add_parser("dashboard", help="Start the local web UI dashboard.")
-    dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host for the dev server.")
-    dashboard_parser.add_argument("--port", default="5173", help="Port for the dev server.")
-    dashboard_parser.add_argument("--api-host", default="127.0.0.1", help="Host for the backend server.")
-    dashboard_parser.add_argument("--api-port", type=int, default=8787, help="Port for the backend server.")
+    dashboard_parser = subparsers.add_parser("dashboard", help="Open the local web UI, starting the backend if needed.")
+    dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host for the backend server (which also serves the web UI).")
+    dashboard_parser.add_argument("--port", type=int, default=8787, help="Port for the backend server (which also serves the web UI).")
     dashboard_parser.add_argument("--allow-lan", action="store_true", help="Allow binding the backend to a non-loopback/LAN interface. Requires local API token auth.")
     dashboard_parser.add_argument("--no-open", action="store_true", help="Do not open the dashboard in a browser.")
     dashboard_parser.set_defaults(handler=run_dashboard)
@@ -191,6 +191,9 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("--skip-doctor", action="store_true", help="Do not run bitbuddy doctor after updating.")
     update_parser.set_defaults(handler=update_command)
 
+    version_parser = subparsers.add_parser("version", help="Print the BitBuddy version.")
+    version_parser.set_defaults(handler=version_command)
+
     completion_parser = subparsers.add_parser("completion", help="Print a shell completion script.")
     completion_parser.add_argument("shell", choices=["bash", "zsh", "fish"], help="Shell to generate completion for.")
     completion_parser.set_defaults(handler=completion_command)
@@ -221,6 +224,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     mcp_doctor_computer = mcp_subparsers.add_parser("doctor-computer-use-linux", help="Run computer-use-linux doctor using BitBuddy's managed binary.")
     mcp_doctor_computer.set_defaults(handler=mcp_doctor_computer_use_linux_command)
+
+    mcp_setup_computer = mcp_subparsers.add_parser("setup-computer-use-linux", help="Enable desktop-control prerequisites (accessibility, ydotool, portal) and verify readiness.")
+    mcp_setup_computer.set_defaults(handler=mcp_setup_computer_use_linux_command)
 
     mcp_add_computer = mcp_subparsers.add_parser("add-computer-use-linux", help="Configure the Linux desktop-control MCP server.")
     mcp_add_computer.add_argument("--command", default="managed:computer-use-linux", help="Path or command for computer-use-linux.")
@@ -1336,40 +1342,42 @@ def run_web(args: argparse.Namespace) -> int:
 
 
 def run_dashboard(args: argparse.Namespace) -> int:
-    web_process: subprocess.Popen[bytes] | None = None
+    # The backend (`bitbuddy serve`) now hosts the web UI on its own port, so
+    # the dashboard just makes sure the backend is up and opens the browser at
+    # it. The UI is served same-origin, so only the token needs passing.
+    ensure_backend_bind_allowed(str(args.host), bool(getattr(args, "allow_lan", False)))
     api_token = get_api_token()
-    api_url = f"http://{local_browser_host(args.api_host)}:{int(args.api_port)}"
-    dashboard_url = f"http://{local_browser_host(args.host)}:{args.port}"
-    launch_url = f"{dashboard_url}?{urlencode({'bitbuddy_token': api_token, 'bitbuddy_api': api_url})}"
+    base_url = f"http://{local_browser_host(args.host)}:{int(args.port)}"
+    # The UI is served same-origin, but pass bitbuddy_api too so non-default
+    # host/port still point the client at this backend.
+    launch_url = f"{base_url}/?{urlencode({'bitbuddy_token': api_token, 'bitbuddy_api': base_url})}"
     dashboard_url_file = write_private_dashboard_url(launch_url)
 
-    if check_backend_health(args.api_host, int(args.api_port), token=api_token):
-        print(f"Using existing BitBuddy backend at {api_url}.")
-    else:
-        print(f"BitBuddy backend is not running at {api_url}. Start it with `bitbuddy serve`.")
-
-    if wait_for_http(dashboard_url, timeout_seconds=1.5):
-        print(f"Using existing BitBuddy dashboard at {dashboard_url}.")
+    if check_backend_health(args.host, int(args.port), token=api_token):
+        print(f"Using existing BitBuddy backend at {base_url}.")
         print(f"Dashboard URL saved to {dashboard_url_file}.")
         if not args.no_open:
             webbrowser.open(launch_url)
         return 0
 
-    print(f"Starting BitBuddy dashboard at {dashboard_url} ...")
+    print(f"Starting BitBuddy backend at {base_url} ...")
+    serve_command = [sys.executable, "-m", "bitbuddy", "serve", "--host", str(args.host), "--port", str(int(args.port))]
+    if bool(getattr(args, "allow_lan", False)):
+        serve_command.append("--allow-lan")
+
+    server_process = subprocess.Popen(serve_command)
     try:
-        web_process = subprocess.Popen(
-            ["npm", "run", "dev", "--", "--host", args.host, "--port", str(args.port)],
-            cwd=WEB_DIR,
-        )
-        if wait_for_http(dashboard_url, timeout_seconds=20) and not args.no_open:
-            webbrowser.open(launch_url)
-        elif not args.no_open:
-            print(f"Dashboard is starting. Tokenized URL saved to {dashboard_url_file}.")
-        print(f"Dashboard URL saved to {dashboard_url_file}.")
-        return web_process.wait()
+        # A first-time build can take a while, so wait generously.
+        if wait_for_backend(args.host, int(args.port), timeout_seconds=120, token=api_token):
+            print(f"Dashboard URL saved to {dashboard_url_file}.")
+            if not args.no_open:
+                webbrowser.open(launch_url)
+        else:
+            print("Backend did not become healthy in time. Check the logs above.")
+        return server_process.wait()
     finally:
-        if web_process is not None and web_process.poll() is None:
-            terminate_process(web_process)
+        if server_process.poll() is None:
+            terminate_process(server_process)
 
 
 def run_serve(args: argparse.Namespace) -> int:
@@ -1706,6 +1714,11 @@ def backup_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def version_command(_args: argparse.Namespace) -> int:
+    print(f"BitBuddy {__version__}")
+    return 0
+
+
 def update_command(args: argparse.Namespace) -> int:
     root = source_checkout_root()
     branch = str(getattr(args, "branch", "stable") or "stable").strip()
@@ -1717,8 +1730,8 @@ def update_command(args: argparse.Namespace) -> int:
         )
     if shutil.which("git") is None:
         raise ValueError("Missing 'git'. Install it, then rerun `bitbuddy update`.")
-    if shutil.which("npm") is None and (root / "web" / "package.json").exists():
-        raise ValueError("Missing 'npm'. Install Node.js LTS, then rerun `bitbuddy update`.")
+    if (root / "web" / "package.json").exists() and shutil.which("pnpm") is None and shutil.which("npm") is None:
+        raise ValueError("Missing 'pnpm'/'npm'. Install Node.js LTS (and pnpm), then rerun `bitbuddy update`.")
 
     dirty = checkout_has_local_changes(root)
     stash_ref = ""
@@ -1735,9 +1748,14 @@ def update_command(args: argparse.Namespace) -> int:
 
         web_dir = root / "web"
         if (web_dir / "package.json").exists():
-            run_update_step(["npm", "install", "--prefix", str(web_dir)])
+            # Install deps and rebuild the static web UI so the freshly pulled
+            # version is what `bitbuddy serve` hosts.
+            from .web_build import ensure_web_build
+
+            if not ensure_web_build(force=True):
+                print("BitBuddy updated, but the web UI build did not complete. Run it manually before using the dashboard.", file=sys.stderr)
         else:
-            print("Skipping web dependency update; web/package.json was not found.")
+            print("Skipping web build; web/package.json was not found.")
 
         run_update_step([sys.executable, "-m", "bitbuddy", "--help"])
         if not args.skip_doctor:
@@ -1868,7 +1886,7 @@ def provider_models_command(_args: argparse.Namespace) -> int:
 
 
 def mcp_help(_args: argparse.Namespace) -> int:
-    print("usage: bitbuddy mcp {list,install-computer-use-linux,doctor-computer-use-linux,add-computer-use-linux} ...")
+    print("usage: bitbuddy mcp {list,install-computer-use-linux,doctor-computer-use-linux,setup-computer-use-linux,add-computer-use-linux} ...")
     print()
     print("Manage MCP tool servers.")
     return 0
@@ -1950,6 +1968,18 @@ def mcp_doctor_computer_use_linux_command(_args: argparse.Namespace) -> int:
         return 1
     command = resolve_managed_command("managed:computer-use-linux")
     return subprocess.call([command, "doctor"])
+
+
+def mcp_setup_computer_use_linux_command(_args: argparse.Namespace) -> int:
+    from .desktop_control import enable_desktop_control, render_report
+
+    ok, message = provision_computer_use_linux(install=True)
+    if not ok:
+        print(message, file=sys.stderr)
+        return 1
+    report = enable_desktop_control()
+    print(render_report(report))
+    return 0 if report.ready else 1
 
 
 def projects_help(_args: argparse.Namespace) -> int:

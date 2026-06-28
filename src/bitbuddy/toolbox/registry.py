@@ -12,19 +12,24 @@ from .handlers import (
     calendar_find_free_time_tool,
     calendar_modify_event_tool,
     calendar_view_events_tool,
+    complete_task_tool,
     create_skill_tool,
+    create_task_tool,
+    delete_task_tool,
     email_create_auto_trash_rule_tool,
     email_list_mailboxes_tool,
     email_read_message_tool,
     email_recent_messages_tool,
     email_search_messages_tool,
     email_trash_message_tool,
+    enable_desktop_control_tool,
     glob_files_tool,
     get_project_brief_tool,
     get_project_memory_tool,
     list_skills_tool,
     list_directory_tool,
     list_memory_tool,
+    list_tasks_tool,
     merge_memory_tool,
     mcp_tool,
     move_memory_tool,
@@ -41,6 +46,7 @@ from .handlers import (
     patch_file_tool,
     update_memory_tool,
     update_project_memory_tool,
+    update_task_tool,
     validate_skill_tool,
     web_fetch_tool,
     web_search_tool,
@@ -218,6 +224,107 @@ def default_tool_registry() -> ToolRegistry:
             max_chars=1000,
         ),
         calendar_delete_event_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="create_task",
+            description=(
+                "Add a task or reminder the user asked you to remember (e.g. 'remind me to call the dentist at 4pm', "
+                "'add a task to review the PR Friday'). Set remind_at when the user wants to be nudged at a specific "
+                "time, and due when there's a deadline; resolve relative phrasing like '4pm' or 'Friday' to absolute "
+                "ISO8601 in the user's timezone (e.g. 2026-06-26T16:00). Tasks with a remind_at trigger a notification "
+                "and a chat nudge at that time. Returns the new task id."
+            ),
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "notes": {"type": "string"},
+                    "due": {"type": "string", "description": "ISO8601 deadline, optional."},
+                    "remind_at": {"type": "string", "description": "ISO8601 time to nudge the user, optional."},
+                    "priority": {"type": "integer", "description": "1 (low) to 5 (high)."},
+                    "project_id": {"type": "string"},
+                },
+                "required": ["title"],
+                "additionalProperties": False,
+            },
+            max_chars=1000,
+        ),
+        create_task_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="list_tasks",
+            description=(
+                "List the user's tasks/reminders. Use whenever the user asks what's on their plate, their to-dos, or "
+                "open reminders. status defaults to 'open'; pass 'done', 'dismissed', or 'all'. Optionally filter by "
+                "project_id. Returns tasks with their ids for update_task/complete_task."
+            ),
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["open", "done", "dismissed", "all"]},
+                    "project_id": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+            max_chars=6000,
+        ),
+        list_tasks_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="update_task",
+            description=(
+                "Update an existing task by id. Only pass the fields you want to change. Use due/remind_at as ISO8601, "
+                "or pass an empty string to clear them. Set status to 'done' or 'dismissed' to close a task."
+            ),
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "notes": {"type": "string"},
+                    "due": {"type": "string"},
+                    "remind_at": {"type": "string"},
+                    "priority": {"type": "integer"},
+                    "status": {"type": "string", "enum": ["open", "done", "dismissed"]},
+                    "project_id": {"type": "string"},
+                },
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+            max_chars=1000,
+        ),
+        update_task_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="complete_task",
+            description="Mark a task done by id.",
+            arguments_schema={
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+            max_chars=500,
+        ),
+        complete_task_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="delete_task",
+            description="Delete a task by id. Prefer complete_task or status='dismissed' unless the user wants it gone entirely.",
+            arguments_schema={
+                "type": "object",
+                "properties": {"task_id": {"type": "string"}},
+                "required": ["task_id"],
+                "additionalProperties": False,
+            },
+            max_chars=500,
+        ),
+        delete_task_tool,
     )
     registry.register(
         ToolDefinition(
@@ -745,6 +852,16 @@ def default_tool_registry() -> ToolRegistry:
             max_chars=4000,
         ),
         merge_memory_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="enable_desktop_control",
+            description="Attempt to enable Linux desktop-control prerequisites (AT-SPI accessibility, ydotool input daemon, screenshot portal, compositor-aware window listing) for computer-use-linux, then report the true per-capability state. Call this when the desktop-control doctor reports blockers. Only claim a capability works if its status is 'enabled'; relay 'needs_user' remediation to the user instead of asserting control.",
+            arguments_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            annotations={"mcp_server": "computer_use_linux"},
+            max_chars=8000,
+        ),
+        enable_desktop_control_tool,
     )
     register_mcp_tools(registry)
     return registry

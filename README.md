@@ -36,11 +36,11 @@ If BitBuddy was installed from the public source installer, update the local che
 bitbuddy update
 ```
 
-`bitbuddy update` follows the `stable` release branch by default. It requires a Git checkout, stashes and restores local uncommitted changes by default, reinstalls the Python package, refreshes web dependencies, smoke-checks the CLI, and runs `bitbuddy doctor` when it finishes. Use `--branch main` for development builds, or `--no-autostash` if you prefer the update to refuse local changes instead.
+`bitbuddy update` follows the `stable` release branch by default. It requires a Git checkout, stashes and restores local uncommitted changes by default, reinstalls the Python package, refreshes web dependencies, rebuilds the static web UI, smoke-checks the CLI, and runs `bitbuddy doctor` when it finishes. Use `--branch main` for development builds, or `--no-autostash` if you prefer the update to refuse local changes instead.
 
 ## Server
 
-Start the BitBuddy backend server:
+Start the BitBuddy local server:
 
 ```bash
 bitbuddy serve
@@ -52,7 +52,7 @@ Defaults are equivalent to:
 bitbuddy serve --host 127.0.0.1 --port 8787
 ```
 
-The server exposes the local BitBuddy API, including health, config, provider, project memory, indexing, project map, and streaming chat endpoints.
+The server hosts both the local BitBuddy API and the built web UI on the same origin. API endpoints include health, config, provider, project memory, indexing, project map, tasks, and streaming chat.
 
 While running, the server monitors registered project memories on the configured timer and writes activity events into `~/.bitbuddy/bitbuddy.sqlite`.
 
@@ -60,13 +60,13 @@ While running, the server monitors registered project memories on the configured
 
 ## Dashboard
 
-In another terminal, open the local web UI:
+Open the local web UI:
 
 ```bash
 bitbuddy dashboard
 ```
 
-`bitbuddy dashboard` starts the dashboard UI and opens a tokenized localhost URL in your browser. It does not start the backend; keep `bitbuddy serve` running for chat, memory, calendar, and email features.
+`bitbuddy dashboard` ensures `bitbuddy serve` is running, then opens the backend-hosted dashboard in your browser. If the server is already running on loopback, you can also visit `http://127.0.0.1:8787` directly.
 
 ## Background Service
 
@@ -81,7 +81,7 @@ bitbuddy service restart
 bitbuddy service disable
 ```
 
-The service runs the backend only (`bitbuddy serve --host 127.0.0.1 --port 8787`). Open the UI with `bitbuddy dashboard` when you want to use the app.
+The service runs `bitbuddy serve --host 127.0.0.1 --port 8787`, which hosts both the API and built web UI. Open the UI with `bitbuddy dashboard` when you want to use the app.
 
 ## Providers
 
@@ -109,7 +109,7 @@ Ollama uses `/api/chat`. llama.cpp uses the OpenAI-compatible `/v1/chat/completi
 
 ## Web App
 
-Start the SvelteKit/Vite dev server:
+For dashboard development, start the SvelteKit/Vite dev server:
 
 ```bash
 cd web
@@ -118,7 +118,7 @@ cd ..
 bitbuddy web
 ```
 
-The chat page streams through `bitbuddy serve` at `http://127.0.0.1:8787`, including separate thinking and response chunks.
+The dev web app streams through `bitbuddy serve` at `http://127.0.0.1:8787`, including separate thinking and response chunks. Normal users do not need this command; `bitbuddy serve` hosts the built dashboard.
 
 Defaults are equivalent to:
 
@@ -187,7 +187,13 @@ bitbuddy projects list
 
 BitBuddy does not receive broad home-directory access by default. Project paths are explicit and read-only; BitBuddy only writes its own config and SQLite files under `~/.bitbuddy`.
 
+Project Specs are Markdown notes attached to a registered project. Create and edit specs from the Projects dashboard, mark active specs when they should guide future work, and archive old specs without deleting their history. Active specs are included in project context for chat and autonomous work.
+
 Generated artifacts default to `~/.bitbuddy/artifacts`. BitBuddy has first-class `write_file`, `patch_file`, and `make_directory` tools for creating deterministic files there, then `run_shell_command` with `working_directory` for validation/export commands. Writes outside the managed artifacts workspace require approval.
+
+## Tasks And Reminders
+
+Ask BitBuddy to remember a task or reminder, such as "remind me to call the dentist at 4pm". Tasks are stored locally, can be managed from the Tasks page, and can trigger desktop notifications when reminders come due.
 
 ## MCP And Desktop Control
 
@@ -199,6 +205,7 @@ CLI install/configure/repair commands:
 
 ```bash
 bitbuddy mcp add-computer-use-linux
+bitbuddy mcp setup-computer-use-linux
 bitbuddy mcp doctor-computer-use-linux
 bitbuddy mcp list
 ```

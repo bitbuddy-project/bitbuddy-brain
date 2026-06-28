@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-cli-test-")
 
 from bitbuddy import cli  # noqa: E402
+from bitbuddy import __version__  # noqa: E402
 
 
 class CliUpdateTest(unittest.TestCase):
@@ -26,6 +27,38 @@ class CliUpdateTest(unittest.TestCase):
         self.assertIs(args.handler, cli.update_command)
         self.assertEqual(args.branch, "release")
         self.assertTrue(args.skip_doctor)
+
+    def test_dashboard_targets_backend_port(self) -> None:
+        args = cli.build_parser().parse_args(["dashboard"])
+
+        self.assertIs(args.handler, cli.run_dashboard)
+        self.assertEqual(args.host, "127.0.0.1")
+        self.assertEqual(args.port, 8787)
+        self.assertFalse(hasattr(args, "api_port"))
+
+    def test_update_builds_web_ui(self) -> None:
+        from bitbuddy import web_build
+
+        with patch.object(web_build, "ensure_web_build", return_value=True) as build, patch.object(
+            cli, "source_checkout_root"
+        ) as root, patch.object(
+            cli, "checkout_has_local_changes", return_value=False
+        ), patch.object(cli, "run_update_step"), patch("subprocess.run") as run, patch(
+            "shutil.which", return_value="/usr/bin/tool"
+        ):
+            checkout = Path(tempfile.mkdtemp(prefix="bitbuddy-update-root-"))
+            (checkout / ".git").mkdir()
+            (checkout / "web").mkdir()
+            (checkout / "web" / "package.json").write_text("{}", encoding="utf-8")
+            root.return_value = checkout
+            run.return_value = subprocess.CompletedProcess([], 0)
+
+            result = cli.update_command(
+                argparse.Namespace(branch="stable", no_autostash=False, skip_doctor=True)
+            )
+
+        self.assertEqual(result, 0)
+        build.assert_called_once_with(force=True)
 
     def test_update_defaults_to_stable_branch(self) -> None:
         args = cli.build_parser().parse_args(["update", "--skip-doctor"])
@@ -39,6 +72,33 @@ class CliUpdateTest(unittest.TestCase):
             cli.completion_command(argparse.Namespace(shell="bash"))
 
         self.assertIn("update", output.getvalue())
+
+    def test_version_command_prints_package_version(self) -> None:
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            result = cli.version_command(argparse.Namespace())
+
+        self.assertEqual(result, 0)
+        self.assertEqual(output.getvalue().strip(), f"BitBuddy {__version__}")
+
+    def test_global_version_flag_prints_package_version(self) -> None:
+        output = io.StringIO()
+
+        with self.assertRaises(SystemExit) as caught, contextlib.redirect_stdout(output):
+            cli.build_parser().parse_args(["--version"])
+
+        self.assertEqual(caught.exception.code, 0)
+        self.assertEqual(output.getvalue().strip(), f"BitBuddy {__version__}")
+
+    def test_short_version_flag_prints_package_version(self) -> None:
+        output = io.StringIO()
+
+        with self.assertRaises(SystemExit) as caught, contextlib.redirect_stdout(output):
+            cli.build_parser().parse_args(["-V"])
+
+        self.assertEqual(caught.exception.code, 0)
+        self.assertEqual(output.getvalue().strip(), f"BitBuddy {__version__}")
 
     def test_source_checkout_root_finds_src_layout(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -113,10 +173,12 @@ class CliUpdateTest(unittest.TestCase):
 
             with patch("bitbuddy.cli.source_checkout_root", return_value=root), \
                  patch("bitbuddy.cli.shutil.which", return_value="/usr/bin/tool"), \
+                 patch("bitbuddy.web_build.ensure_web_build", return_value=True) as build, \
                  patch("bitbuddy.cli.subprocess.run", side_effect=fake_run) as run:
                 result = cli.update_command(argparse.Namespace(branch="main", no_autostash=False, skip_doctor=False))
 
         self.assertEqual(result, 0)
+        build.assert_called_once_with(force=True)
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(
             commands,
@@ -125,7 +187,6 @@ class CliUpdateTest(unittest.TestCase):
                 ["git", "-C", str(root), "fetch", "--prune", "origin", "main"],
                 ["git", "-C", str(root), "pull", "--ff-only", "origin", "main"],
                 [sys.executable, "-m", "pip", "install", "-e", str(root)],
-                ["npm", "install", "--prefix", str(root / "web")],
                 [sys.executable, "-m", "bitbuddy", "--help"],
                 [sys.executable, "-m", "bitbuddy", "doctor"],
             ],

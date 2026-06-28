@@ -15,9 +15,12 @@ os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-mcp-test-")
 
 from bitbuddy.config import ProviderConfig, load_config, update_mcp_config, update_model_runtime_config, upsert_mcp_server, write_config  # noqa: E402
 from bitbuddy import cli  # noqa: E402
+from bitbuddy import desktop_control  # noqa: E402
+from bitbuddy.desktop_control import CapabilityResult, STATUS_ENABLED, STATUS_NEEDS_USER, enable_desktop_control  # noqa: E402
 from bitbuddy.managed_tools import ManagedToolStatus, resolve_managed_command  # noqa: E402
 from bitbuddy.mcp_client import close_mcp_clients  # noqa: E402
 from bitbuddy.paths import CONFIG_PATH  # noqa: E402
+from bitbuddy.subagents.runtime import is_desktop_control_tool  # noqa: E402
 from bitbuddy.tools import ToolCall, ToolDefinition, ToolExecutor, needs_permission  # noqa: E402
 from bitbuddy.toolbox.registry import default_tool_registry  # noqa: E402
 
@@ -35,6 +38,55 @@ class McpToolsTest(unittest.TestCase):
         self.assertEqual(config.mcp_servers[0].command, "computer-use-linux")
         self.assertEqual(config.mcp_servers[0].args, ("mcp",))
         self.assertEqual(load_config().mcp_servers[0].name, "computer_use_linux")
+
+    def test_upsert_mcp_server_merges_env(self) -> None:
+        upsert_mcp_server("computer-use-linux", "managed:computer-use-linux", ["mcp"], env={"A": "1"})
+        config = upsert_mcp_server("computer-use-linux", "managed:computer-use-linux", ["mcp"], env={"B": "2"})
+
+        server = next(server for server in config.mcp_servers if server.name == "computer_use_linux")
+        self.assertEqual(server.env, {"A": "1", "B": "2"})
+
+    def test_enable_desktop_control_persists_env_and_reports_ready(self) -> None:
+        def fake_ydotool(env_updates: dict[str, str]) -> CapabilityResult:
+            env_updates["YDOTOOL_SOCKET"] = "/tmp/.ydotool_socket"
+            return CapabilityResult("ydotool", STATUS_ENABLED, "running")
+
+        with (
+            patch.object(desktop_control.sys, "platform", "linux"),
+            patch("bitbuddy.desktop_control._enable_accessibility", return_value=CapabilityResult("accessibility", STATUS_ENABLED, "on")),
+            patch("bitbuddy.desktop_control._enable_ydotool", side_effect=fake_ydotool),
+            patch("bitbuddy.desktop_control._select_binary_for_compositor", return_value=("managed:computer-use-linux", CapabilityResult("window_listing", STATUS_ENABLED, "x11"))),
+            patch("bitbuddy.desktop_control._check_portal", return_value=CapabilityResult("screenshot_portal", STATUS_ENABLED, "portal up")),
+            patch("bitbuddy.desktop_control._run_doctor", return_value=(True, "all good")),
+        ):
+            report = enable_desktop_control()
+
+        self.assertTrue(report.ready)
+        config = load_config()
+        self.assertTrue(config.mcp.enabled)
+        server = next(server for server in config.mcp_servers if server.name == "computer_use_linux")
+        self.assertEqual(server.env["GTK_MODULES"], "gail:atk-bridge")
+        self.assertEqual(server.env["YDOTOOL_SOCKET"], "/tmp/.ydotool_socket")
+
+    def test_enable_desktop_control_partial_is_not_ready(self) -> None:
+        with (
+            patch.object(desktop_control.sys, "platform", "linux"),
+            patch("bitbuddy.desktop_control._enable_accessibility", return_value=CapabilityResult("accessibility", STATUS_ENABLED, "on")),
+            patch("bitbuddy.desktop_control._enable_ydotool", return_value=CapabilityResult("ydotool", STATUS_NEEDS_USER, "uinput", "add udev rule")),
+            patch("bitbuddy.desktop_control._select_binary_for_compositor", return_value=("managed:computer-use-linux", CapabilityResult("window_listing", STATUS_ENABLED, "x11"))),
+            patch("bitbuddy.desktop_control._check_portal", return_value=CapabilityResult("screenshot_portal", STATUS_ENABLED, "portal up")),
+            patch("bitbuddy.desktop_control._run_doctor", return_value=(False, "blocked")),
+        ):
+            report = enable_desktop_control()
+
+        self.assertFalse(report.ready)
+        rendered = desktop_control.render_report(report)
+        self.assertIn("add udev rule", rendered)
+
+    def test_enable_desktop_control_tool_is_excluded_from_subagents(self) -> None:
+        definitions = {definition.name: definition for definition in default_tool_registry().definitions()}
+        self.assertIn("enable_desktop_control", definitions)
+        self.assertTrue(is_desktop_control_tool(definitions["enable_desktop_control"], "enable_desktop_control"))
 
     def test_default_config_keeps_mcp_opt_in(self) -> None:
         config = load_config()

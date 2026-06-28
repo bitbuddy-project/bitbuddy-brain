@@ -193,3 +193,19 @@ def initialize_project_database(db_path: Path) -> None:
             )
             """
         )
+        connection.execute(
+            """
+            create table if not exists project_specs (
+                id text primary key,
+                title text not null,
+                status text not null default 'draft',
+                rel_path text not null unique,
+                tags text not null default '[]',
+                created_at text default current_timestamp,
+                updated_at text default current_timestamp
+            )
+            """
+        )
+        ensure_column(connection, "project_specs", "status", "text not null default 'draft'")
+        ensure_column(connection, "project_specs", "tags", "text not null default '[]'")
+        connection.execute("create index if not exists idx_project_specs_status on project_specs(status, updated_at desc)")

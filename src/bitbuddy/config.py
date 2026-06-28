@@ -661,7 +661,7 @@ def mcp_server_to_raw(server: McpServerConfig) -> dict[str, Any]:
     return raw
 
 
-def upsert_mcp_server(name: str, command: str, args: list[str] | tuple[str, ...] | None = None, *, timeout: float = 120, connect_timeout: float = 30, enabled: bool = True) -> BitBuddyConfig:
+def upsert_mcp_server(name: str, command: str, args: list[str] | tuple[str, ...] | None = None, *, timeout: float = 120, connect_timeout: float = 30, enabled: bool = True, env: dict[str, str] | None = None) -> BitBuddyConfig:
     if not CONFIG_PATH.exists():
         write_config("none", "", "")
 
@@ -675,13 +675,20 @@ def upsert_mcp_server(name: str, command: str, args: list[str] | tuple[str, ...]
     clean_command = str(command or "").strip()
     if not clean_command:
         raise ValueError("MCP server command is required.")
-    servers[clean_name] = {
+    existing = servers.get(clean_name) if isinstance(servers.get(clean_name), dict) else {}
+    merged_env = {str(key): str(value) for key, value in existing.get("env", {}).items()} if isinstance(existing.get("env"), dict) else {}
+    if env:
+        merged_env.update({str(key): str(value) for key, value in env.items()})
+    entry: dict[str, Any] = {
         "command": clean_command,
         "args": [str(item) for item in (args or [])],
         "timeout": max(1.0, float(timeout)),
         "connect_timeout": max(1.0, float(connect_timeout)),
         "enabled": bool(enabled),
     }
+    if merged_env:
+        entry["env"] = merged_env
+    servers[clean_name] = entry
     raw["mcp_servers"] = servers
     CONFIG_PATH.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     return load_config()

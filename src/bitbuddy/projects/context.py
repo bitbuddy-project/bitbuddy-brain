@@ -479,6 +479,7 @@ def add_project_model_sections(
     pack.add_section(f"Current task memory — {project.name}", task_lines(model), item_limit=8)
     pack.add_section(f"Decisions/preferences — {project.name}", decision_lines(model), item_limit=12)
     pack.add_section(f"Project notes — {project.name}", project_note_lines(model), item_limit=12)
+    pack.add_section(f"Active specs — {project.name}", project_spec_lines(model), item_limit=16)
     pack.add_section(f"Important behavior — {project.name}", behavior_lines(project_card, card), item_limit=10)
     pack.add_section(f"Read-before-editing rules — {project.name}", read_rule_lines(model), item_limit=10)
     pack.add_section(f"Important files — {project.name}", file_lines(model), item_limit=16)
@@ -650,6 +651,28 @@ def project_note_lines(model: dict[str, Any]) -> list[str]:
         content = clean_value(item.get("content"))
         created_at = clean_value(item.get("created_at"))
         lines.append(truncate(f"- {category} ({created_at}): {content}", 260))
+    return lines
+
+
+def project_spec_lines(model: dict[str, Any]) -> list[str]:
+    specs = as_list(model.get("project_specs"))
+    if not specs:
+        return ["- No active specs recorded for this project."]
+    lines: list[str] = []
+    for spec in specs:
+        item = as_dict(spec)
+        title = clean_value(item.get("title"))
+        spec_id = clean_value(item.get("id"))
+        tags = ", ".join(str(tag) for tag in as_list(item.get("tags")))
+        body = clean_value(item.get("body"))
+        tag_suffix = f" [tags: {tags}]" if tags else ""
+        header = truncate(f"- Spec: {title} ({spec_id}){tag_suffix}", 240)
+        lines.append(header)
+        if body:
+            for chunk in body.split("\n\n"):
+                chunk = clean_value(chunk)
+                if chunk:
+                    lines.append(truncate(f"  {chunk}", 400))
     return lines
 
 

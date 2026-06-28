@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import mimetypes
 import queue
 import secrets as py_secrets
 import shutil
@@ -11,12 +12,13 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 import urllib.error
 import urllib.request
 
-from .auth import API_TOKEN_HEADER, is_allowed_origin, valid_api_token
+from .auth import API_TOKEN_HEADER, get_api_token, is_allowed_origin, is_loopback_host, valid_api_token
 from .chats.repository import (
     chat_summary_to_json,
     create_chat,
@@ -54,17 +56,24 @@ from .email.models import mailbox_to_json, message_page_to_json, message_to_json
 from .email.permissions import EMAIL_SCOPES, EmailPermissionRequired, all_permissions as email_permissions, set_permission as set_email_permission
 from .email.service import create_sender_trash_rule as email_create_sender_trash_rule, delete_message as email_delete_message, delete_rule as email_delete_rule, email_account_id, email_overview, empty_trash as email_empty_trash, list_mailboxes as email_list_mailboxes, list_messages_page as email_list_messages_page, list_rules as email_list_rules, read_message as email_read_message, search_messages_page as email_search_messages_page, trash_message as email_trash_message
 from .continuity import record_continuity_event
+from .tasks import store as task_store
 from .personality import BUILTIN_PERSONALITIES, list_available_personalities, load_selected_personality, selected_personality_to_legacy_dict
-from .paths import APP_DIR, CONFIG_PATH, PERSONALITIES_DIR, PERSONALITY_PATH
+from .paths import APP_DIR, CONFIG_PATH, PERSONALITIES_DIR, PERSONALITY_PATH, WEB_BUILD_DIR
 from .skills import archive_skill, create_skill, list_skills, load_skill, patch_skill, skill_to_json, validate_skill
 from .workspace import archive_workspace_document, list_workspace_documents, read_workspace_document, set_workspace_document_pinned, workspace_document_to_json
 from .memory.project import (
+    archive_project_spec,
+    create_project_spec,
     index_project,
+    list_project_specs,
     list_projects,
     project_map,
     project_model,
+    read_project_spec,
     register_project,
+    spec_to_json,
     unregister_project,
+    update_project_spec,
 )
 from .notifications import dismiss_notification, list_notifications, mark_all_notifications_read, mark_notification_read, notification_to_json, subscribe_notifications, unread_notification_count, unsubscribe_notifications
 from .self_model import add_self_journal, create_goal, get_self_state, list_goals, record_conversation_signal, record_personality_quirks, update_goal, update_self_state
@@ -98,6 +107,26 @@ GMAIL_AUTH_FLOWS: dict[str, dict[str, str]] = {}
 GMAIL_OAUTH_DIAGNOSTICS: dict[str, str] = {}
 GMAIL_OAUTH_FLOW_TTL_SECONDS = 900
 PUBLIC_PATHS = {"/health", "/provider/codex/callback", "/email/gmail/callback"}
+
+
+def _js_literal(value: str) -> str:
+    """JSON-encode a string for safe inlining inside a <script> element."""
+    return json.dumps(value).replace("</", "<\\/")
+
+
+def _inject_bootstrap(html: str, token: str, api_base: str) -> str:
+    """Inject the API token and base URL as window globals so the SPA can
+    authenticate on a direct same-origin load. Inserted right after <head> so it
+    runs before SvelteKit's bootstrap reads it."""
+    script = (
+        "<script>"
+        f"window.__BITBUDDY_TOKEN__={_js_literal(token)};"
+        f"window.__BITBUDDY_API__={_js_literal(api_base)};"
+        "</script>"
+    )
+    if "<head>" in html:
+        return html.replace("<head>", "<head>" + script, 1)
+    return script + html
 
 
 class BitBuddyRequestHandler(BaseHTTPRequestHandler):
@@ -139,6 +168,13 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+
+        # Serve the built web UI (same origin as the API). This runs before the
+        # API token gate so the SPA can bootstrap; data fetches fall through to
+        # the token-gated routes below. See _maybe_serve_web for the rules.
+        if self._maybe_serve_web(path):
+            return
+
         if not self.authorize_request(path):
             return
 
@@ -264,6 +300,14 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
             if path == "/calendar/permissions":
                 account, _calendar = ensure_default_calendar(user_timezone())
                 self.send_json({"scopes": list(CALENDAR_SCOPES), "permissions": calendar_permissions(account.id)})
+                return
+
+            if path == "/tasks":
+                params = parse_qs(urlparse(self.path).query)
+                status = params.get("status", ["open"])[0] or "open"
+                project_id = params.get("project_id", [""])[0]
+                tasks = task_store.list_tasks(status=status, project_id=project_id)
+                self.send_json({"tasks": [task_store.task_to_json(task) for task in tasks]})
                 return
 
             if path == "/email/overview":
@@ -463,6 +507,31 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"project": project_id, "memory": project_model(project_id)})
                 return
 
+            if path.startswith("/projects/") and path.endswith("/specs"):
+                project_id = unquote(path.removeprefix("/projects/").removesuffix("/specs").strip("/"))
+                if "/" in project_id:
+                    self.send_json({"error": "Invalid project id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                params = parse_qs(urlparse(self.path).query)
+                include_archived = params.get("include_archived", ["false"])[0].lower() == "true"
+                specs = list_project_specs(project_id, include_archived=include_archived)
+                self.send_json({"project": project_id, "specs": [spec_to_json(spec) for spec in specs]})
+                return
+
+            if path.startswith("/projects/") and "/specs/" in path and not path.endswith("/archive"):
+                pieces = path.removeprefix("/projects/").split("/specs/", 1)
+                project_id = unquote(pieces[0].strip("/"))
+                spec_id = unquote(pieces[1].strip("/")) if len(pieces) > 1 else ""
+                if not project_id or "/" in project_id or not spec_id or "/" in spec_id:
+                    self.send_json({"error": "Invalid project spec path."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                spec = read_project_spec(project_id, spec_id, include_body=True)
+                if spec is None:
+                    self.send_json({"error": "Spec not found."}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json({"project": project_id, "spec": spec_to_json(spec, include_body=True)})
+                return
+
             if path == "/subagents/runs":
                 params = parse_qs(urlparse(self.path).query)
                 try:
@@ -539,6 +608,28 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                     {"event": event_to_json(event), "conflicts": [event_to_json(c) for c in conflicts]},
                     status=HTTPStatus.CREATED,
                 )
+                return
+
+            if path == "/tasks":
+                body = self.read_json()
+                title = str(body.get("title") or "").strip()
+                if not title:
+                    self.send_json({"error": "title is required."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    task = task_store.create_task(
+                        title,
+                        notes=str(body.get("notes") or ""),
+                        due_at=str(body.get("due_at") or "") or None,
+                        remind_at=str(body.get("remind_at") or "") or None,
+                        priority=int(body.get("priority", 3) or 3),
+                        project_id=str(body.get("project_id") or ""),
+                        source="web",
+                    )
+                except (ValueError, TypeError) as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"task": task_store.task_to_json(task)}, status=HTTPStatus.CREATED)
                 return
 
             if path == "/skills":
@@ -655,6 +746,46 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if path.startswith("/projects/") and path.endswith("/specs"):
+                project_id = unquote(path.removeprefix("/projects/").removesuffix("/specs").strip("/"))
+                if "/" in project_id:
+                    self.send_json({"error": "Invalid project id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                body = self.read_json()
+                title = str(body.get("title") or "").strip()
+                if not title:
+                    self.send_json({"error": "title is required."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                tags = body.get("tags") if isinstance(body.get("tags"), list) else None
+                try:
+                    spec = create_project_spec(
+                        project_id,
+                        title,
+                        body=str(body.get("body") or ""),
+                        tags=[str(tag) for tag in tags if isinstance(tag, str)] if tags else None,
+                        status=str(body.get("status") or "draft"),
+                    )
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"project": project_id, "spec": spec_to_json(spec, include_body=True)}, status=HTTPStatus.CREATED)
+                return
+
+            if path.startswith("/projects/") and "/specs/" in path and path.endswith("/archive"):
+                pieces = path.removeprefix("/projects/").split("/specs/", 1)
+                project_id = unquote(pieces[0].strip("/"))
+                raw_spec = pieces[1].removesuffix("/archive").strip("/") if len(pieces) > 1 else ""
+                spec_id = unquote(raw_spec)
+                if "/" in spec_id:
+                    self.send_json({"error": "Invalid project spec path."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                spec = archive_project_spec(project_id, spec_id)
+                if spec is None:
+                    self.send_json({"error": "Spec not found."}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json({"project": project_id, "spec": spec_to_json(spec, include_body=True)})
+                return
+
             if path == "/chat/context":
                 self.send_json(chat_context_usage(self.read_json()))
                 return
@@ -751,6 +882,19 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                         doctor={"ok": result.returncode == 0, "stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode},
                     ),
                     status=HTTPStatus.OK if result.returncode == 0 else HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            if path == "/mcp/computer-use-linux/enable":
+                from .desktop_control import enable_desktop_control, report_to_json
+
+                report = enable_desktop_control()
+                self.send_json(
+                    mcp_status_to_json(
+                        message="Desktop control is ready." if report.ready else "Desktop control is partially enabled; see setup details.",
+                        setup=report_to_json(report),
+                    ),
+                    status=HTTPStatus.OK if report.ready else HTTPStatus.BAD_REQUEST,
                 )
                 return
 
@@ -1053,6 +1197,34 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"event": event_to_json(event), "conflicts": [event_to_json(c) for c in conflicts]})
                 return
 
+            if path.startswith("/tasks/"):
+                task_id = unquote(path.removeprefix("/tasks/").strip("/"))
+                if not task_id or "/" in task_id:
+                    self.send_json({"error": "Invalid task id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                body = self.read_json()
+                fields: dict[str, Any] = {}
+                for key in ("title", "notes", "status", "project_id"):
+                    if key in body:
+                        fields[key] = str(body[key])
+                if "due_at" in body:
+                    fields["due_at"] = str(body["due_at"]) or None
+                if "remind_at" in body:
+                    fields["remind_at"] = str(body["remind_at"]) or None
+                if "priority" in body:
+                    try:
+                        fields["priority"] = int(body["priority"])
+                    except (TypeError, ValueError):
+                        self.send_json({"error": "priority must be an integer."}, status=HTTPStatus.BAD_REQUEST)
+                        return
+                try:
+                    task = task_store.update_task(task_id, **fields)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json({"task": task_store.task_to_json(task)})
+                return
+
             if path == "/config/mcp":
                 body = self.read_json()
                 config = update_mcp_config(body)
@@ -1110,6 +1282,29 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 )
                 self.send_json(memory_to_json(memory))
                 return
+
+            if path.startswith("/projects/") and "/specs/" in path:
+                pieces = path.removeprefix("/projects/").split("/specs/", 1)
+                project_id = unquote(pieces[0].strip("/"))
+                spec_id = unquote(pieces[1].strip("/")) if len(pieces) > 1 else ""
+                if not project_id or "/" in project_id or not spec_id or "/" in spec_id:
+                    self.send_json({"error": "Invalid project spec path."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                body = self.read_json()
+                tags = body.get("tags") if isinstance(body.get("tags"), list) else None
+                spec = update_project_spec(
+                    project_id,
+                    spec_id,
+                    title=body.get("title") if isinstance(body.get("title"), str) else None,
+                    body=body.get("body") if isinstance(body.get("body"), str) else None,
+                    status=body.get("status") if isinstance(body.get("status"), str) else None,
+                    tags=[str(tag) for tag in tags if isinstance(tag, str)] if tags else None,
+                )
+                if spec is None:
+                    self.send_json({"error": "Spec not found."}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json({"project": project_id, "spec": spec_to_json(spec, include_body=True)})
+                return
             self.send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
         except ClientDisconnected:
             return
@@ -1159,6 +1354,15 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": str(error)}, status=HTTPStatus.NOT_FOUND)
                     return
                 self.send_json({"deleted": True, "event": event_to_json(event)})
+                return
+
+            if path.startswith("/tasks/"):
+                task_id = unquote(path.removeprefix("/tasks/").strip("/"))
+                if not task_id or "/" in task_id:
+                    self.send_json({"error": "Invalid task id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                deleted = task_store.delete_task(task_id)
+                self.send_json({"deleted": deleted}, status=HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
                 return
 
             if path.startswith("/email/rules/"):
@@ -1387,14 +1591,114 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError) as error:
             raise ClientDisconnected() from error
 
-    def send_html(self, html: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def send_html(self, html: str, status: HTTPStatus = HTTPStatus.OK, *, cache_control: str | None = None) -> None:
         encoded = html.encode("utf-8")
         self.send_response(status)
         self.send_common_headers(content_type="text/html; charset=utf-8")
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         self.send_header("Content-Length", str(len(encoded)))
         try:
             self.end_headers()
             self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionResetError) as error:
+            raise ClientDisconnected() from error
+
+    def _resolve_web_asset(self, path: str) -> Path | None:
+        """Map a request path to an existing file under the web build dir.
+
+        Returns None if there is no such file or the path escapes the build
+        directory (traversal guard)."""
+        rel = unquote(path).lstrip("/")
+        if not rel or rel.endswith("/"):
+            rel = f"{rel}index.html"
+        try:
+            candidate = (WEB_BUILD_DIR / rel).resolve()
+            build_root = WEB_BUILD_DIR.resolve()
+        except OSError:
+            return None
+        if build_root != candidate and build_root not in candidate.parents:
+            return None
+        if candidate.is_file():
+            return candidate
+        return None
+
+    def _is_navigation_request(self) -> bool:
+        """True when this looks like a browser navigation (page load) rather
+        than a programmatic data fetch."""
+        if self.headers.get("Sec-Fetch-Mode", "").lower() == "navigate":
+            return True
+        return "text/html" in self.headers.get("Accept", "")
+
+    def _maybe_serve_web(self, path: str) -> bool:
+        """Serve the built web UI for GET requests. Returns True if handled.
+
+        - An existing static file under web/build is served directly (public).
+        - A browser navigation to a client-side route falls back to index.html.
+        - Anything else (e.g. a data fetch) returns False so the request flows
+          on to the token-gated API routes.
+        """
+        index_html = WEB_BUILD_DIR / "index.html"
+        if not index_html.is_file():
+            return False
+
+        # API endpoints (OAuth callbacks, /health) must reach their handlers,
+        # even on a browser navigation redirect. Never serve the SPA for these,
+        # or the navigation fallback below swallows the OAuth callback and the
+        # SPA renders its own 404.
+        if path in PUBLIC_PATHS:
+            return False
+
+        asset = self._resolve_web_asset(path)
+        if asset is not None:
+            if asset.name == "index.html":
+                self._serve_index(asset)
+            else:
+                self.send_file(asset)
+            return True
+
+        if self._is_navigation_request():
+            self._serve_index(index_html)
+            return True
+
+        return False
+
+    def _request_origin(self) -> str:
+        host = self.headers.get("Host", "").strip()
+        if host:
+            return f"http://{host}"
+        address = self.server.server_address
+        return f"http://{address[0]}:{address[1]}"
+
+    def _serve_index(self, index_html: Path) -> None:
+        """Serve index.html, injecting the API token for loopback clients so a
+        direct visit to the backend can authenticate without the dashboard's
+        ?bitbuddy_token query param. LAN clients get the page untouched."""
+        try:
+            html = index_html.read_text(encoding="utf-8")
+        except OSError:
+            self.send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        client_host = self.client_address[0] if self.client_address else ""
+        if is_loopback_host(client_host):
+            html = _inject_bootstrap(html, get_api_token(), self._request_origin())
+        self.send_html(html, cache_control="no-store")
+
+    def send_file(self, file_path: Path, status: HTTPStatus = HTTPStatus.OK) -> None:
+        try:
+            data = file_path.read_bytes()
+        except OSError:
+            self.send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+        if content_type.startswith("text/") or content_type in {"application/javascript", "application/json"}:
+            content_type = f"{content_type}; charset=utf-8"
+        self.send_response(status)
+        self.send_common_headers(content_type=content_type)
+        self.send_header("Content-Length", str(len(data)))
+        try:
+            self.end_headers()
+            self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError) as error:
             raise ClientDisconnected() from error
 
@@ -2179,7 +2483,7 @@ def codex_callback_html(title: str, message: str, *, ok: bool) -> str:
 </main></body></html>"""
 
 
-def mcp_status_to_json(message: str = "", doctor: dict[str, Any] | None = None) -> dict[str, Any]:
+def mcp_status_to_json(message: str = "", doctor: dict[str, Any] | None = None, setup: dict[str, Any] | None = None) -> dict[str, Any]:
     config = load_config()
     status = computer_use_linux_status()
     configured = any(server.name == "computer_use_linux" for server in config.mcp_servers)
@@ -2207,6 +2511,8 @@ def mcp_status_to_json(message: str = "", doctor: dict[str, Any] | None = None) 
         payload["message"] = message
     if doctor is not None:
         payload["doctor"] = doctor
+    if setup is not None:
+        payload["setup"] = setup
     return payload
 
 

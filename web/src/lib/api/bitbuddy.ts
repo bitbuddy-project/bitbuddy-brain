@@ -579,6 +579,17 @@ export type ProjectMemoryResponse = {
 	memory: ProjectMemory;
 };
 
+export type ProjectSpec = {
+	id: string;
+	title: string;
+	status: string;
+	rel_path?: string;
+	tags: string[];
+	created_at?: string;
+	updated_at?: string;
+	body?: string;
+};
+
 const DEFAULT_BITBUDDY_API = 'http://127.0.0.1:8787';
 const BITBUDDY_API_KEY = 'bitbuddy:api-url';
 export const BITBUDDY_API = apiBaseUrl();
@@ -593,6 +604,13 @@ function apiBaseUrl() {
 		url.searchParams.delete('bitbuddy_api');
 		window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
 		return apiUrl;
+	}
+	// The backend injects this when it serves the page same-origin to a local
+	// client, so a direct visit (not via `bitbuddy dashboard`) still works.
+	const injected = normalizeApiUrl((window as { __BITBUDDY_API__?: string }).__BITBUDDY_API__ ?? '');
+	if (injected) {
+		window.localStorage.setItem(BITBUDDY_API_KEY, injected);
+		return injected;
 	}
 	return window.localStorage.getItem(BITBUDDY_API_KEY) ?? window.sessionStorage.getItem(BITBUDDY_API_KEY) ?? DEFAULT_BITBUDDY_API;
 }
@@ -618,6 +636,12 @@ function apiToken() {
 		url.searchParams.delete('bitbuddy_token');
 		window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
 		return token;
+	}
+	// Token injected by the backend for a same-origin local load (see apiBaseUrl).
+	const injected = (window as { __BITBUDDY_TOKEN__?: string }).__BITBUDDY_TOKEN__ ?? '';
+	if (injected) {
+		window.localStorage.setItem(BITBUDDY_TOKEN_KEY, injected);
+		return injected;
 	}
 	return window.localStorage.getItem(BITBUDDY_TOKEN_KEY) ?? window.sessionStorage.getItem(BITBUDDY_TOKEN_KEY) ?? '';
 }
@@ -803,6 +827,59 @@ export async function getProjectMemory(projectId: string): Promise<ProjectMemory
 export async function deleteProject(projectId: string): Promise<void> {
 	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}`, { method: 'DELETE' });
 	if (!response.ok) throw new Error('Could not delete project.');
+}
+
+export async function getProjectSpecs(projectId: string, options: { includeArchived?: boolean } = {}): Promise<ProjectSpec[]> {
+	const params = new URLSearchParams();
+	if (options.includeArchived) params.set('include_archived', 'true');
+	const query = params.toString() ? `?${params.toString()}` : '';
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}/specs${query}`);
+	if (!response.ok) throw new Error('Could not load project specs.');
+	const data = await response.json();
+	return data.specs ?? [];
+}
+
+export async function getProjectSpec(projectId: string, specId: string): Promise<ProjectSpec> {
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}/specs/${specId}`);
+	if (!response.ok) throw new Error('Could not load project spec.');
+	const data = await response.json();
+	return data.spec;
+}
+
+export async function createProjectSpec(
+	projectId: string,
+	options: { title: string; body?: string; tags?: string[]; status?: string }
+): Promise<ProjectSpec> {
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}/specs`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(options)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not create project spec.');
+	return data.spec;
+}
+
+export async function updateProjectSpec(
+	projectId: string,
+	specId: string,
+	patch: { title?: string; body?: string; tags?: string[]; status?: string }
+): Promise<ProjectSpec> {
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}/specs/${specId}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(patch)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not update project spec.');
+	return data.spec;
+}
+
+export async function archiveProjectSpec(projectId: string, specId: string): Promise<ProjectSpec> {
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}/specs/${specId}/archive`, { method: 'POST' });
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not archive project spec.');
+	return data.spec;
 }
 
 export async function getRecentEpisodes(): Promise<Episode[]> {
@@ -1075,6 +1152,83 @@ export async function getCalendarPermissions(): Promise<{
 	const response = await apiFetch(`${BITBUDDY_API}/calendar/permissions`);
 	if (!response.ok) throw new Error('Could not load calendar permissions.');
 	return response.json();
+}
+
+export type TaskStatus = 'open' | 'done' | 'dismissed';
+
+export type Task = {
+	id: string;
+	title: string;
+	notes: string;
+	due_at: string | null;
+	remind_at: string | null;
+	status: TaskStatus | string;
+	priority: number;
+	project_id: string;
+	source: string;
+	created_at: string;
+	updated_at: string;
+	completed_at: string | null;
+	reminded_at: string | null;
+	metadata: Record<string, unknown>;
+};
+
+export type TaskInput = {
+	title: string;
+	notes?: string;
+	due_at?: string | null;
+	remind_at?: string | null;
+	priority?: number;
+	project_id?: string;
+};
+
+export async function getTasks(
+	options: { status?: TaskStatus | 'all'; project_id?: string } = {}
+): Promise<Task[]> {
+	const params = new URLSearchParams();
+	if (options.status) params.set('status', options.status);
+	if (options.project_id) params.set('project_id', options.project_id);
+	const suffix = params.toString() ? `?${params.toString()}` : '';
+	const response = await apiFetch(`${BITBUDDY_API}/tasks${suffix}`);
+	if (!response.ok) throw new Error('Could not load tasks.');
+	const data = await response.json();
+	return Array.isArray(data.tasks) ? data.tasks : [];
+}
+
+export async function createTask(input: TaskInput): Promise<Task> {
+	const response = await apiFetch(`${BITBUDDY_API}/tasks`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(input)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not create task.');
+	return data.task;
+}
+
+export async function updateTask(
+	id: string,
+	updates: Partial<TaskInput> & { status?: TaskStatus }
+): Promise<Task> {
+	const response = await apiFetch(`${BITBUDDY_API}/tasks/${id}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(updates)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not update task.');
+	return data.task;
+}
+
+export async function completeTask(id: string): Promise<Task> {
+	return updateTask(id, { status: 'done' });
+}
+
+export async function deleteTask(id: string): Promise<boolean> {
+	const response = await apiFetch(`${BITBUDDY_API}/tasks/${id}`, { method: 'DELETE' });
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not delete task.');
+	return Boolean(data.deleted);
 }
 
 export async function setCalendarPermission(

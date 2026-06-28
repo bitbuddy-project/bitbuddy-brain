@@ -14,7 +14,7 @@ from ..providers import ProviderClient
 from ..self_model import GOAL_TASK_INACTIVE_STATUSES, add_self_journal, create_goal, get_goal, get_recent_conversation_signals, get_self_state, goal_task_state, list_goals, set_goal_task_state, update_goal, update_self_state, upsert_personality_evolution
 from ..workspace import append_to_workspace_document, latest_document_for_goal, list_workspace_documents, write_workspace_document
 from .decision import AutonomyActivityType, AutonomyDecision, collect_model_text, extract_json_object
-from .intentions import create_intention, has_intention_with_metadata, intention_to_json, recent_spontaneous_remark
+from .intentions import create_intention, has_intention_with_metadata, intention_to_json, question_looks_self_researchable, recent_similar_question, recent_spontaneous_remark
 from .levels import resolve_profile
 from .log import log_autonomy
 
@@ -69,6 +69,7 @@ def generate_user_prompts(cycle_id: str, client: ProviderClient, decision: Auton
                         "Before proposing any question, use the provided known memory/context as already-known truth.",
                         "Do not ask questions whose answers are already present in memory; convert those to comments only if useful, otherwise omit them.",
                         "A GOOD question is decision-relevant, blocking, preference-discovering, safety-related, or tied to a concrete project/personality thread. It should change what BitBuddy does next.",
+                        "Do not ask the user to explain code, architecture, render pipelines, data flow, or implementation details BitBuddy could inspect in a registered project; omit it or make it project_familiarization work instead.",
                         "A GOOD comment contains a specific observation, useful finding, tradeoff, risk, or meaningful progress. It is not a receipt that BitBuddy did something.",
                         "Reject filler like 'Want to talk about X?', 'I left a note', 'Thought this was interesting', or generic check-ins.",
                         "Comments may be playful or silly only when the context clearly supports that tone and the comment still carries a useful signal.",
@@ -140,6 +141,7 @@ def project_familiarization(cycle_id: str, client: ProviderClient, decision: Aut
                         "Supported architecture_summary fields: backend_layout, frontend_layout, important_packages, major_responsibilities.",
                         "Include intentions only for high-signal items worth bringing back to Dustin later: [{\"kind\":\"question\",\"content\":\"...\",\"reason\":\"...\",\"importance\":1-5,\"playfulness\":0-5}]. Empty intentions are fine.",
                         "Good questions change what BitBuddy should do next. Good comments contain a concrete finding, risk, tradeoff, or meaningful progress. Do not queue generic 'I read this' comments.",
+                        "Do not queue questions asking Dustin how project internals work when the answer should be found by reading more registered files.",
                         "Example: {\"project_overview\":{\"purpose\":\"...\",\"current_status\":\"...\"},\"architecture_summary\":{\"major_responsibilities\":\"...\"},\"intentions\":[{\"kind\":\"question\",\"content\":\"...\",\"reason\":\"...\"}]}",
                     ]
                 ),
@@ -957,6 +959,22 @@ def create_autonomy_intentions(
             )
             continue
         if kind == "question":
+            similar = recent_similar_question(content, str(item.get("reason") or ""))
+            if similar is not None:
+                log_autonomy(
+                    "intention_skipped",
+                    "Skipped generated question because a similar question is already queued or was recently shown",
+                    {
+                        "cycle_id": cycle_id,
+                        "source_activity": source_activity,
+                        "kind": kind,
+                        "content": content[:240],
+                        "similar_intention_id": similar.id,
+                        "similar_status": similar.status,
+                    },
+                )
+                continue
+        if kind == "question":
             question_count += 1
         elif kind in {"comment", "suggestion", "curiosity", "follow_up"}:
             comment_count += 1
@@ -1022,6 +1040,14 @@ def intention_quality(item: dict[str, Any], *, source_activity: str) -> dict[str
     if kind == "question":
         has_signal = importance >= 4 or any(marker in text for marker in important_markers)
         looks_filler = any(pattern in text for pattern in filler_patterns)
+        if question_looks_self_researchable(content, reason):
+            return {
+                "accepted": False,
+                "reason": "question_should_be_self_researched",
+                "importance": importance,
+                "playfulness": playfulness,
+                "source_activity": source_activity,
+            }
         if not content.endswith("?"):
             return {
                 "accepted": False,

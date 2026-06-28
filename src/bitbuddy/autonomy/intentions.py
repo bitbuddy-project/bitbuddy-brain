@@ -14,6 +14,7 @@ from ..paths import GLOBAL_DB_PATH, ensure_app_dirs
 ACTIVE_STATUSES = {"pending", "queued", "eligible"}
 FINAL_STATUSES = {"shown", "answered", "resolved_indirectly", "stale", "dismissed", "expired", "used"}
 SURFACE_COOLDOWN_MINUTES = 45
+RECENT_SIMILAR_QUESTION_HOURS = 24
 
 
 @dataclass(frozen=True)
@@ -289,6 +290,10 @@ def cleanup_intention_queue(now: datetime | None = None) -> dict[str, Any]:
                 continue
             seen.add(signature)
 
+            if not intention_quality_allows_surface(intention):
+                stale_ids.append(intention.id)
+                continue
+
             expires_at = parse_timestamp(intention.expires_at)
             if expires_at is not None and expires_at <= current:
                 expired_ids.append(intention.id)
@@ -373,9 +378,111 @@ def intention_quality_allows_surface(intention: Intention) -> bool:
     in-chat surfacing.
     """
     quality = intention.metadata.get("quality") if isinstance(intention.metadata, dict) else None
+    if intention.kind == "question" and question_looks_self_researchable(intention.content, intention.reason):
+        return False
     if not isinstance(quality, dict):
         return legacy_intention_content_allows_surface(intention)
     return quality.get("accepted") is not False
+
+
+def question_looks_self_researchable(content: str, reason: str = "") -> bool:
+    """True for technical questions BitBuddy should answer by reading/searching first.
+
+    These are usually good research prompts, but bad user interruptions: "how does this
+    pipeline work?" or "is this passed as uniforms?" should become project work, not a
+    question to Dustin.
+    """
+    text = f"{content}\n{reason}".lower()
+    if not content.strip().endswith("?"):
+        return False
+    user_only_markers = (
+        "should we keep", "should we change", "should we rename", "should we default",
+        "do you want me to", "would you prefer", "which option", "permission", "allowed to",
+    )
+    if any(marker in text for marker in user_only_markers):
+        return False
+    research_patterns = (
+        "how does", "how do", "how are", "how is", "how the", "how .* integrate",
+        "where do we stand", "where are we", "are they applied", "is there still",
+        "whether it runs", "are .* passed", "are .* polled", "actually consumed",
+        "currently being consumed", "integrate with", "looking into this", "trying to pin down",
+    )
+    if not any(re.search(pattern, text) for pattern in research_patterns):
+        return False
+    technical_markers = (
+        "architecture", "calloop", "cluster", "code", "compositor", "consumed", "draw", "frame",
+        "gpu", "implementation", "interpolated", "matrix", "pipeline", "primitive", "render",
+        "shader", "sync", "surface", "tile", "transform", "uniform", "wgpu",
+    )
+    marker_count = sum(1 for marker in technical_markers if marker in text)
+    return marker_count >= 2
+
+
+QUESTION_TOPIC_STOPWORDS = {
+    "about", "actually", "after", "again", "applied", "before", "being", "bitbuddy", "check", "could",
+    "current", "currently", "during", "from", "have", "into", "looking", "question", "quick", "should",
+    "specific", "still", "that", "this", "trying", "values", "want", "what", "where", "whether", "with",
+}
+
+
+def question_topic_signature(content: str, reason: str = "") -> tuple[str, ...]:
+    terms: list[str] = []
+    raw_terms = re.findall(r"[A-Za-z][A-Za-z0-9_]*", f"{content}\n{reason}")
+    for raw in raw_terms:
+        pieces = [raw]
+        pieces.extend(re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)|\d+", raw.replace("_", " ")))
+        for piece in pieces:
+            term = piece.lower()
+            if len(term) < 4 or term in QUESTION_TOPIC_STOPWORDS:
+                continue
+            terms.append(term)
+    return tuple(list(dict.fromkeys(terms))[:14])
+
+
+def question_topics_are_similar(left_content: str, right_content: str, left_reason: str = "", right_reason: str = "") -> bool:
+    left = set(question_topic_signature(left_content, left_reason))
+    right = set(question_topic_signature(right_content, right_reason))
+    if len(left) < 3 or len(right) < 3:
+        return False
+    overlap = left & right
+    if len(overlap) >= 4:
+        return True
+    return len(overlap) >= 3 and len(overlap) / max(1, min(len(left), len(right))) >= 0.6
+
+
+def recent_similar_question(
+    content: str,
+    reason: str = "",
+    *,
+    exclude_id: int | None = None,
+    within_hours: float = RECENT_SIMILAR_QUESTION_HOURS,
+    now: datetime | None = None,
+) -> Intention | None:
+    ensure_intentions_database()
+    current = now or datetime.now(timezone.utc)
+    cutoff = current - timedelta(hours=max(1.0, float(within_hours)))
+    with db_connection(GLOBAL_DB_PATH) as connection:
+        rows = connection.execute(
+            """
+            select id, kind, content, reason, source, source_cycle_id, status, created_at, used_at, metadata,
+                   eligible_at, shown_at, answered_at, resolved_at, expires_at, updated_at
+            from intentions
+            where kind = 'question'
+            order by id desc
+            limit 120
+            """
+        ).fetchall()
+    for row in rows:
+        intention = intention_from_row(row)
+        if exclude_id is not None and intention.id == exclude_id:
+            continue
+        comparable = intention.status in ACTIVE_STATUSES
+        if not comparable:
+            surfaced = parse_timestamp(intention.shown_at) or parse_timestamp(intention.used_at) or parse_timestamp(intention.updated_at) or parse_timestamp(intention.created_at)
+            comparable = surfaced is not None and surfaced >= cutoff
+        if comparable and question_topics_are_similar(content, intention.content, reason, intention.reason):
+            return intention
+    return None
 
 
 def legacy_intention_content_allows_surface(intention: Intention) -> bool:

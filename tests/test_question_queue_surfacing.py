@@ -205,6 +205,25 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
         self.assertEqual(list_pending_intentions(), [])
         self.assertTrue(any(event.event_type == "intention_shown" for event in recent_continuity_events(limit=5)))
 
+    def test_delivery_stales_self_researchable_technical_question(self) -> None:
+        chat = create_chat("Autonomous technical question", "chat")
+        create_intention(
+            "question",
+            "How does the Halley cluster tile animation system integrate with the compositor render loop?",
+            reason="This asks about calloop handles, frame presentation sync, and compositor performance.",
+            metadata={"quality": {"accepted": True, "importance": 5}, "priority": 5, "project_id": "halley-wl"},
+        )
+
+        with patch("bitbuddy.autonomy.delivery_scheduler.load_config", return_value=fake_config()), \
+             patch("bitbuddy.autonomy.delivery.load_config", return_value=fake_config()):
+            delivered = run_intention_delivery_check(reason="test", chat_id=chat.id)
+
+        persisted = get_chat(chat.id)
+        assistant_text = "\n".join(str(message["content"]) for message in persisted["messages"] if message["role"] == "assistant")
+        self.assertIsNone(delivered)
+        self.assertEqual(assistant_text, "")
+        self.assertEqual(list_pending_intentions(), [])
+
     def test_delivery_check_creates_chat_when_none_exists(self) -> None:
         create_intention("question", "Should we schedule the continuity queue review now?", metadata={"priority": 4})
 
@@ -359,7 +378,7 @@ class QuestionQueueSurfacingTest(unittest.TestCase):
              patch("bitbuddy.autonomy.delivery.ProviderClient", return_value=FakeClient("Rejected.")):
             delivered = run_intention_delivery_check(reason="test", chat_id=chat.id)
         self.assertIsNone(delivered)
-        self.assertEqual(len(list_pending_intentions()), 1)
+        self.assertEqual(len(list_pending_intentions()), 0)
 
     def test_legacy_row_without_quality_uses_content_gate(self) -> None:
         # Rows that predate quality metadata still pass through the conservative content

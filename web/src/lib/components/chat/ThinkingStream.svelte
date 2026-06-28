@@ -18,6 +18,14 @@
 	let lastAutoCollapse = $state(false);
 	let lastStorageKey = $state('');
 	let safeContent = $derived(stripSystemReminders(content));
+	let scrollEl = $state<HTMLDivElement | null>(null);
+
+	$effect(() => {
+		void safeContent; // re-run as reasoning grows
+		if (!isStreaming || !scrollEl) return;
+		const nearBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 48;
+		if (nearBottom) scrollEl.scrollTop = scrollEl.scrollHeight; // stick to bottom unless user scrolled up
+	});
 
 	$effect.pre(() => {
 		if (initialized) return;
@@ -94,7 +102,9 @@
 			</div>
 			{#if !collapsed}
 				<div transition:slide={{ duration: 250 }}>
-					<p>{error || safeContent || 'Waiting for model reasoning...'}</p>
+					<div class="thinking-scroll" bind:this={scrollEl}>
+						<p>{error || safeContent || 'Waiting for model reasoning...'}</p>
+					</div>
 				</div>
 			{/if}
 		</div>
@@ -197,8 +207,16 @@
 		transform: rotate(0deg);
 	}
 
-	p {
+	.thinking-scroll {
 		margin-top: 0.75rem;
+		max-height: clamp(12rem, 32vh, 22rem);
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		scrollbar-color: var(--scrollbar-thumb) transparent;
+	}
+
+	p {
+		margin: 0;
 		font-size: 0.92rem;
 		line-height: 1.6;
 		white-space: pre-wrap;

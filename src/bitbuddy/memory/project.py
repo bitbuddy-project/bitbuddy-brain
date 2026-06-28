@@ -83,6 +83,15 @@ from .project_registry import (
     upsert_global_project,
 )
 from .project_schema import initialize_project_database
+from .project_specs import (
+    archive_project_spec,
+    active_project_specs,
+    create_project_spec,
+    list_project_specs,
+    read_project_spec,
+    spec_to_json,
+    update_project_spec,
+)
 from .project_types import (
     LOGGER,
     MAX_FILE_BYTES,

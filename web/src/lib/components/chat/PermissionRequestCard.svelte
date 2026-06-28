@@ -37,64 +37,13 @@
 		return localDecision ?? '';
 	});
 
-	const summaryContent = $derived.by(() => buildSummaryContent(effectiveDecision, tool, argumentsSummary));
+	const summaryContent = $derived.by(() => buildSummaryContent(effectiveDecision));
 
-	function buildSummaryContent(
-		decision: 'approved' | 'denied' | '',
-		toolName: string,
-		args: Record<string, unknown>
-	) {
-		const decisionLabel = decision === 'denied' ? 'denied' : 'approved';
-		const target = summarizePermissionTarget(toolName, args);
-
-		if (target) {
-			return `Permission ${decisionLabel}: ${target}`;
+	function buildSummaryContent(decision: 'approved' | 'denied' | '') {
+		if (decision === 'denied') {
+			return 'No problem — skipping that one.';
 		}
-
-		return `Permission ${decisionLabel} for \`${toolName}\`.`;
-	}
-
-	function summarizePermissionTarget(toolName: string, args: Record<string, unknown>) {
-		const command = stringArg(args, 'command');
-		if (toolName === 'run_shell_command' && command) {
-			return `\`${toolName}\` — \`${command}\``;
-		}
-
-		const path = stringArg(args, 'path') || stringArg(args, 'file_path');
-		const projectId = stringArg(args, 'project_id');
-		if (toolName === 'read_file' && path && projectId) {
-			return `\`${toolName}\` — \`${path}\` from \`${projectId}\``;
-		}
-		if (toolName === 'read_file' && path) {
-			return `\`${toolName}\` — \`${path}\``;
-		}
-
-		if (path) {
-			return `\`${toolName}\` — \`${path}\``;
-		}
-
-		if (projectId) {
-			return `\`${toolName}\` — \`${projectId}\``;
-		}
-
-		if (Object.keys(args).length > 0) {
-			return `\`${toolName}\` — ${inlineJson(args)}`;
-		}
-
-		return `\`${toolName}\``;
-	}
-
-	function stringArg(args: Record<string, unknown>, key: string) {
-		const value = args[key];
-		return typeof value === 'string' ? value.trim() : '';
-	}
-
-	function inlineJson(value: unknown) {
-		try {
-			return `\`${JSON.stringify(value)}\``;
-		} catch {
-			return '`arguments unavailable`';
-		}
+		return 'Thanks for the approval! 🙌';
 	}
 
 	function prettyJson(value: unknown) {

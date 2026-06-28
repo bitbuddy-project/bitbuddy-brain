@@ -5,6 +5,7 @@ from .project_helpers import refresh_staleness, row_dict, split_csv
 from .project_overrides import apply_project_memory_overrides, load_project_memory_overrides
 from .project_registry import load_project
 from .project_schema import initialize_project_database
+from .project_specs import active_project_specs, spec_to_json
 
 def project_brief(project_id_or_name: str) -> str:
     """Provides a high-level project briefing. Compact enough for permanent context injection."""
@@ -318,7 +319,8 @@ def project_model(project_id_or_name: str, limit: int = 80) -> dict[str, object]
             }
             for category, content, source_chat_id, created_at, memory_id, layer, kind, tags in project_notes
         ],
-        "retrieval_policy": "Load this small model first. Before editing or making exact line-level claims, read the relevant source files listed by read_before_editing_rules and file_index. Project notes are durable user/model-added deltas that may clarify purpose, architecture, decisions, or current tasks.",
+        "project_specs": [spec_to_json(spec, include_body=True) for spec in active_project_specs(project.id, limit=3)],
+        "retrieval_policy": "Load this small model first. Before editing or making exact line-level claims, read the relevant source files listed by read_before_editing_rules and file_index. Project notes are durable user/model-added deltas that may clarify purpose, architecture, decisions, or current tasks. Active project_specs capture intended design; consult them before planning, design, or edits and treat them as authoritative constraints.",
     }
     apply_project_memory_overrides(model, overrides)
     return model

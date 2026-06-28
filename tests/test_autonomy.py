@@ -283,6 +283,74 @@ class AutonomyTest(unittest.TestCase):
         self.assertEqual(created, [])
         self.assertEqual(list_pending_intentions(), [])
 
+    def test_self_researchable_project_question_is_rejected(self) -> None:
+        created = create_autonomy_intentions(
+            [
+                {
+                    "kind": "question",
+                    "content": "Regarding Halley-wl: how are the interpolated ClusterTileAnimRect values actually consumed by the render pipeline?",
+                    "reason": "Looking into WGPU transform matrices, shader uniforms, and draw primitives for high-frame-rate updates.",
+                    "importance": 5,
+                }
+            ],
+            cycle_id="cycle-self-research",
+            source_activity="generate_user_prompts",
+            metadata={"project_id": "halley-wl"},
+        )
+
+        self.assertEqual(created, [])
+        self.assertEqual(list_pending_intentions(), [])
+        self.assertTrue(any(item["kind"] == "autonomy.intention_skipped" and item["metadata"].get("reason") == "question_should_be_self_researched" for item in list_activity()))
+
+    def test_similar_generated_question_topic_is_rejected(self) -> None:
+        first = create_autonomy_intentions(
+            [
+                {
+                    "kind": "question",
+                    "content": "Before changing Halley cluster tile animation defaults, should we preserve current render pacing behavior?",
+                    "reason": "This is a user-visible compatibility decision before editing animation behavior.",
+                    "importance": 5,
+                }
+            ],
+            cycle_id="cycle-topic-one",
+            source_activity="generate_user_prompts",
+            metadata={"project_id": "halley-wl"},
+        )
+        duplicate = create_autonomy_intentions(
+            [
+                {
+                    "kind": "question",
+                    "content": "Before editing Halley cluster tile animation behavior, should we preserve the current render pacing default?",
+                    "reason": "This asks the same compatibility decision in different words.",
+                    "importance": 5,
+                }
+            ],
+            cycle_id="cycle-topic-two",
+            source_activity="generate_user_prompts",
+            metadata={"project_id": "halley-wl"},
+        )
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(duplicate, [])
+        self.assertEqual(len(list_pending_intentions()), 1)
+
+    def test_user_only_blocker_question_is_still_allowed(self) -> None:
+        created = create_autonomy_intentions(
+            [
+                {
+                    "kind": "question",
+                    "content": "Before I change this API, should compatibility with existing configs be preserved?",
+                    "reason": "This is a user-only product decision that affects migration behavior.",
+                    "importance": 5,
+                }
+            ],
+            cycle_id="cycle-real-blocker",
+            source_activity="generate_user_prompts",
+        )
+
+        self.assertEqual(len(created), 1)
+        self.assertIn("compatibility", created[0].content)
+
     def test_generated_question_answered_by_memory_is_rejected(self) -> None:
         create_memory(
             title="Autonomy interruption policy",

@@ -23,6 +23,7 @@ from ..memory.layers import MemoryLayer, memory_layer
 from ..memory.project import MAX_FILE_BYTES, SKIP_DIRS, SKIP_SUFFIXES, list_projects, load_project, project_brief, project_model, record_project_note, update_structured_project_memory
 from ..memory.store import archive_memory, create_memory, memory_to_json, merge_memories, move_memory, search_memories, update_memory as update_generic_memory
 from ..skills import archive_skill, create_skill, list_skills, load_skill, patch_skill, skill_to_json, validate_skill, write_skill_file
+from ..tasks import store as task_store
 from .base import ToolDefinition, ToolExecutionError, ToolResult, cap_text, invalid_tool_result
 
 MAX_LIST_ENTRIES = 200
@@ -477,6 +478,137 @@ def calendar_delete_event_tool(arguments: dict[str, object], definition: ToolDef
         content=f"Deleted '{event.title}'.",
         summary=f"Deleted '{event.title}'.",
         arguments_summary={"event_id": event_id},
+    )
+
+
+def _format_task(task: task_store.Task, tz: str) -> str:
+    bits = [f"[{task.id}] {task.title}"]
+    if task.status != "open":
+        bits.append(f"({task.status})")
+    if task.remind_at:
+        bits.append(f"remind {local_label(task.remind_at, tz)}")
+    elif task.due_at:
+        bits.append(f"due {local_label(task.due_at, tz)}")
+    if task.priority >= 4:
+        bits.append(f"!p{task.priority}")
+    line = " ".join(bits)
+    if task.notes:
+        line += f"\n    {task.notes}"
+    return line
+
+
+def create_task_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    title = str(arguments.get("title") or "").strip()
+    if not title:
+        return invalid_tool_result("title is required.")
+    try:
+        task = task_store.create_task(
+            title,
+            notes=str(arguments.get("notes") or ""),
+            due_at=str(arguments.get("due") or "") or None,
+            remind_at=str(arguments.get("remind_at") or "") or None,
+            priority=int(arguments.get("priority", 3) or 3),
+            project_id=str(arguments.get("project_id") or ""),
+        )
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    tz = user_timezone()
+    if task.remind_at:
+        summary = f"Added task '{task.title}' — I'll remind you at {local_label(task.remind_at, tz)}."
+    elif task.due_at:
+        summary = f"Added task '{task.title}' (due {local_label(task.due_at, tz)})."
+    else:
+        summary = f"Added task '{task.title}'."
+    return ToolResult(
+        tool=definition.name,
+        ok=True,
+        content=summary,
+        summary=summary,
+        arguments_summary={"task_id": task.id, "title": task.title},
+    )
+
+
+def list_tasks_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    status = str(arguments.get("status") or "open").strip() or "open"
+    project_id = str(arguments.get("project_id") or "").strip()
+    tasks = task_store.list_tasks(status=status, project_id=project_id)
+    tz = user_timezone()
+    if not tasks:
+        text = "No tasks." if status == "all" else f"No {status} tasks."
+    else:
+        text = "\n".join(_format_task(task, tz) for task in tasks)
+    content, truncated = cap_text(text, definition.max_chars)
+    return ToolResult(
+        tool=definition.name,
+        ok=True,
+        content=content,
+        summary=f"{len(tasks)} task{'' if len(tasks) == 1 else 's'} ({status}).",
+        arguments_summary={"status": status},
+        truncated=truncated,
+    )
+
+
+def update_task_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    task_id = str(arguments.get("task_id") or "").strip()
+    if not task_id:
+        return invalid_tool_result("task_id is required.")
+    fields: dict[str, Any] = {}
+    for key, arg in (("title", "title"), ("notes", "notes"), ("status", "status"), ("project_id", "project_id")):
+        if arg in arguments:
+            fields[key] = str(arguments[arg])
+    if "due" in arguments:
+        fields["due_at"] = str(arguments["due"]) or None
+    if "remind_at" in arguments:
+        fields["remind_at"] = str(arguments["remind_at"]) or None
+    if "priority" in arguments:
+        try:
+            fields["priority"] = int(arguments["priority"])
+        except (TypeError, ValueError):
+            return invalid_tool_result("priority must be an integer 1-5.")
+    try:
+        task = task_store.update_task(task_id, **fields)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    summary = f"Updated task '{task.title}'."
+    return ToolResult(
+        tool=definition.name,
+        ok=True,
+        content=_format_task(task, user_timezone()),
+        summary=summary,
+        arguments_summary={"task_id": task.id},
+    )
+
+
+def complete_task_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    task_id = str(arguments.get("task_id") or "").strip()
+    if not task_id:
+        return invalid_tool_result("task_id is required.")
+    try:
+        task = task_store.complete_task(task_id)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    return ToolResult(
+        tool=definition.name,
+        ok=True,
+        content=f"Marked '{task.title}' done.",
+        summary=f"Marked '{task.title}' done.",
+        arguments_summary={"task_id": task.id},
+    )
+
+
+def delete_task_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    task_id = str(arguments.get("task_id") or "").strip()
+    if not task_id:
+        return invalid_tool_result("task_id is required.")
+    deleted = task_store.delete_task(task_id)
+    if not deleted:
+        return invalid_tool_result(f"Unknown task: {task_id}")
+    return ToolResult(
+        tool=definition.name,
+        ok=True,
+        content="Task deleted.",
+        summary="Task deleted.",
+        arguments_summary={"task_id": task_id},
     )
 
 
@@ -1598,3 +1730,16 @@ def resolve_project_file(roots: tuple[Path, ...], relative_path: str) -> Path:
         if candidate.is_file():
             return candidate
     raise ToolExecutionError(f"Project file not found: {relative_path}")
+
+
+def enable_desktop_control_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    from ..desktop_control import enable_desktop_control, render_report, report_to_json
+
+    report = enable_desktop_control()
+    content, truncated = cap_text(render_report(report), definition.max_chars)
+    enabled = sum(1 for cap in report.capabilities if cap.status == "enabled")
+    summary = (
+        "Desktop control is ready." if report.ready
+        else f"Desktop control partially enabled ({enabled}/{len(report.capabilities)} capabilities); see remediation."
+    )
+    return ToolResult(definition.name, True, content, summary, {}, truncated=truncated, metadata=report_to_json(report))

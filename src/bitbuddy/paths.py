@@ -15,6 +15,7 @@ WORKSPACE_KINDS = ("notes", "drafts", "research", "journal")
 GLOBAL_DB_PATH = APP_DIR / "bitbuddy.sqlite"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR = REPO_ROOT / "web"
+WEB_BUILD_DIR = WEB_DIR / "build"
 
 
 def ensure_app_dirs() -> None:

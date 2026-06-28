@@ -102,10 +102,17 @@
 	}
 
 	.steering-text {
+		flex: 1;
 		min-width: 0;
+		/* Hard single-line cap: clamps even if a break sneaks in, so the steer
+		   bar can never grow taller than the composer/input bar below it. */
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 1;
+		line-clamp: 1;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		white-space: nowrap;
+		word-break: break-word;
 		color: color-mix(in srgb, var(--text) 92%, white 8%);
 		font-size: 0.86rem;
 		font-weight: 600;

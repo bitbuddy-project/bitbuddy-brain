@@ -9,7 +9,7 @@ from ..memory.project import load_project
 from ..providers import ProviderClient
 from .decision import collect_model_text
 from .levels import resolve_profile
-from .intentions import SURFACE_COOLDOWN_MINUTES, Intention, list_pending_intentions, mark_intention_used, mark_intention_shown, next_eligible_intention, record_intention_surface, update_intention_status
+from .intentions import SURFACE_COOLDOWN_MINUTES, Intention, intention_quality_allows_surface, list_pending_intentions, mark_intention_used, mark_intention_shown, next_eligible_intention, recent_similar_question, record_intention_surface, update_intention_status
 
 
 def deliver_pending_intention(chat_id: str, model: str | None = None) -> Intention | None:
@@ -35,6 +35,12 @@ def deliver_intention(
 ) -> Intention | None:
     config = load_config()
     if config.provider.type == "none":
+        return None
+    if not intention_quality_allows_surface(intention):
+        update_intention_status(intention.id, "stale")
+        return None
+    if intention.kind == "question" and recent_similar_question(intention.content, intention.reason, exclude_id=intention.id) is not None:
+        update_intention_status(intention.id, "stale")
         return None
 
     client = ProviderClient(config.provider)

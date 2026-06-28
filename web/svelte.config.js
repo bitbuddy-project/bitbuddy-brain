@@ -1,4 +1,4 @@
-import adapter from '@sveltejs/adapter-auto';
+import adapter from '@sveltejs/adapter-static';
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
@@ -7,10 +7,15 @@ const config = {
 		runes: ({ filename }) => (filename.split(/[/\\]/).includes('node_modules') ? undefined : true)
 	},
 	kit: {
-		// adapter-auto only supports some environments, see https://svelte.dev/docs/kit/adapter-auto for a list.
-		// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
-		// See https://svelte.dev/docs/kit/adapters for more information about adapters.
-		adapter: adapter()
+		// Build a self-contained SPA that the BitBuddy backend serves on its own
+		// port. `fallback` lets client-side routes (e.g. /projects) resolve to the
+		// SPA entry point. See src/routes/+layout.ts for the ssr/prerender opt-out.
+		adapter: adapter({
+			pages: 'build',
+			assets: 'build',
+			fallback: 'index.html',
+			strict: false
+		})
 	}
 };
 
