@@ -13,6 +13,7 @@ from typing import Any, Iterable, Literal
 
 from .config import ProviderConfig
 from .calendar.secrets import get_credentials
+from .provider_capabilities import provider_capability_profile
 
 
 StreamKind = Literal["thinking", "response", "tool_call"]
@@ -20,8 +21,18 @@ STREAM_READ_TIMEOUT_SECONDS = 900
 NATIVE_TOOL_PROBE_TIMEOUT_SECONDS = 30
 CODEX_SECRET_REF = "provider:codex:oauth"
 CODEX_BACKEND_URL = "https://chatgpt.com/backend-api/codex/responses"
-CODEX_DEFAULT_MODEL = "gpt-5.5"
-CODEX_CHATGPT_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
+CODEX_DEFAULT_MODEL = "gpt-5.6-sol"
+CODEX_CHATGPT_MODELS = [
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex-spark",
+]
+ZAI_PROVIDER_TYPES = {"z.ai", "z.ai-coding"}
+ZAI_MODELS = ["glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5v-turbo", "glm-4.7", "glm-4.5-air"]
 OPENAI_RESPONSES_REASONING_INCLUDE = ["reasoning.encrypted_content"]
 GPT_EVENT_DEBUG_ENV = "BITBUDDY_DEBUG_GPT_EVENTS"
 NO_THINKING_SYSTEM_MESSAGE = (
@@ -121,7 +132,7 @@ class ProviderClient:
     def health(self) -> tuple[bool, str]:
         if self.config.type == "none":
             return False, "No provider configured."
-        if self.config.type in {"openai", "anthropic"} and not self.config.api_key:
+        if self.config.type in {"openai", "anthropic", *ZAI_PROVIDER_TYPES} and not self.config.api_key:
             return False, f"{self.config.type} API key is not configured."
         if self.config.type == "codex":
             return codex_health()
@@ -158,6 +169,9 @@ class ProviderClient:
         if self.config.type == "anthropic":
             yield from self._stream_anthropic(messages, model or self.config.model, should_cancel, thinking_enabled, tools)
             return
+        if self.config.type in ZAI_PROVIDER_TYPES:
+            yield from self._stream_zai(messages, model or self.config.model, should_cancel, thinking_enabled, tools, tool_choice)
+            return
         if self.config.type == "codex":
             yield from self._stream_codex(messages, model or self.config.model, should_cancel, thinking_enabled, tools, tool_choice)
             return
@@ -171,9 +185,9 @@ class ProviderClient:
         failure it returns False so callers fall back to the text tool protocol.
         """
         setting = str(getattr(self.config, "native_tools", "auto") or "auto").lower()
-        if setting == "off" or self.config.type not in ("llama.cpp", "ollama", "openai", "anthropic", "codex"):
+        if setting == "off" or self.config.type not in ("llama.cpp", "ollama", "openai", "anthropic", "codex", *ZAI_PROVIDER_TYPES):
             return False
-        if self.config.type in {"openai", "anthropic", "codex"}:
+        if self.config.type in {"openai", "anthropic", "codex", *ZAI_PROVIDER_TYPES}:
             return True
         if setting == "on":
             return True
@@ -229,9 +243,32 @@ class ProviderClient:
             data = get_json(f"{self.config.url.rstrip('/')}/v1/models", headers=provider_headers(self.config))
             rows = data.get("data") or data.get("models") or []
             return sorted(str(model.get("id")) for model in rows if isinstance(model, dict) and model.get("id"))
+        if self.config.type in ZAI_PROVIDER_TYPES:
+            try:
+                data = get_json(f"{self.config.url.rstrip('/')}/models", headers=provider_headers(self.config))
+                rows = data.get("data") or data.get("models") or []
+                models = sorted(str(model.get("id")) for model in rows if isinstance(model, dict) and model.get("id"))
+                return models or ZAI_MODELS
+            except (OSError, urllib.error.URLError, urllib.error.HTTPError, ValueError):
+                return ZAI_MODELS
         if self.config.type == "codex":
             return CODEX_CHATGPT_MODELS
         raise ValueError("No model provider configured.")
+
+    def capabilities(self, model: str | None = None, context_window_tokens: int | None = None) -> dict[str, Any]:
+        selected_model = model or self.config.model
+        if self.config.type == "codex":
+            selected_model = codex_model(selected_model)
+        native_tools = self.config.type in {"openai", "anthropic", "codex", *ZAI_PROVIDER_TYPES}
+        local_tools_enabled = str(getattr(self.config, "native_tools", "auto") or "auto").lower() == "on"
+        if self.config.type in {"ollama", "llama.cpp"}:
+            native_tools = local_tools_enabled
+        return provider_capability_profile(
+            self.config.type,
+            selected_model,
+            context_window_tokens=context_window_tokens,
+            native_tools=native_tools,
+        )
 
     def context_window(self, model: str | None = None) -> dict[str, object]:
         selected_model = model or self.config.model
@@ -244,13 +281,22 @@ class ProviderClient:
             "context_window_tokens": None,
             "source": "unknown",
         }
+
+        def finalize() -> dict[str, object]:
+            context_tokens = result.get("context_window_tokens")
+            result["capabilities"] = self.capabilities(
+                selected_model,
+                context_tokens if isinstance(context_tokens, int) else None,
+            )
+            return result
+
         if self.config.type == "ollama":
             if not selected_model:
-                return result
+                return finalize()
             try:
                 data = post_json(f"{self.config.url.rstrip('/')}/api/show", {"model": selected_model})
             except (OSError, urllib.error.URLError):
-                return result
+                return finalize()
             tokens = first_int(
                 nested_get(data, ["model_info", "llama.context_length"]),
                 nested_get(data, ["model_info", "general.context_length"]),
@@ -260,12 +306,12 @@ class ProviderClient:
             )
             result["context_window_tokens"] = tokens
             result["source"] = "ollama /api/show" if tokens else "ollama /api/show unavailable"
-            return result
+            return finalize()
         if self.config.type == "llama.cpp":
             try:
                 data = get_json(f"{self.config.url.rstrip('/')}/props")
             except (OSError, urllib.error.URLError):
-                return result
+                return finalize()
             tokens = first_int(
                 data.get("n_ctx"),
                 nested_get(data, ["default_generation_settings", "n_ctx"]),
@@ -273,20 +319,24 @@ class ProviderClient:
             )
             result["context_window_tokens"] = tokens
             result["source"] = "llama.cpp /props" if tokens else "llama.cpp /props unavailable"
-            return result
+            return finalize()
         if self.config.type == "codex":
             result["context_window_tokens"] = codex_context_window(codex_model(self.config.model))
             result["source"] = "Codex model metadata"
-            return result
+            return finalize()
         if self.config.type == "openai":
             result["context_window_tokens"] = openai_context_window(self.config.model)
             result["source"] = "OpenAI model metadata" if result["context_window_tokens"] else "OpenAI context metadata unavailable"
-            return result
+            return finalize()
         if self.config.type == "anthropic":
             result["context_window_tokens"] = 200000
             result["source"] = "Anthropic model metadata"
-            return result
-        return result
+            return finalize()
+        if self.config.type in ZAI_PROVIDER_TYPES:
+            result["context_window_tokens"] = zai_context_window(selected_model)
+            result["source"] = "Z.ai model metadata"
+            return finalize()
+        return finalize()
 
     def count_tokens(self, messages: list[dict[str, str]], model: str | None = None) -> dict[str, object]:
         selected_model = model or self.config.model
@@ -317,7 +367,7 @@ class ProviderClient:
             result["used_tokens"] = len(tokens) if isinstance(tokens, list) else first_int(data.get("count"), data.get("token_count"))
             result["source"] = "llama.cpp /tokenize" if result["used_tokens"] is not None else "llama.cpp token count unavailable"
             return result
-        if self.config.type in {"openai", "codex", "anthropic"}:
+        if self.config.type in {"openai", "codex", "anthropic", *ZAI_PROVIDER_TYPES}:
             result["used_tokens"] = estimate_cloud_tokens(messages)
             result["source"] = f"{self.config.type} token estimate"
             return result
@@ -538,6 +588,61 @@ class ProviderClient:
             yield from splitter.flush()
             yield from emit_accumulated_tool_calls(tool_accumulator)
 
+    def _stream_zai(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        should_cancel: Callable[[], bool] | None = None,
+        thinking_enabled: bool = True,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+    ) -> Iterable[StreamChunk]:
+        if not model:
+            raise ValueError("Z.ai requires a model name.")
+        if not self.config.api_key:
+            raise ValueError("Z.ai API key is not configured.")
+        emit_thinking = thinking_enabled and self.config.reasoning_effort != "off"
+        payload: dict[str, object] = {
+            "model": model,
+            "messages": openai_messages(provider_messages(messages, thinking_enabled=emit_thinking)),
+            "stream": True,
+        }
+        thinking_payload = zai_thinking_payload(emit_thinking, self.config.reasoning_effort)
+        if thinking_payload:
+            payload["thinking"] = thinking_payload
+        effort = zai_reasoning_effort(self.config.type, self.config.reasoning_effort, model, emit_thinking)
+        if effort:
+            payload["reasoning_effort"] = effort
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
+        splitter = ThinkingSplitter(emit_thinking=emit_thinking)
+        tool_accumulator: dict[int, dict[str, str]] = {}
+        try:
+            for data in post_sse_json(f"{self.config.url.rstrip('/')}/chat/completions", payload, headers=provider_headers(self.config, accept="text/event-stream")):
+                if should_cancel and should_cancel():
+                    break
+                choices = data.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                if reasoning and emit_thinking:
+                    yield StreamChunk("thinking", str(reasoning))
+                for fragment in delta.get("tool_calls") or []:
+                    accumulate_tool_call_fragment(tool_accumulator, fragment)
+                content = delta.get("content") or ""
+                if content:
+                    yield from splitter.feed(str(content))
+        except urllib.error.HTTPError as error:
+            if provider_image_error(error, messages):
+                yield StreamChunk("response", image_rejected_message(self.config.type, model, error))
+                return
+            raise
+        if not should_cancel or not should_cancel():
+            yield from splitter.flush()
+            yield from emit_accumulated_tool_calls(tool_accumulator)
+
     def _stream_openai_responses(
         self,
         messages: list[dict[str, Any]],
@@ -558,7 +663,7 @@ class ProviderClient:
         }
         if instructions:
             payload["instructions"] = instructions
-        effort = self.config.reasoning_effort
+        effort = provider_reasoning_effort(self.config.type, self.config.reasoning_effort, model)
         if thinking_enabled and effort != "off" and openai_supports_reasoning_summaries(model):
             payload["reasoning"] = {"effort": effort, "summary": "auto"}
         responses_tools = openai_responses_tools(tools or [])
@@ -662,7 +767,8 @@ class ProviderClient:
             raise ValueError("Anthropic requires a model name.")
         if not self.config.api_key:
             raise ValueError("Anthropic API key is not configured.")
-        system, anthropic_turns = anthropic_messages(provider_messages(messages, thinking_enabled=thinking_enabled))
+        effective_thinking_enabled = thinking_enabled or anthropic_requires_thinking(model)
+        system, anthropic_turns = anthropic_messages(provider_messages(messages, thinking_enabled=effective_thinking_enabled))
         max_tokens = 4096
         payload: dict[str, object] = {
             "model": model,
@@ -670,11 +776,13 @@ class ProviderClient:
             "stream": True,
             "messages": anthropic_turns,
         }
-        if thinking_enabled:
+        if effective_thinking_enabled:
             thinking_config = anthropic_thinking_payload(model, max_tokens)
             if thinking_config:
                 payload["thinking"] = thinking_config
-            effort = self.config.reasoning_effort
+            effort = provider_reasoning_effort(self.config.type, self.config.reasoning_effort)
+            if anthropic_requires_thinking(model) and effort == "off":
+                effort = "medium"
             if effort != "off" and anthropic_uses_adaptive_thinking(model):
                 payload["output_config"] = {"effort": effort}
         if system:
@@ -683,7 +791,7 @@ class ProviderClient:
         if anthropic_tools:
             payload["tools"] = anthropic_tools
             payload["tool_choice"] = {"type": "auto"}
-        splitter = ThinkingSplitter(emit_thinking=thinking_enabled)
+        splitter = ThinkingSplitter(emit_thinking=effective_thinking_enabled)
         tool_blocks: dict[int, dict[str, str]] = {}
         active_block_index = -1
         try:
@@ -707,7 +815,7 @@ class ProviderClient:
                     delta_type = str(delta.get("type") or "")
                     if delta_type == "text_delta" and delta.get("text"):
                         yield from splitter.feed(str(delta.get("text")))
-                    elif delta_type == "thinking_delta" and thinking_enabled and delta.get("thinking"):
+                    elif delta_type == "thinking_delta" and effective_thinking_enabled and delta.get("thinking"):
                         yield StreamChunk("thinking", str(delta.get("thinking")))
                     elif delta_type == "input_json_delta":
                         index = int(event.get("index") if isinstance(event.get("index"), int) else active_block_index)
@@ -744,7 +852,8 @@ class ProviderClient:
         access_token = credentials.get("access_token", "")
         account_id = credentials.get("account_id") or "ChatGPT"
         instructions, input_items = codex_response_payload(messages)
-        codex_effort = "minimal" if self.config.reasoning_effort == "off" else self.config.reasoning_effort
+        codex_effort = provider_reasoning_effort(self.config.type, self.config.reasoning_effort, model)
+        codex_effort = "minimal" if codex_effort == "off" else codex_effort
         payload = {
             "model": codex_model(model),
             "store": False,
@@ -879,12 +988,16 @@ def provider_health_endpoints(config: ProviderConfig) -> list[str]:
         return [f"{config.url.rstrip('/')}/health", f"{config.url.rstrip('/')}/v1/models"]
     if config.type in {"openai", "anthropic"}:
         return [f"{config.url.rstrip('/')}/v1/models"]
+    if config.type in ZAI_PROVIDER_TYPES:
+        return [f"{config.url.rstrip('/')}/models"]
     return [config.url]
 
 
 def provider_headers(config: ProviderConfig, *, accept: str = "application/json") -> dict[str, str]:
     headers = {"Content-Type": "application/json", "Accept": accept}
     if config.type == "openai" and config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+    elif config.type in ZAI_PROVIDER_TYPES and config.api_key:
         headers["Authorization"] = f"Bearer {config.api_key}"
     elif config.type == "anthropic" and config.api_key:
         headers["x-api-key"] = config.api_key
@@ -1244,7 +1357,8 @@ def anthropic_uses_adaptive_thinking(model: str) -> bool:
     """
     name = (model or "").lower()
     return (
-        "opus-4-8" in name
+        anthropic_requires_thinking(model)
+        or "opus-4-8" in name
         or "opus-4-7" in name
         or "opus-4-6" in name
         or "opus-4-5" in name
@@ -1252,10 +1366,15 @@ def anthropic_uses_adaptive_thinking(model: str) -> bool:
     )
 
 
+def anthropic_requires_thinking(model: str) -> bool:
+    """Fable 5's preview API only accepts adaptive thinking."""
+    return "fable-5" in (model or "").lower()
+
+
 def anthropic_thinking_omits_content(model: str) -> bool:
     """Opus 4.7+ omit thinking text unless display=summarized is requested."""
     name = (model or "").lower()
-    return "opus-4-7" in name or "opus-4-8" in name
+    return "fable-5" in name or "opus-4-7" in name or "opus-4-8" in name
 
 
 def anthropic_supports_extended_thinking(model: str) -> bool:
@@ -1373,6 +1492,8 @@ def codex_model(model: str) -> str:
         return clean
     if clean.endswith("-mini"):
         return "gpt-5.4-mini"
+    if "gpt-5.6" in clean:
+        return CODEX_DEFAULT_MODEL
     if "gpt-5.5" in clean:
         return "gpt-5.5"
     if "gpt-5" in clean:
@@ -1388,11 +1509,44 @@ def codex_context_window(model: str) -> int:
 
 def openai_context_window(model: str) -> int | None:
     name = (model or "").lower()
+    if "gpt-5.6" in name:
+        return 1050000
     if "gpt-4.1" in name or "gpt-5" in name:
         return 1000000
     if "gpt-4o" in name or "o3" in name or "o4" in name:
         return 128000
     return None
+
+
+def zai_context_window(model: str) -> int:
+    name = (model or "").lower()
+    if name.startswith("glm-5.2"):
+        return 1000000
+    return 200000
+
+
+def provider_reasoning_effort(provider_type: str, effort: str, model: str = "") -> str:
+    normalized = (effort or "").strip().lower()
+    if provider_type in {"openai", "codex"} and normalized == "max" and not (model or "").lower().startswith("gpt-5.6"):
+        return "high"
+    return normalized
+
+
+def zai_thinking_payload(thinking_enabled: bool, effort: str) -> dict[str, object]:
+    if not thinking_enabled or (effort or "").strip().lower() == "off":
+        return {"type": "disabled"}
+    return {"type": "enabled"}
+
+
+def zai_reasoning_effort(provider_type: str, effort: str, model: str, thinking_enabled: bool) -> str:
+    normalized = (effort or "").strip().lower()
+    if not thinking_enabled or normalized == "off" or not (model or "").lower().startswith("glm-5"):
+        return ""
+    if normalized in {"max", "xhigh"}:
+        return "max"
+    if normalized in {"low", "medium", "high"}:
+        return "high"
+    return ""
 
 
 def text_from_response_output(output: Any) -> str:

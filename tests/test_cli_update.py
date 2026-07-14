@@ -36,6 +36,87 @@ class CliUpdateTest(unittest.TestCase):
         self.assertEqual(args.port, 8787)
         self.assertFalse(hasattr(args, "api_port"))
 
+    def test_parser_exposes_restart_command(self) -> None:
+        args = cli.build_parser().parse_args(["restart"])
+
+        self.assertIs(args.handler, cli.restart_command)
+
+    def test_restart_uses_systemd_when_service_is_managed(self) -> None:
+        with patch.object(cli, "user_systemd_service_managed", return_value=True), patch.object(
+            cli, "systemctl_user", return_value=0
+        ) as systemctl, patch.object(cli, "wait_for_backend", return_value=True), patch.object(
+            cli, "get_api_token", return_value="token"
+        ), patch.object(cli, "restart_backend_detached") as detached:
+            result = cli.restart_command(argparse.Namespace())
+
+        self.assertEqual(result, 0)
+        systemctl.assert_called_once_with("restart", cli.SERVICE_NAME)
+        detached.assert_not_called()
+
+    def test_restart_uses_process_fallback_without_systemd(self) -> None:
+        with patch.object(cli, "user_systemd_service_managed", return_value=False), patch.object(
+            cli, "restart_backend_detached", return_value=True
+        ) as detached, patch.object(cli, "wait_for_backend", return_value=True), patch.object(
+            cli, "get_api_token", return_value="token"
+        ), patch.object(cli, "systemctl_user") as systemctl:
+            result = cli.restart_command(argparse.Namespace())
+
+        self.assertEqual(result, 0)
+        detached.assert_called_once_with()
+        systemctl.assert_not_called()
+
+    def test_restart_starts_backend_when_stopped(self) -> None:
+        process = object()
+        with patch.object(cli, "user_systemd_service_managed", return_value=False), patch.object(
+            cli, "restart_backend_detached", return_value=False
+        ), patch.object(cli, "check_backend_health", return_value=False), patch.object(
+            cli, "start_backend_detached", return_value=process
+        ) as start, patch.object(cli, "wait_for_backend", return_value=True), patch.object(
+            cli, "get_api_token", return_value="token"
+        ):
+            result = cli.restart_command(argparse.Namespace())
+
+        self.assertEqual(result, 0)
+        start.assert_called_once_with()
+
+    def test_setup_restart_uses_systemd_for_managed_service(self) -> None:
+        with patch.object(cli, "get_api_token", return_value="token"), patch.object(
+            cli, "user_systemd_service_managed", return_value=True
+        ), patch.object(cli, "systemctl_user", return_value=0) as systemctl, patch.object(
+            cli, "wait_for_backend", return_value=True
+        ):
+            restarted = cli.restart_running_backend_after_setup_change()
+
+        self.assertTrue(restarted)
+        systemctl.assert_called_once_with("restart", cli.SERVICE_NAME)
+
+    def test_setup_restart_uses_running_process_fallback(self) -> None:
+        with patch.object(cli, "get_api_token", return_value="token"), patch.object(
+            cli, "user_systemd_service_managed", return_value=False
+        ), patch.object(cli, "check_backend_health", return_value=True), patch.object(
+            cli, "restart_backend_detached", return_value=True
+        ) as detached, patch.object(cli, "wait_for_backend", return_value=True):
+            restarted = cli.restart_running_backend_after_setup_change()
+
+        self.assertTrue(restarted)
+        detached.assert_called_once_with()
+
+    def test_setup_launch_restarts_after_a_config_change(self) -> None:
+        class FakeQuestionary:
+            @staticmethod
+            def confirm(*_args, **_kwargs):
+                return type("Answer", (), {"ask": staticmethod(lambda: False)})()
+
+        with patch.object(cli, "shutil") as shutil, patch.object(
+            cli, "user_systemd_service_managed", return_value=False
+        ), patch.object(cli, "get_api_token", return_value="token"), patch.object(
+            cli, "check_backend_health", return_value=True
+        ), patch.object(cli, "restart_running_backend_after_setup_change", return_value=True) as restart:
+            shutil.which.return_value = None
+            cli.handle_setup_launch_prompt(FakeQuestionary(), None, config_updated=True)
+
+        restart.assert_called_once_with()
+
     def test_update_builds_web_ui(self) -> None:
         from bitbuddy import web_build
 
@@ -72,6 +153,7 @@ class CliUpdateTest(unittest.TestCase):
             cli.completion_command(argparse.Namespace(shell="bash"))
 
         self.assertIn("update", output.getvalue())
+        self.assertIn("restart", output.getvalue())
 
     def test_version_command_prints_package_version(self) -> None:
         output = io.StringIO()

@@ -18,9 +18,9 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-return-greeting-test-")
 
 from bitbuddy.activity import ensure_activity_database, list_activity  # noqa: E402
-from bitbuddy.chats.greeting import return_greeting_text  # noqa: E402
+from bitbuddy.chats.greeting import conversation_gap, return_greeting_text  # noqa: E402
 from bitbuddy.chats.repository import create_chat, ensure_chat_database, get_chat  # noqa: E402
-from bitbuddy.chats.runtime import start_chat_run  # noqa: E402
+from bitbuddy.chats.runtime import conversation_timing_context_message, start_chat_run  # noqa: E402
 from bitbuddy.chats.state import ActiveChatRun  # noqa: E402
 from bitbuddy.paths import GLOBAL_DB_PATH  # noqa: E402
 from bitbuddy.providers import StreamChunk  # noqa: E402
@@ -69,10 +69,10 @@ class ReturnGreetingTest(unittest.TestCase):
             connection.execute("delete from chat_messages")
             connection.execute("delete from chats")
 
-    def test_return_greeting_after_long_idle_gap(self) -> None:
+    def test_return_greeting_after_substantial_idle_gap(self) -> None:
         config = fake_config()
-        now = datetime(2026, 5, 15, 14, 0, tzinfo=ZoneInfo("UTC"))
-        previous = (now - timedelta(minutes=90)).isoformat()
+        now = datetime(2026, 5, 15, 18, 0, tzinfo=ZoneInfo("UTC"))
+        previous = (now - timedelta(hours=16)).isoformat()
 
         greeting = return_greeting_text(previous, "hey can we continue?", config, now=now)
 
@@ -87,6 +87,31 @@ class ReturnGreetingTest(unittest.TestCase):
 
         self.assertEqual(greeting, "")
 
+    def test_conversation_gap_is_available_as_quiet_context(self) -> None:
+        config = fake_config()
+        now = datetime(2026, 5, 15, 14, 0, tzinfo=ZoneInfo("UTC"))
+        gap = conversation_gap((now - timedelta(days=3, hours=2)).isoformat(), config, now=now)
+
+        self.assertIsNotNone(gap)
+        assert gap is not None
+        self.assertEqual(gap.label, "3 days")
+        context = conversation_timing_context_message(gap.minutes, gap.label)
+        self.assertIsNotNone(context)
+        assert context is not None
+        self.assertIn("quiet background context", context["content"])
+        self.assertIn("never guilt the user", context["content"])
+
+    def test_conversation_gap_treats_sqlite_timestamps_as_utc(self) -> None:
+        config = fake_config()
+        config.user_context.timezone = "America/Halifax"
+        now = datetime(2026, 5, 15, 12, 0, tzinfo=ZoneInfo("America/Halifax"))
+
+        gap = conversation_gap("2026-05-15 14:00:00", config, now=now)
+
+        self.assertIsNotNone(gap)
+        assert gap is not None
+        self.assertEqual(gap.minutes, 60)
+
     def test_chat_runtime_injects_return_greeting_as_private_context(self) -> None:
         chat = create_chat("Long running chat", "chat")
         fake_client = FakeClient()
@@ -96,6 +121,8 @@ class ReturnGreetingTest(unittest.TestCase):
             model=None,
             prompt_messages=[{"role": "user", "content": "hey can we continue?"}],
             return_greeting_text="Hey, welcome back.",
+            conversation_gap_minutes=960,
+            conversation_gap_label="16 hours",
         )
 
         with patch("bitbuddy.chats.runtime.ProviderClient", return_value=fake_client), \
@@ -115,6 +142,14 @@ class ReturnGreetingTest(unittest.TestCase):
                 and "[Return Greeting Context]" in message["content"]
                 and "Hey, welcome back." in message["content"]
                 and "do not stack it with a separate time-of-day greeting" in message["content"]
+                for message in fake_client.messages
+            )
+        )
+        self.assertTrue(
+            any(
+                message["role"] == "system"
+                and "[Conversation Timing Context]" in message["content"]
+                and "16 hours" in message["content"]
                 for message in fake_client.messages
             )
         )

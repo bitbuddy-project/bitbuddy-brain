@@ -29,7 +29,7 @@ from .chats.repository import (
     replace_chat_messages,
     trim_chat_from_message,
 )
-from .chats.greeting import return_greeting_text
+from .chats.greeting import conversation_gap, return_greeting_text
 from .chats.runtime import start_chat_run
 from .memory.episodic import (
     Episode,
@@ -47,6 +47,25 @@ from .chats.state import (
 )
 from .config import BitBuddyConfig, ProviderConfig, load_config, load_personality, update_autonomy_config, update_calendar_config, update_chat_config, update_dreaming_config, update_email_config, update_mcp_config, update_model_runtime_config, update_personality_config, update_user_context, upsert_mcp_server
 from .database import db_connection
+from .coding.evals import (
+    coding_eval_run_to_json,
+    coding_eval_task_to_json,
+    delete_eval_task,
+    list_eval_runs,
+    list_eval_tasks,
+    score_coding_run_for_task,
+    upsert_eval_task,
+)
+from .coding.runs import coding_run_to_json, complete_coding_run, get_coding_run, list_coding_runs
+from .coding.workflows import delete_workflow, list_workflows, save_workflow, workflow_to_json
+from .coding.orchestrator import (
+    active_coding_run,
+    answer_coding_question,
+    cancel_workflow_run,
+    respond_to_coding_permission,
+    respond_to_gate,
+    start_workflow_run,
+)
 from .calendar.permissions import CALENDAR_SCOPES, CalendarPermissionRequired, all_permissions as calendar_permissions, set_permission as set_calendar_permission
 from .calendar.providers import EventDraft, EventPatch
 from .calendar.secrets import get_credentials, put_credentials, delete_credentials
@@ -55,7 +74,7 @@ from .calendar.store import calendar_to_json, ensure_default_calendar, event_to_
 from .email.models import mailbox_to_json, message_page_to_json, message_to_json, rule_to_json
 from .email.permissions import EMAIL_SCOPES, EmailPermissionRequired, all_permissions as email_permissions, set_permission as set_email_permission
 from .email.service import create_sender_trash_rule as email_create_sender_trash_rule, delete_message as email_delete_message, delete_rule as email_delete_rule, email_account_id, email_overview, empty_trash as email_empty_trash, list_mailboxes as email_list_mailboxes, list_messages_page as email_list_messages_page, list_rules as email_list_rules, read_message as email_read_message, search_messages_page as email_search_messages_page, trash_message as email_trash_message
-from .continuity import record_continuity_event
+from .continuity import continuity_state, record_continuity_event
 from .tasks import store as task_store
 from .personality import BUILTIN_PERSONALITIES, list_available_personalities, load_selected_personality, selected_personality_to_legacy_dict
 from .paths import APP_DIR, CONFIG_PATH, PERSONALITIES_DIR, PERSONALITY_PATH, WEB_BUILD_DIR
@@ -64,21 +83,28 @@ from .workspace import archive_workspace_document, list_workspace_documents, rea
 from .memory.project import (
     archive_project_spec,
     create_project_spec,
+    delete_validation_recipe,
     index_project,
     list_project_specs,
+    list_validation_recipes,
     list_projects,
     project_map,
     project_model,
+    recipe_to_json,
     read_project_spec,
     register_project,
+    run_validation_recipe,
     spec_to_json,
     unregister_project,
     update_project_spec,
+    upsert_validation_recipe,
+    validation_run_to_json,
 )
 from .notifications import dismiss_notification, list_notifications, mark_all_notifications_read, mark_notification_read, notification_to_json, subscribe_notifications, unread_notification_count, unsubscribe_notifications
 from .self_model import add_self_journal, create_goal, get_self_state, list_goals, record_conversation_signal, record_personality_quirks, update_goal, update_self_state
 from .prompt_builder import build_chat_messages, chat_context_usage, latest_user_message, title_from_text
 from .providers import ProviderClient
+from .interactions import validate_question_answers
 from .utils import autonomy_activity, log_activity, permission_activity, project_to_json
 from .autonomy.delivery_scheduler import clear_background_delivery_notifications, set_active_visible_chat, unread_background_deliveries
 from .autonomy.intentions import dismiss_intention, intention_to_json, list_pending_intentions
@@ -214,6 +240,11 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
             if path == "/provider/context":
                 self.send_json(ProviderClient(load_config().provider).context_window())
+                return
+
+            if path == "/provider/capabilities":
+                client = ProviderClient(load_config().provider)
+                self.send_json(client.capabilities())
                 return
 
             if path == "/provider/codex/status":
@@ -518,6 +549,17 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"project": project_id, "specs": [spec_to_json(spec) for spec in specs]})
                 return
 
+            if path.startswith("/projects/") and path.endswith("/validation"):
+                project_id = unquote(path.removeprefix("/projects/").removesuffix("/validation").strip("/"))
+                if "/" in project_id:
+                    self.send_json({"error": "Invalid project id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                params = parse_qs(urlparse(self.path).query)
+                include_suggestions = params.get("include_suggestions", ["true"])[0].lower() != "false"
+                recipes = list_validation_recipes(project_id, include_suggestions=include_suggestions)
+                self.send_json({"project": project_id, "recipes": [recipe_to_json(recipe) for recipe in recipes]})
+                return
+
             if path.startswith("/projects/") and "/specs/" in path and not path.endswith("/archive"):
                 pieces = path.removeprefix("/projects/").split("/specs/", 1)
                 project_id = unquote(pieces[0].strip("/"))
@@ -539,6 +581,66 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     limit = 20
                 self.send_json({"runs": list_subagent_runs(limit=limit)})
+                return
+
+            if path == "/coding/runs":
+                params = parse_qs(urlparse(self.path).query)
+                try:
+                    limit = min(100, int(params.get("limit", ["20"])[0]))
+                except ValueError:
+                    limit = 20
+                project_id = params.get("project_id", [""])[0]
+                chat_id = params.get("chat_id", [""])[0]
+                runs = list_coding_runs(limit=limit, project_id=project_id, chat_id=chat_id)
+                self.send_json({"runs": [coding_run_to_json(run) for run in runs]})
+                return
+
+            if path == "/coding/workflows":
+                self.send_json({"workflows": [workflow_to_json(workflow) for workflow in list_workflows()]})
+                return
+
+            if path.startswith("/coding/runs/") and path.endswith("/stream"):
+                coding_run_id = unquote(path.removeprefix("/coding/runs/").removesuffix("/stream").strip("/"))
+                active = active_coding_run(coding_run_id)
+                if active is None:
+                    try:
+                        run = get_coding_run(coding_run_id)
+                        if run.metadata.get("source") == "workflow" and run.status not in {"completed", "needs_attention", "cancelled", "failed"}:
+                            run = complete_coding_run(coding_run_id, status="needs_attention", summary="The backend restarted during this coding workflow. Start a new run to continue with a fresh stage snapshot.")
+                        self.stream_finished_coding_run(run)
+                    except ValueError as error:
+                        self.send_json({"error": str(error)}, status=HTTPStatus.NOT_FOUND)
+                    return
+                self.stream_coding_workflow(active)
+                return
+
+            if path.startswith("/coding/runs/"):
+                coding_run_id = unquote(path.removeprefix("/coding/runs/").strip("/"))
+                if "/" in coding_run_id:
+                    self.send_json({"error": "Invalid coding run id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    self.send_json({"run": coding_run_to_json(get_coding_run(coding_run_id))})
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.NOT_FOUND)
+                return
+
+            if path == "/coding/evals/tasks":
+                params = parse_qs(urlparse(self.path).query)
+                project_id = params.get("project_id", [""])[0]
+                tasks = list_eval_tasks(project_id=project_id)
+                self.send_json({"tasks": [coding_eval_task_to_json(task) for task in tasks]})
+                return
+
+            if path == "/coding/evals/runs":
+                params = parse_qs(urlparse(self.path).query)
+                try:
+                    limit = min(200, int(params.get("limit", ["50"])[0]))
+                except ValueError:
+                    limit = 50
+                task_id = params.get("task_id", [""])[0]
+                runs = list_eval_runs(task_id=task_id, limit=limit)
+                self.send_json({"runs": [coding_eval_run_to_json(run) for run in runs]})
                 return
 
             self.send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
@@ -630,6 +732,96 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
                     return
                 self.send_json({"task": task_store.task_to_json(task)}, status=HTTPStatus.CREATED)
+                return
+
+            if path == "/coding/evals/tasks":
+                body = self.read_json()
+                tags = body.get("tags") if isinstance(body.get("tags"), list) else []
+                try:
+                    task = upsert_eval_task(
+                        task_id=str(body.get("id") or ""),
+                        name=str(body.get("name") or ""),
+                        prompt=str(body.get("prompt") or ""),
+                        project_id=str(body.get("project_id") or ""),
+                        validation_recipe=str(body.get("validation_recipe") or ""),
+                        tags=[str(tag) for tag in tags],
+                    )
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"task": coding_eval_task_to_json(task)}, status=HTTPStatus.CREATED)
+                return
+
+            if path == "/coding/workflows":
+                body = self.read_json()
+                try:
+                    workflow = save_workflow(
+                        workflow_id=str(body.get("id") or ""),
+                        name=str(body.get("name") or ""),
+                        stages=body.get("stages") if isinstance(body.get("stages"), list) else [],
+                        is_default=bool(body.get("is_default")) if "is_default" in body else None,
+                    )
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"workflow": workflow_to_json(workflow)}, status=HTTPStatus.CREATED)
+                return
+
+            if path == "/coding/runs":
+                body = self.read_json()
+                try:
+                    active = start_workflow_run(
+                        project_id=str(body.get("project_id") or ""),
+                        task=str(body.get("task") or ""),
+                        workflow_id=str(body.get("workflow_id") or ""),
+                        attachments=body.get("attachments") if isinstance(body.get("attachments"), list) else [],
+                    )
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"run": coding_run_to_json(get_coding_run(active.coding_run_id))}, status=HTTPStatus.CREATED)
+                return
+
+            if path.startswith("/coding/runs/"):
+                pieces = path.removeprefix("/coding/runs/").strip("/").split("/")
+                if len(pieces) != 2:
+                    self.send_json({"error": "Invalid coding run action."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                coding_run_id, action = map(unquote, pieces)
+                body = self.read_json()
+                try:
+                    if action == "gate":
+                        respond_to_gate(coding_run_id, str(body.get("action") or ""), str(body.get("feedback") or ""))
+                    elif action == "question":
+                        answer_coding_question(coding_run_id, str(body.get("interaction_id") or ""), body.get("answers"))
+                    elif action == "permission":
+                        respond_to_coding_permission(coding_run_id, bool(body.get("granted")))
+                    elif action == "cancel":
+                        self.send_json({"cancelled": cancel_workflow_run(coding_run_id)})
+                        return
+                    else:
+                        self.send_json({"error": "Unknown coding run action."}, status=HTTPStatus.NOT_FOUND)
+                        return
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"ok": True})
+                return
+
+            if path == "/coding/evals/score":
+                body = self.read_json()
+                try:
+                    run = score_coding_run_for_task(
+                        task_id=str(body.get("task_id") or ""),
+                        coding_run_id=str(body.get("coding_run_id") or ""),
+                        provider=str(body.get("provider") or ""),
+                        model=str(body.get("model") or ""),
+                        notes=str(body.get("notes") or ""),
+                    )
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"run": coding_eval_run_to_json(run)}, status=HTTPStatus.CREATED)
                 return
 
             if path == "/skills":
@@ -771,6 +963,53 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"project": project_id, "spec": spec_to_json(spec, include_body=True)}, status=HTTPStatus.CREATED)
                 return
 
+            if path.startswith("/projects/") and path.endswith("/validation"):
+                project_id = unquote(path.removeprefix("/projects/").removesuffix("/validation").strip("/"))
+                if "/" in project_id:
+                    self.send_json({"error": "Invalid project id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                body = self.read_json()
+                try:
+                    recipe = upsert_validation_recipe(
+                        project_id,
+                        name=str(body.get("name") or ""),
+                        command=str(body.get("command") or ""),
+                        kind=str(body.get("kind") or "custom"),
+                        working_directory=str(body.get("working_directory") or "."),
+                        description=str(body.get("description") or ""),
+                    )
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"project": project_id, "recipe": recipe_to_json(recipe)}, status=HTTPStatus.CREATED)
+                return
+
+            if path.startswith("/projects/") and "/validation/" in path and path.endswith("/run"):
+                pieces = path.removeprefix("/projects/").split("/validation/", 1)
+                project_id = unquote(pieces[0].strip("/"))
+                recipe_name = unquote(pieces[1].removesuffix("/run").strip("/")) if len(pieces) > 1 else ""
+                if not project_id or "/" in project_id or not recipe_name or "/" in recipe_name:
+                    self.send_json({"error": "Invalid validation recipe path."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                body = self.read_json()
+                if str(body.get("confirm") or "") != recipe_name:
+                    self.send_json({"error": "Running validation requires confirm=<recipe name>."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    run_result = run_validation_recipe(
+                        project_id,
+                        recipe_name,
+                        timeout_seconds=int(body.get("timeout_seconds", 300)),
+                    )
+                except (ValueError, subprocess.TimeoutExpired) as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json(
+                    {"project": project_id, "run": validation_run_to_json(run_result)},
+                    status=HTTPStatus.OK if run_result.exit_code == 0 else HTTPStatus.BAD_REQUEST,
+                )
+                return
+
             if path.startswith("/projects/") and "/specs/" in path and path.endswith("/archive"):
                 pieces = path.removeprefix("/projects/").split("/specs/", 1)
                 project_id = unquote(pieces[0].strip("/"))
@@ -796,6 +1035,10 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
             if path == "/chat/permission":
                 self.permission(self.read_json())
+                return
+
+            if path == "/chat/question":
+                self.answer_question(self.read_json())
                 return
 
             if path == "/email/message/trash":
@@ -1337,6 +1580,17 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 self.send_json({"deleted": deleted}, status=HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
                 return
 
+            if path.startswith("/projects/") and "/validation/" in path:
+                pieces = path.removeprefix("/projects/").split("/validation/", 1)
+                project_id = unquote(pieces[0].strip("/"))
+                recipe_name = unquote(pieces[1].strip("/")) if len(pieces) > 1 else ""
+                if not project_id or "/" in project_id or not recipe_name or "/" in recipe_name:
+                    self.send_json({"error": "Invalid validation recipe path."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                deleted = delete_validation_recipe(project_id, recipe_name)
+                self.send_json({"project": project_id, "deleted": deleted}, status=HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
+                return
+
             if path.startswith("/projects/"):
                 project_id = unquote(path.removeprefix("/projects/").strip("/"))
                 deleted = unregister_project(project_id)
@@ -1362,6 +1616,25 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "Invalid task id."}, status=HTTPStatus.BAD_REQUEST)
                     return
                 deleted = task_store.delete_task(task_id)
+                self.send_json({"deleted": deleted}, status=HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
+                return
+
+            if path.startswith("/coding/evals/tasks/"):
+                task_id = unquote(path.removeprefix("/coding/evals/tasks/").strip("/"))
+                if not task_id or "/" in task_id:
+                    self.send_json({"error": "Invalid coding eval task id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                deleted = delete_eval_task(task_id)
+                self.send_json({"deleted": deleted}, status=HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
+                return
+
+            if path.startswith("/coding/workflows/"):
+                workflow_id = unquote(path.removeprefix("/coding/workflows/").strip("/"))
+                try:
+                    deleted = delete_workflow(workflow_id)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
                 self.send_json({"deleted": deleted}, status=HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
                 return
 
@@ -1455,8 +1728,11 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
             self.write_sse({"done": True})
             return
 
+        config = load_config()
         previous_lifecycle = get_lifecycle_state()
-        greeting_text = return_greeting_text(previous_lifecycle.last_user_activity_at, latest_user_text, load_config())
+        previous_user_message_at = str(continuity_state().get("last_user_message_at") or previous_lifecycle.last_user_activity_at)
+        gap = conversation_gap(previous_user_message_at, config)
+        greeting_text = return_greeting_text(previous_user_message_at, latest_user_text, config)
         record_user_activity(chat_id=chat_id, text=latest_user_text)
         record_continuity_event(
             "user_message_received",
@@ -1472,9 +1748,11 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
             chat_id=chat_id,
             mode=mode,
             model=model,
-            prompt_messages=build_chat_messages(messages, mode, chat_id=chat_id),
+            prompt_messages=build_chat_messages(messages, mode, chat_id=chat_id, model=model),
             thinking_enabled=thinking_enabled,
             return_greeting_text=greeting_text,
+            conversation_gap_minutes=gap.minutes if gap is not None else None,
+            conversation_gap_label=gap.label if gap is not None else "",
         )
 
         register_chat_run(run)
@@ -1526,6 +1804,33 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
 
         self.send_json({"ok": True})
 
+    def answer_question(self, body: dict[str, Any]) -> None:
+        chat_id = body.get("chat_id") if isinstance(body.get("chat_id"), str) else ""
+        interaction_id = body.get("interaction_id") if isinstance(body.get("interaction_id"), str) else ""
+        if not chat_id:
+            self.send_json({"error": "chat_id is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        run = active_chat_run(chat_id)
+        if run is None or run.status != "running":
+            self.send_json({"error": "No active run found for this chat"}, status=HTTPStatus.NOT_FOUND)
+            return
+        with run.lock:
+            request = run.question_request
+            if request is None:
+                self.send_json({"error": "No pending user question"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            if interaction_id and interaction_id != request.id:
+                self.send_json({"error": "Question interaction is no longer active"}, status=HTTPStatus.CONFLICT)
+                return
+            try:
+                answers = validate_question_answers(request, body.get("answers"))
+            except ValueError as error:
+                self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            run.question_answers = answers
+            run.question_response.set()
+        self.send_json({"ok": True})
+
     def stream_active_run(self, run: ActiveChatRun) -> None:
         subscriber = run.subscribe()
         self.stream_subscriber(run, subscriber)
@@ -1547,6 +1852,35 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
             return
         finally:
             run.unsubscribe(subscriber)
+
+    def stream_coding_workflow(self, run: Any) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_common_headers(content_type="text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        subscriber = run.subscribe()
+        try:
+            while True:
+                try:
+                    event = subscriber.get(timeout=STREAM_HEARTBEAT_SECONDS)
+                except queue.Empty:
+                    self.write_sse({"kind": "heartbeat"})
+                    continue
+                self.write_sse(event)
+                if event.get("done"):
+                    return
+        except ClientDisconnected:
+            return
+        finally:
+            run.unsubscribe(subscriber)
+
+    def stream_finished_coding_run(self, run: Any) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_common_headers(content_type="text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.write_sse({"kind": "snapshot", "run": coding_run_to_json(run)})
+        self.write_sse({"kind": "done", "status": run.status, "run": coding_run_to_json(run), "done": True})
 
     def stream_notifications(self) -> None:
         self.send_response(HTTPStatus.OK)
@@ -1944,12 +2278,15 @@ def draft_provider_client(body: dict[str, Any]) -> ProviderClient:
     if not provider_type:
         raise ValueError("Provider type is required.")
     config = load_config()
-    existing = next((provider for provider in config.providers if provider.type == provider_type), None)
+    provider_key = str(body.get("key") or "").strip()
+    existing = next((provider for provider in config.providers if provider_key and provider.key == provider_key), None)
+    if existing is None:
+        existing = next((provider for provider in config.providers if provider.type == provider_type), None)
     api_key = str(body.get("api_key") or "").strip() or (existing.api_key if existing else "")
     api_key_ref = existing.api_key_ref if existing else ""
     return ProviderClient(
         ProviderConfig(
-            key=str(body.get("key") or provider_type),
+            key=provider_key or provider_type,
             type=provider_type,
             url=str(body.get("url") or (existing.url if existing else "")).strip(),
             model=str(body.get("model") or (existing.model if existing else "")).strip(),

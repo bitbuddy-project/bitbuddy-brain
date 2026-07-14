@@ -352,6 +352,20 @@
 		if (Number.isNaN(date.getTime())) return value;
 		return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 	}
+
+	function emailPreviewDocument(bodyHtml: string) {
+		const document = new DOMParser().parseFromString(bodyHtml, 'text/html');
+		for (const element of document.querySelectorAll('script, iframe, object, embed, base, meta')) element.remove();
+		for (const element of document.querySelectorAll('*')) {
+			for (const attribute of [...element.attributes]) {
+				if (attribute.name.toLowerCase().startsWith('on') || attribute.name.toLowerCase() === 'srcdoc') element.removeAttribute(attribute.name);
+			}
+		}
+		const style = document.createElement('style');
+		style.textContent = 'html { background: #fff; } body { margin: 0; } img { max-width: 100%; height: auto; } table { max-width: 100%; }';
+		document.head.append(style);
+		return `<!doctype html>${document.documentElement.outerHTML}`;
+	}
 </script>
 
 <svelte:head>
@@ -518,7 +532,17 @@
 										</div>
 									</div>
 								{/if}
-								<pre use:revealMaskedChips>{@html maskHtml(escapeHtml(selectedMessage.body || selectedMessage.snippet || 'No readable body found.'))}</pre>
+								{#if selectedMessage.body_html}
+									<iframe
+										class="email-html-preview"
+										title={`Email content: ${selectedMessage.subject || 'message'}`}
+										sandbox=""
+										referrerpolicy="no-referrer"
+										srcdoc={emailPreviewDocument(selectedMessage.body_html)}
+									></iframe>
+								{:else}
+									<pre use:revealMaskedChips>{@html maskHtml(escapeHtml(selectedMessage.body || selectedMessage.snippet || 'No readable body found.'))}</pre>
+								{/if}
 							</div>
 						{:else}
 							<EnvelopeSimpleIcon size={22} weight="duotone" />
@@ -1029,6 +1053,9 @@
 	.preview-body {
 		width: 100%;
 		min-width: 0;
+		min-height: 100%;
+		display: flex;
+		flex-direction: column;
 	}
 
 	.preview-heading {
@@ -1108,6 +1135,16 @@
 		color: var(--text);
 		font: inherit;
 		line-height: 1.55;
+	}
+
+	.email-html-preview {
+		width: 100%;
+		min-height: 28rem;
+		flex: 1 1 auto;
+		margin-top: 1rem;
+		border: 1px solid var(--border);
+		border-radius: 0.8rem;
+		background: #fff;
 	}
 
 	@media (max-width: 980px) {

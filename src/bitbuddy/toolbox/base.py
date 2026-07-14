@@ -15,6 +15,7 @@ XML_TOOL_CALL_TAGS = ("bitbuddy_tool_call", "tool_call")
 MAX_TOOL_PAYLOAD_CHARS = 4000
 SHELL_READ_COMMANDS = {"cat", "less", "head", "tail"}
 READ_ONLY_TOOLS = {
+    "request_user_input",
     "glob_files",
     "list_directory",
     "search_text",
@@ -22,6 +23,7 @@ READ_ONLY_TOOLS = {
     "web_fetch",
     "get_project_memory",
     "get_project_brief",
+    "list_project_validation",
     "search_memory",
     "list_memory",
     "read_file",
@@ -139,6 +141,10 @@ UNSUPPORTED_TOOL_MARKERS = (
     "write_file(",
     "patch_file(",
     "make_directory(",
+    "list_project_validation(",
+    "upsert_project_validation(",
+    "delete_project_validation(",
+    "run_project_validation(",
     "validate_skill(",
     "list_projects(",
     "[Read File:",
@@ -516,7 +522,10 @@ def tool_instruction_message(registry: ToolRegistry, native_tools: bool = False)
             "- Use read_file for a known text file.",
             "- For generated artifacts or project files, prefer write_file, patch_file, and make_directory over shell heredocs. Relative paths default to ~/.bitbuddy/artifacts.",
             "- For artifact workflows such as KiCad, CAD, images, data files, scripts, or reports: generate deterministic source/scripts/files first, validate with command-line tools when available, then optionally use desktop MCP to inspect or open apps.",
-            "- Use run_shell_command with working_directory for validators, exports, tests, and toolchain checks after files are written.",
+            "- For coding work, follow the coding loop: inspect relevant project context/files, form a short working plan, edit with file tools, run the relevant project validation recipe when one exists, then summarize what changed and how it was verified.",
+            "- Use list_project_validation after loading project context to discover stored validation recipes. Use run_project_validation after edits when a stored recipe fits the change and permission allows.",
+            "- Use upsert_project_validation when the user tells you the right test/lint/typecheck/build command, or when you infer a useful recipe and want to save it as project memory.",
+            "- Use run_shell_command with working_directory for one-off validators, exports, tests, debugging, and toolchain checks after files are written; prefer run_project_validation for stored project recipes.",
             "- Use web_search for searching the web for information using SearxNG, then web_fetch to open and read the full text of a specific result or any direct URL.",
             "- Use run_subagent for bounded delegated research or implementation subtasks where a private worker can inspect context and report back.",
             "- Use list_skills to inspect available reusable procedures and load_skill before relying on a skill's detailed workflow.",
@@ -819,6 +828,12 @@ def needs_permission(call: ToolCall, definition: ToolDefinition | None = None) -
         command = str(call.arguments.get("command", ""))
         if not is_plan_safe_command(command):
             return True, f"The command `{command}` is not on the read-only shell allowlist and needs your permission before BitBuddy can run it."
+
+    if call.tool == "run_project_validation":
+        name = str(call.arguments.get("name") or "validation").strip()
+        project_id = str(call.arguments.get("project_id") or "").strip()
+        target = f"`{name}`" + (f" for `{project_id}`" if project_id else "")
+        return True, f"Tool `run_project_validation` needs your permission to run validation recipe {target}."
 
     return False, ""
 

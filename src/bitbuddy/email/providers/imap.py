@@ -3,6 +3,7 @@ from __future__ import annotations
 import email
 import imaplib
 import re
+from html import unescape
 from email.header import decode_header, make_header
 from email.message import Message
 
@@ -155,7 +156,7 @@ class ImapProvider:
             raise ValueError(f"Could not fetch email message {uid.decode(errors='ignore')}.")
         raw = next((part[1] for part in data if isinstance(part, tuple) and len(part) > 1), b"")
         parsed = email.message_from_bytes(raw)
-        body = extract_body(parsed)
+        body, body_html = extract_bodies(parsed)
         snippet = compact(body)[:260]
         return EmailMessage(
             id=uid.decode("ascii", errors="ignore"),
@@ -167,6 +168,7 @@ class ImapProvider:
             snippet=snippet,
             flags=parse_flags(data),
             body=body if include_body else "",
+            body_html=body_html if include_body else "",
         )
 
 
@@ -206,29 +208,37 @@ def decode_value(value: str) -> str:
 
 
 def extract_body(message: Message) -> str:
-    if message.is_multipart():
-        text_parts: list[str] = []
-        for part in message.walk():
-            if part.get_content_maintype() == "multipart" or part.get_filename():
-                continue
-            content_type = part.get_content_type()
-            if content_type not in {"text/plain", "text/html"}:
-                continue
-            payload = part.get_payload(decode=True) or b""
-            charset = part.get_content_charset() or "utf-8"
+    return extract_bodies(message)[0]
+
+
+def extract_bodies(message: Message) -> tuple[str, str]:
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+    parts = message.walk() if message.is_multipart() else [message]
+    for part in parts:
+        if part.get_content_maintype() == "multipart" or part.get_filename():
+            continue
+        content_type = part.get_content_type()
+        if content_type not in {"text/plain", "text/html"}:
+            continue
+        payload = part.get_payload(decode=True) or b""
+        charset = part.get_content_charset() or "utf-8"
+        try:
             text = payload.decode(charset, errors="replace")
-            if content_type == "text/plain":
-                return text.strip()
-            text_parts.append(strip_html(text))
-        return "\n\n".join(part for part in text_parts if part).strip()
-    payload = message.get_payload(decode=True) or b""
-    charset = message.get_content_charset() or "utf-8"
-    text = payload.decode(charset, errors="replace")
-    return strip_html(text) if message.get_content_type() == "text/html" else text.strip()
+        except (LookupError, UnicodeError):
+            text = payload.decode("utf-8", errors="replace")
+        if content_type == "text/plain":
+            plain_parts.append(text.strip())
+        else:
+            html_parts.append(text)
+    html_body = "\n\n".join(part for part in html_parts if part.strip()).strip()
+    plain_body = "\n\n".join(part for part in plain_parts if part).strip()
+    return plain_body or strip_html(html_body), html_body
 
 
 def strip_html(value: str) -> str:
-    return compact(re.sub(r"<[^>]+>", " ", value))
+    without_hidden_content = re.sub(r"<(?:style|script)[^>]*>.*?</(?:style|script)\s*>", " ", value or "", flags=re.IGNORECASE | re.DOTALL)
+    return compact(unescape(re.sub(r"<[^>]+>", " ", without_hidden_content)))
 
 
 def compact(value: str) -> str:

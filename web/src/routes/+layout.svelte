@@ -7,6 +7,7 @@
 	import { initializeChat } from '$lib/stores/chat.svelte';
 	import { initializeNotifications } from '$lib/stores/notifications.svelte';
 	import { initializeTimePreferences } from '$lib/stores/time.svelte';
+	import { initializeCoding } from '$lib/stores/coding.svelte';
 	import '../app.css';
 
 	let { children } = $props();
@@ -21,6 +22,7 @@
 		initializeChat();
 		initializeNotifications();
 		void initializeTimePreferences();
+		void initializeCoding();
 
 		const drawerMedia = window.matchMedia(drawerQuery);
 		const syncSidebarForViewport = () => {

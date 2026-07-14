@@ -6,6 +6,7 @@
 	import ThinkingStream from './ThinkingStream.svelte';
 	import ToolEventGroup from './ToolEventGroup.svelte';
 	import PermissionRequestCard from './PermissionRequestCard.svelte';
+	import QuestionRequestCard from './QuestionRequestCard.svelte';
 
 	let { messages, thinking, activeThinkEnabled, error, isStreaming, buddyName, onUserMessageDelete, onUserMessageEdit } = $props<{
 		messages: ChatMessage[];
@@ -359,7 +360,7 @@
 			const message = messages[next];
 			if ((message.kind ?? 'message') === 'tool') return !isHiddenToolMessage(message) || toolGroupHasVisibleMessage(next);
 			if (isAbsorbableThinkingAt(next)) continue;
-			if ((message.kind ?? 'message') !== 'permission') return false;
+			if (!['permission', 'question'].includes(message.kind ?? 'message')) return false;
 		}
 		return false;
 	}
@@ -405,6 +406,8 @@
 			<div class="message-turn" class:animate-in={shouldAnimate(message, index)} data-turn-mode={message.mode || 'Chat'}>
 			{#if (message.kind ?? 'message') === 'permission'}
 				<PermissionRequestCard {message} {buddyName} />
+			{:else if (message.kind ?? 'message') === 'question'}
+				<QuestionRequestCard {message} />
 			{:else if message.role !== 'system'}
 				{#if shouldRenderThinking(message, index)}
 					<ThinkingStream

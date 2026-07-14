@@ -39,20 +39,24 @@ DEFAULT_AUTONOMY_BACKOFF_MULTIPLIER = 1.5
 DEFAULT_AUTONOMY_MAX_DELAY_SECONDS = 1800
 DEFAULT_DREAMING_BEDTIME = "23:00"
 DEFAULT_DREAMING_WAKE_TIME = "08:00"
-PROVIDER_TYPES = {"none", "ollama", "llama.cpp", "openai", "codex", "anthropic"}
-CLOUD_PROVIDER_TYPES = {"openai", "anthropic"}
-URL_PROVIDER_TYPES = {"ollama", "llama.cpp", "openai", "anthropic"}
+PROVIDER_TYPES = {"none", "ollama", "llama.cpp", "openai", "codex", "anthropic", "z.ai", "z.ai-coding"}
+CLOUD_PROVIDER_TYPES = {"openai", "anthropic", "z.ai", "z.ai-coding"}
+URL_PROVIDER_TYPES = {"ollama", "llama.cpp", "openai", "anthropic", "z.ai", "z.ai-coding"}
 DEFAULT_PROVIDER_URLS = {
     "ollama": "http://127.0.0.1:11434",
     "llama.cpp": "http://127.0.0.1:8080",
     "openai": "https://api.openai.com",
     "codex": "codex://chatgpt",
     "anthropic": "https://api.anthropic.com",
+    "z.ai": "https://api.z.ai/api/paas/v4",
+    "z.ai-coding": "https://api.z.ai/api/coding/paas/v4",
 }
 DEFAULT_PROVIDER_MODELS = {
-    "openai": "gpt-5.5",
-    "codex": "gpt-5.5",
+    "openai": "gpt-5.6-sol",
+    "codex": "gpt-5.6-sol",
     "anthropic": "claude-opus-4-8",
+    "z.ai": "glm-5.2",
+    "z.ai-coding": "glm-5.2",
 }
 
 
@@ -418,7 +422,7 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 def normalize_provider_type(value: Any) -> str:
     provider_type = str(value or "none").strip() or "none"
     if provider_type not in PROVIDER_TYPES:
-        raise ValueError("Provider type must be none, ollama, llama.cpp, openai, codex, or anthropic.")
+        raise ValueError("Provider type must be none, ollama, llama.cpp, openai, codex, anthropic, z.ai, or z.ai-coding.")
     return provider_type
 
 
@@ -927,11 +931,11 @@ def normalize_reasoning_budget(value: Any) -> int:
     return budget
 
 
-REASONING_EFFORT_LEVELS = ("off", "low", "medium", "high")
+REASONING_EFFORT_LEVELS = ("off", "low", "medium", "high", "max", "xhigh")
 
 
 def normalize_reasoning_effort(value: Any) -> str:
-    """Per-provider reasoning effort: off | low | medium | high (default medium)."""
+    """Per-provider reasoning effort: off | low | medium | high | max | xhigh (default medium)."""
     level = str(value or "").strip().lower()
     return level if level in REASONING_EFFORT_LEVELS else "medium"
 

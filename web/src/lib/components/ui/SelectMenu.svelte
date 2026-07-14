@@ -8,7 +8,7 @@
 </script>
 
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import type { Snippet } from 'svelte';
 	import CaretDownIcon from 'phosphor-svelte/lib/CaretDownIcon';
 	import CheckIcon from 'phosphor-svelte/lib/CheckIcon';
@@ -38,6 +38,7 @@
 	let triggerEl: HTMLButtonElement | undefined;
 	let listEl = $state<HTMLDivElement | undefined>(undefined);
 	let listPositioned = $state(false);
+	let repositionFrame = 0;
 
 	// Move the dropdown list to <body> so it escapes ancestors that establish a
 	// containing block for fixed positioning (any `transform`, `filter`, or
@@ -108,14 +109,25 @@
 	}
 
 	function handleReposition() {
-		if (open) positionList();
+		if (!open || repositionFrame) return;
+		repositionFrame = requestAnimationFrame(() => {
+			repositionFrame = 0;
+			positionList();
+		});
 	}
+
+	onMount(() => {
+		window.addEventListener('scroll', handleReposition, true);
+		return () => {
+			window.removeEventListener('scroll', handleReposition, true);
+			if (repositionFrame) cancelAnimationFrame(repositionFrame);
+		};
+	});
 </script>
 
 <svelte:window
 	onpointerdown={handleWindowPointerDown}
 	onkeydown={handleWindowKeydown}
-	onscroll={handleReposition}
 	onresize={handleReposition}
 />
 

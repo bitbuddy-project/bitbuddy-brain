@@ -214,6 +214,8 @@
 		if (type === 'openai') return 'OpenAI API';
 		if (type === 'codex') return 'Codex';
 		if (type === 'anthropic') return 'Anthropic';
+		if (type === 'z.ai') return 'Z.ai API';
+		if (type === 'z.ai-coding') return 'Z.ai Coding Plan';
 		return 'Provider';
 	}
 

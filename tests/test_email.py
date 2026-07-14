@@ -395,6 +395,27 @@ class EmailTest(unittest.TestCase):
         self.assertEqual(message.from_addr, "Clinic <clinic@example.com>")
         self.assertEqual(message.snippet, "Short snippet")
 
+    def test_gmail_html_message_keeps_renderable_html_and_omits_styles_from_text_fallback(self) -> None:
+        import base64
+
+        html = "<style>.desktop { display: table-cell; }</style><p>0 mailing lists are generating <strong>0 emails</strong> every month.</p>"
+        encoded = base64.urlsafe_b64encode(html.encode()).decode().rstrip("=")
+        message = gmail_message_to_email(
+            {
+                "id": "msg-html",
+                "payload": {
+                    "headers": [],
+                    "mimeType": "text/html",
+                    "body": {"data": encoded},
+                },
+            },
+            mailbox="INBOX",
+            include_body=True,
+        )
+
+        self.assertEqual(message.body, "0 mailing lists are generating 0 emails every month.")
+        self.assertEqual(message.body_html, html)
+
     def test_gmail_label_aliases_accept_display_names(self) -> None:
         self.assertEqual(normalize_gmail_label("Inbox"), "INBOX")
         self.assertEqual(normalize_gmail_label("drafts"), "DRAFT")

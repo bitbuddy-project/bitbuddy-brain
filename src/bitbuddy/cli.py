@@ -93,6 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_parser.add_argument("--no-open", action="store_true", help="Do not open the dashboard in a browser.")
     dashboard_parser.set_defaults(handler=run_dashboard)
 
+    restart_parser = subparsers.add_parser("restart", help="Restart the BitBuddy backend, whether systemd- or process-managed.")
+    restart_parser.set_defaults(handler=restart_command)
+
     service_parser = subparsers.add_parser("service", help="Install and control the BitBuddy user systemd service.")
     service_subparsers = service_parser.add_subparsers(dest="service_command", metavar="command")
     service_install = service_subparsers.add_parser("install", help="Write the user systemd service file.")
@@ -357,6 +360,7 @@ def run_setup(_args: argparse.Namespace) -> int:
         if setup_action == "Quick: calendar/reminder settings":
             if not configure_calendar_setup(questionary, style, current_config):
                 return 1
+            restart_running_backend_after_setup_change()
             return 0
         if setup_action == "Quick: service/autostart settings":
             return 0 if configure_service_setup(questionary, style) else 1
@@ -596,7 +600,7 @@ def run_setup(_args: argparse.Namespace) -> int:
         while True:
             provider_label = questionary.select(
                 "Add a model provider",
-                choices=["Ollama", "llama.cpp", "OpenAI API", "Codex", "Anthropic", "Done"],
+                choices=["Ollama", "llama.cpp", "OpenAI API", "Codex", "Anthropic", "Z.ai API", "Z.ai Coding Plan", "Done"],
                 default=provider_default,
                 qmark="◆",
                 pointer="›",
@@ -752,10 +756,18 @@ def run_setup(_args: argparse.Namespace) -> int:
                 style=style,
             ).ask()
         )
-    if configure_calendar and not configure_calendar_setup(questionary, style, load_config()):
-        return 1
+    calendar_updated = False
+    if configure_calendar:
+        if not configure_calendar_setup(questionary, style, load_config()):
+            return 1
+        calendar_updated = True
 
-    handle_setup_launch_prompt(questionary, style, configure_service)
+    handle_setup_launch_prompt(
+        questionary,
+        style,
+        configure_service,
+        config_updated=should_write_core_config or calendar_updated,
+    )
 
     print()
     print("Setup complete.")
@@ -782,6 +794,10 @@ def provider_type_from_label(label: str) -> str:
         return "codex"
     if label == "Anthropic":
         return "anthropic"
+    if label == "Z.ai API":
+        return "z.ai"
+    if label == "Z.ai Coding Plan":
+        return "z.ai-coding"
     return "none"
 
 
@@ -796,6 +812,10 @@ def provider_display_name(provider_type: str) -> str:
         return "Codex"
     if provider_type == "anthropic":
         return "Anthropic"
+    if provider_type == "z.ai":
+        return "Z.ai API"
+    if provider_type == "z.ai-coding":
+        return "Z.ai Coding Plan"
     return "None"
 
 
@@ -845,13 +865,13 @@ def configure_provider_entry(questionary: Any, style: Any, provider_label: str, 
     else:
         default_url = str(previous.get("url") or provider_url_default_for(provider_type))
         provider_url = questionary.text(provider_url_question(provider_type), default=default_url, qmark="◆", style=style).ask() or default_url
-    detected_models = detect_provider_models(provider_type, provider_url) if provider_type not in {"openai", "codex", "anthropic"} else []
+    detected_models = detect_provider_models(provider_type, provider_url) if provider_type not in {"openai", "codex", "anthropic", "z.ai", "z.ai-coding"} else []
     default_model = str(previous.get("model") or (detected_models[0] if detected_models else provider_model_default_for(provider_type)))
     if detected_models:
         print(f"Found model: {default_model}")
     provider_model = questionary.text("Model name", default=default_model, qmark="◆", style=style).ask() or default_model
     entry: dict[str, Any] = {"type": provider_type, "url": provider_url, "model": provider_model}
-    if provider_type in {"openai", "anthropic"}:
+    if provider_type in {"openai", "anthropic", "z.ai", "z.ai-coding"}:
         has_key = bool(previous.get("has_api_key"))
         prompt = "API key" + (" (leave blank to keep existing)" if has_key else "")
         api_key = questionary.password(prompt, qmark="◆", style=style).ask() or ""
@@ -875,6 +895,10 @@ def provider_label_from_key(provider: str) -> str:
         return "Codex"
     if provider == "anthropic":
         return "Anthropic"
+    if provider == "z.ai":
+        return "Z.ai API"
+    if provider == "z.ai-coding":
+        return "Z.ai Coding Plan"
     return "Skip for now"
 
 
@@ -895,7 +919,7 @@ def provider_config_from_setup_choice(provider_label: str, setup_action: str, cu
         if setup_action == "Modify current setup" and existing.type != "none":
             return existing, True
         return ProviderConfig(type="none", url="", model=""), False
-    return ProviderConfig(type=provider_label.lower(), url="", model=""), False
+    return ProviderConfig(type=provider_type_from_label(provider_label), url="", model=""), False
 
 
 def provider_url_default_for(provider: str) -> str:
@@ -909,16 +933,22 @@ def provider_url_default_for(provider: str) -> str:
         return "codex://chatgpt"
     if provider == "anthropic":
         return "https://api.anthropic.com"
+    if provider == "z.ai":
+        return "https://api.z.ai/api/paas/v4"
+    if provider == "z.ai-coding":
+        return "https://api.z.ai/api/coding/paas/v4"
     return ""
 
 
 def provider_model_default_for(provider: str) -> str:
     if provider == "openai":
-        return "gpt-5.5"
+        return "gpt-5.6-sol"
     if provider == "codex":
-        return "gpt-5.5"
+        return "gpt-5.6-sol"
     if provider == "anthropic":
         return "claude-opus-4-8"
+    if provider in {"z.ai", "z.ai-coding"}:
+        return "glm-5.2"
     return ""
 
 
@@ -1099,10 +1129,15 @@ def enable_service_now() -> bool:
     return True
 
 
-def handle_setup_launch_prompt(questionary: Any, style: Any, service_choice: bool | None = None) -> None:
-    service_managed = False
+def handle_setup_launch_prompt(
+    questionary: Any,
+    style: Any,
+    service_choice: bool | None = None,
+    *,
+    config_updated: bool = False,
+) -> None:
     if service_choice is True:
-        service_managed = configure_service_setup(questionary, style)
+        configure_service_setup(questionary, style)
     elif service_choice is None and shutil.which("systemctl") is not None:
         enable_service = questionary.confirm(
             "Install and enable BitBuddy as a background login service?",
@@ -1111,22 +1146,30 @@ def handle_setup_launch_prompt(questionary: Any, style: Any, service_choice: boo
             style=style,
         ).ask()
         if enable_service:
-            service_managed = enable_service_now()
+            enable_service_now()
 
+    service_managed = user_systemd_service_managed()
     token = get_api_token()
     backend_running = check_backend_health(token=token)
+    if config_updated and (service_managed or backend_running):
+        if restart_running_backend_after_setup_change():
+            print("BitBuddy backend restarted to load setup changes.")
+            backend_running = True
+        else:
+            print("Could not restart the backend automatically. Run `bitbuddy restart` after setup.", file=sys.stderr)
     if service_managed:
         print("BitBuddy backend is managed by the user systemd service.")
     elif backend_running:
-        restart = questionary.confirm(
-            "BitBuddy server is already running. Restart it now to load setup changes?",
-            default=False,
-            qmark="◆",
-            style=style,
-        ).ask()
-        if restart:
-            restarted = restart_backend_detached()
-            print("BitBuddy server restarted." if restarted else "Could not restart automatically. Stop the old server and run `bitbuddy serve`.")
+        if not config_updated:
+            restart = questionary.confirm(
+                "BitBuddy server is already running. Restart it now to load setup changes?",
+                default=False,
+                qmark="◆",
+                style=style,
+            ).ask()
+            if restart:
+                restarted = restart_backend_detached()
+                print("BitBuddy server restarted." if restarted else "Could not restart automatically. Stop the old server and run `bitbuddy serve`.")
     else:
         start = questionary.confirm(
             "Start BitBuddy server now?",
@@ -1175,8 +1218,71 @@ def restart_backend_detached() -> bool:
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and check_backend_health():
         time.sleep(0.2)
+    if check_backend_health():
+        return False
     start_backend_detached()
     return True
+
+
+def restart_running_backend_after_setup_change() -> bool:
+    token = get_api_token()
+    if user_systemd_service_managed():
+        if systemctl_user("restart", SERVICE_NAME) != 0:
+            return False
+        return wait_for_backend(timeout_seconds=120, token=token)
+    if not check_backend_health(token=token):
+        return False
+    if not restart_backend_detached():
+        return False
+    return wait_for_backend(timeout_seconds=120, token=token)
+
+
+def user_systemd_service_managed() -> bool:
+    if shutil.which("systemctl") is None:
+        return False
+    for command in ("is-active", "is-enabled"):
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", command, "--quiet", SERVICE_NAME],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if result.returncode == 0:
+            return True
+    return False
+
+
+def restart_command(_args: argparse.Namespace) -> int:
+    service_managed = user_systemd_service_managed()
+    if service_managed:
+        print("Restarting the BitBuddy user systemd service ...")
+        result = systemctl_user("restart", SERVICE_NAME)
+        if result != 0:
+            return result
+    elif restart_backend_detached():
+        print("Restarting the process-managed BitBuddy backend ...")
+    elif check_backend_health():
+        print(
+            "A BitBuddy backend is still running and could not be restarted safely. "
+            "Stop it manually, then run `bitbuddy restart` again.",
+            file=sys.stderr,
+        )
+        return 1
+    else:
+        print("BitBuddy backend is not running; starting it ...")
+        start_backend_detached()
+
+    if wait_for_backend(timeout_seconds=120, token=get_api_token()):
+        print("BitBuddy backend is running.")
+        return 0
+    if service_managed:
+        print("BitBuddy backend did not become healthy. Run `bitbuddy service logs` for details.", file=sys.stderr)
+    else:
+        print(f"BitBuddy backend did not become healthy. Check {APP_DIR / 'serve.log'}.", file=sys.stderr)
+    return 1
 
 
 def backend_process_ids() -> list[int]:
@@ -1539,7 +1645,7 @@ def model_set_active_command(active_provider: str, config: object) -> int:
 def model_add_command(config: object) -> int:
     questionary, style = load_questionary_for_cli()
     providers = provider_entries_from_config(config)
-    choices = ["Ollama", "llama.cpp", "OpenAI API", "Codex", "Anthropic"]
+    choices = ["Ollama", "llama.cpp", "OpenAI API", "Codex", "Anthropic", "Z.ai API", "Z.ai Coding Plan"]
     default_label = provider_label_from_key(getattr(getattr(config, "provider", None), "type", "ollama"))
     label = questionary.select(
         "Add or update provider",
@@ -1814,7 +1920,7 @@ def run_update_step(command: list[str]) -> None:
 
 
 def completion_command(args: argparse.Namespace) -> int:
-    commands = "setup serve web dashboard status doctor config model logs sessions backup update completion provider mcp projects librarian"
+    commands = "setup serve web dashboard restart status doctor config model logs sessions backup update completion provider mcp projects librarian"
     if args.shell == "bash":
         print(f"complete -W '{commands}' bitbuddy")
     elif args.shell == "zsh":

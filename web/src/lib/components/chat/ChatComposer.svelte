@@ -7,16 +7,17 @@
 	import LightbulbIcon from 'phosphor-svelte/lib/LightbulbIcon';
 	import XIcon from 'phosphor-svelte/lib/XIcon';
 	import type { ChatAttachment, ProviderContext } from '$lib/api/bitbuddy';
-	import { chatSession, type PendingChatAttachment } from '$lib/stores/chat.svelte';
+	import type { PendingChatAttachment } from '$lib/stores/chat.svelte';
 	import SelectMenu from '$lib/components/ui/SelectMenu.svelte';
-	import { REASONING_EFFORT_OPTIONS } from '$lib/providerModels';
+	import type { SelectOption } from '$lib/components/ui/SelectMenu.svelte';
 
-	let { mode, buddyName, contextUsage, thinkEnabled, thinkingLevel, reasoningEffortVisible, disabled, isStreaming, onDraftChange, onSend, onStop, onThinkToggle, onThinkingLevelChange } = $props<{
+	let { mode, buddyName, contextUsage, thinkEnabled, thinkingLevel, reasoningEffortOptions, reasoningEffortVisible, disabled, isStreaming, onDraftChange, onSend, onStop, onThinkToggle, onThinkingLevelChange, draft = $bindable(''), attachments = $bindable<PendingChatAttachment[]>([]), messageHistory = [], historyKey = '', placeholder = '', contextLabel = '', showThinkingControls = true } = $props<{
 		mode: string;
 		buddyName: string;
 		contextUsage: ProviderContext | null;
 		thinkEnabled: boolean;
 		thinkingLevel: string;
+		reasoningEffortOptions: SelectOption[];
 		reasoningEffortVisible: boolean;
 		disabled: boolean;
 		isStreaming: boolean;
@@ -25,15 +26,18 @@
 		onStop: () => void;
 		onThinkToggle: () => void;
 		onThinkingLevelChange: (level: string) => void;
+		draft?: string;
+		attachments?: PendingChatAttachment[];
+		messageHistory?: string[];
+		historyKey?: string;
+		placeholder?: string;
+		contextLabel?: string;
+		showThinkingControls?: boolean;
 	}>();
 
-
-	let draft = $derived.by(() => chatSession.draft);
-	let attachments = $derived.by(() => chatSession.attachments);
-	let messageHistory = $derived.by(() => chatSession.messages.filter((message) => message.role === 'user' && message.content.trim()).map((message) => message.content));
 	let charCount = $derived(draft.length);
 	let wordCount = $derived(draft.trim() ? draft.trim().split(/\s+/).length : 0);
-	let contextText = $derived(formatContextWindow(contextUsage));
+	let contextText = $derived(contextLabel || formatContextWindow(contextUsage));
 	let hasOutgoingDraft = $derived(Boolean(draft.trim()) || attachments.length > 0);
 
 	let textarea: HTMLTextAreaElement;
@@ -85,10 +89,10 @@
 		const singleLineHeight = Math.ceil(lineHeight + paddingBlock);
 
 		measureBox.style.width = `${inlineWidth}px`;
-		measureBox.textContent = `${chatSession.draft || ' '}\u200b`;
+		measureBox.textContent = `${draft || ' '}\u200b`;
 
 		const measuredHeight = Math.ceil(measureBox.scrollHeight);
-		const nextIsMultiLine = chatSession.draft.includes('\n') || measuredHeight > singleLineHeight + 1;
+		const nextIsMultiLine = draft.includes('\n') || measuredHeight > singleLineHeight + 1;
 
 		if (isMultiLine !== nextIsMultiLine) {
 			isMultiLine = nextIsMultiLine;
@@ -115,7 +119,7 @@
 		const barPadding = parseFloat(barStyle.paddingLeft) + parseFloat(barStyle.paddingRight);
 		const contentWidth = composerBar.clientWidth - barPadding;
 		// Cloud providers show the combined level pill in place of the Think button.
-		const thinkSlotWidth = reasoningEffortVisible ? INLINE_LEVEL_REM : INLINE_THINK_REM;
+		const thinkSlotWidth = showThinkingControls ? (reasoningEffortVisible ? INLINE_LEVEL_REM : INLINE_THINK_REM) : 0;
 		const inlineControlsWidth = remToPx(INLINE_PLUS_REM + thinkSlotWidth + INLINE_ACTIONS_REM + INPUT_WRAP_HORIZONTAL_PADDING_REM);
 		return Math.max(MIN_MEASURE_WIDTH, Math.floor(contentWidth - inlineControlsWidth));
 	}
@@ -134,14 +138,14 @@
 	}
 
 	$effect(() => {
-		chatSession.draft;
+		draft;
 		queueLayout();
 	});
 
 	$effect(() => {
-		if (historyChatId === chatSession.currentChatId) return;
+		if (historyChatId === historyKey) return;
 		resetMessageHistory();
-		historyChatId = chatSession.currentChatId;
+		historyChatId = historyKey;
 	});
 
 	$effect(() => {
@@ -172,9 +176,12 @@
 	function submit() {
 		const message = draft.trim();
 		if ((!message && attachments.length === 0) || disabled) return;
-		const outgoing = attachments.map(({ previewUrl, ...attachment }) => attachment);
+		const outgoing = attachments.map((pending: PendingChatAttachment) => {
+			const { previewUrl, ...attachment } = pending;
+			return attachment;
+		});
 		resetMessageHistory();
-		chatSession.draft = '';
+		draft = '';
 		clearAttachments(true);
 		onDraftChange('');
 		onSend(message, outgoing);
@@ -183,7 +190,7 @@
 
 	function handleDraftInput() {
 		resetMessageHistory();
-		onDraftChange(chatSession.draft);
+		onDraftChange(draft);
 		queueLayout();
 	}
 
@@ -224,7 +231,7 @@
 	function navigateMessageHistory(direction: 'up' | 'down') {
 		if (direction === 'up') {
 			if (historyIndex === -1) {
-				draftBeforeHistory = chatSession.draft;
+				draftBeforeHistory = draft;
 				historyIndex = messageHistory.length - 1;
 			} else {
 				historyIndex = Math.max(0, historyIndex - 1);
@@ -242,11 +249,11 @@
 	}
 
 	function applyDraftFromHistory(value: string) {
-		chatSession.draft = value;
+		draft = value;
 		onDraftChange(value);
 		queueLayout();
 		void tick().then(() => {
-			const end = chatSession.draft.length;
+			const end = draft.length;
 			textarea?.setSelectionRange(end, end);
 		});
 	}
@@ -257,11 +264,11 @@
 	}
 
 	function cursorIsOnFirstLine(position: number) {
-		return !chatSession.draft.slice(0, position).includes('\n');
+		return !draft.slice(0, position).includes('\n');
 	}
 
 	function cursorIsOnLastLine(position: number) {
-		return !chatSession.draft.slice(position).includes('\n');
+		return !draft.slice(position).includes('\n');
 	}
 
 	function openFilePicker() {
@@ -276,14 +283,14 @@
 
 		uploadError = '';
 		for (const file of files) {
-			if (chatSession.attachments.length >= MAX_ATTACHMENTS) {
+			if (attachments.length >= MAX_ATTACHMENTS) {
 				uploadError = `Up to ${MAX_ATTACHMENTS} files can be attached.`;
 				break;
 			}
 
 			try {
 				const attachment = await attachmentFromFile(file);
-				chatSession.attachments = [...chatSession.attachments, attachment];
+				attachments = [...attachments, attachment];
 			} catch (error) {
 				uploadError = error instanceof Error ? error.message : `Could not attach ${file.name}.`;
 			}
@@ -406,19 +413,19 @@
 	}
 
 	function removeAttachment(id: string) {
-		const removed = chatSession.attachments.find((attachment) => attachment.id === id);
+		const removed = attachments.find((attachment: PendingChatAttachment) => attachment.id === id);
 		if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
-		chatSession.attachments = chatSession.attachments.filter((attachment) => attachment.id !== id);
+		attachments = attachments.filter((attachment: PendingChatAttachment) => attachment.id !== id);
 		queueLayout();
 	}
 
 	function clearAttachments(revoke = true) {
 		if (revoke) {
-			for (const attachment of chatSession.attachments) {
+			for (const attachment of attachments) {
 				if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
 			}
 		}
-		chatSession.attachments = [];
+		attachments = [];
 		uploadError = '';
 	}
 
@@ -455,6 +462,10 @@
 	}
 
 	function formatTokens(tokens: number): string {
+		if (tokens >= 1_000_000) {
+			const rounded = tokens % 1_000_000 === 0 ? String(tokens / 1_000_000) : (tokens / 1_000_000).toFixed(1);
+			return `${rounded}m`;
+		}
 		if (tokens >= 1000) {
 			const rounded = tokens % 1000 === 0 ? String(tokens / 1000) : (tokens / 1000).toFixed(1);
 			return `${rounded}k`;
@@ -484,7 +495,7 @@
 	<div class="level-select" class:off={thinkingLevel === 'off'}>
 		<SelectMenu
 			value={thinkingLevel}
-			options={REASONING_EFFORT_OPTIONS}
+			options={reasoningEffortOptions}
 			ariaLabel="Thinking level"
 			compact
 			leading={LevelIcon}
@@ -564,17 +575,19 @@
 			<div class="composer-input-wrap">
 				<textarea
 					bind:this={textarea}
-					bind:value={chatSession.draft}
+					bind:value={draft}
 					aria-label={`Message ${buddyName}`}
-					placeholder={`${mode} with ${buddyName}...`}
+					placeholder={placeholder || `${mode} with ${buddyName}...`}
 					rows="1"
 					oninput={handleDraftInput}
 					onkeydown={handleKeydown}
 				></textarea>
 
-				<div class="inline-think-wrap" class:level={reasoningEffortVisible} aria-hidden={isMultiLine}>
-					{@render ThinkControl()}
-				</div>
+				{#if showThinkingControls}
+					<div class="inline-think-wrap" class:level={reasoningEffortVisible} aria-hidden={isMultiLine}>
+						{@render ThinkControl()}
+					</div>
+				{/if}
 			</div>
 
 			<div class="inline-actions-wrap" aria-hidden={isMultiLine}>
@@ -588,7 +601,7 @@
 					{@render PlusButton()}
 				</div>
 				<div class="controls-right">
-					{@render ThinkControl()}
+					{#if showThinkingControls}{@render ThinkControl()}{/if}
 					{@render RightButtons()}
 				</div>
 			</div>

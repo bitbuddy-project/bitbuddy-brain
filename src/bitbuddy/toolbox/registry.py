@@ -16,6 +16,7 @@ from .handlers import (
     create_skill_tool,
     create_task_tool,
     delete_task_tool,
+    delete_project_validation_tool,
     email_create_auto_trash_rule_tool,
     email_list_mailboxes_tool,
     email_read_message_tool,
@@ -26,6 +27,7 @@ from .handlers import (
     glob_files_tool,
     get_project_brief_tool,
     get_project_memory_tool,
+    list_project_validation_tool,
     list_skills_tool,
     list_directory_tool,
     list_memory_tool,
@@ -35,9 +37,11 @@ from .handlers import (
     move_memory_tool,
     read_file_tool,
     read_file_range_tool,
+    request_user_input_tool,
     record_memory_tool,
     record_project_memory_tool,
     run_shell_command_tool,
+    run_project_validation_tool,
     run_subagent_tool,
     search_text_tool,
     search_memory_tool,
@@ -47,6 +51,7 @@ from .handlers import (
     update_memory_tool,
     update_project_memory_tool,
     update_task_tool,
+    upsert_project_validation_tool,
     validate_skill_tool,
     web_fetch_tool,
     web_search_tool,
@@ -57,6 +62,50 @@ from .handlers import (
 
 def default_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="request_user_input",
+            description="Pause and ask the user one to three focused questions only when their answer materially changes the task, safety, or an important preference. Each question needs two or three meaningful choices; the interface also permits a custom answer.",
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "questions": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 3,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "header": {"type": "string"},
+                                "question": {"type": "string"},
+                                "options": {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "maxItems": 3,
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {"type": "string"},
+                                            "description": {"type": "string"},
+                                        },
+                                        "required": ["label", "description"],
+                                        "additionalProperties": False,
+                                    },
+                                },
+                            },
+                            "required": ["id", "header", "question", "options"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["questions"],
+                "additionalProperties": False,
+            },
+            max_chars=8000,
+        ),
+        request_user_input_tool,
+    )
     registry.register(
         ToolDefinition(
             name="glob_files",
@@ -233,7 +282,7 @@ def default_tool_registry() -> ToolRegistry:
                 "'add a task to review the PR Friday'). Set remind_at when the user wants to be nudged at a specific "
                 "time, and due when there's a deadline; resolve relative phrasing like '4pm' or 'Friday' to absolute "
                 "ISO8601 in the user's timezone (e.g. 2026-06-26T16:00). Tasks with a remind_at trigger a notification "
-                "and a chat nudge at that time. Returns the new task id."
+                "at that time. Returns the new task id."
             ),
             arguments_schema={
                 "type": "object",
@@ -431,6 +480,88 @@ def default_tool_registry() -> ToolRegistry:
             max_chars=16000,
         ),
         get_project_brief_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="list_project_validation",
+            description=(
+                "List validation recipes for a registered project: test, lint, typecheck, build, smoke, format, or custom commands. "
+                "Stored recipes are canonical. Suggestions come from project files and should be saved with upsert_project_validation before relying on them."
+            ),
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "include_suggestions": {"type": "boolean"},
+                },
+                "required": ["project_id"],
+                "additionalProperties": False,
+            },
+            max_chars=12000,
+        ),
+        list_project_validation_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="upsert_project_validation",
+            description=(
+                "Create or update a project's canonical validation recipe. Use this when the user tells you how to test/build/lint/typecheck a project, "
+                "or after you infer a useful command and want to save it for future coding work."
+            ),
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "command": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["test", "lint", "typecheck", "build", "smoke", "format", "custom"]},
+                    "working_directory": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["project_id", "name", "command"],
+                "additionalProperties": False,
+            },
+            max_chars=4000,
+        ),
+        upsert_project_validation_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="delete_project_validation",
+            description="Delete a project's validation recipe by name. Prefer updating a wrong command unless the user wants it removed.",
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "name": {"type": "string"},
+                },
+                "required": ["project_id", "name"],
+                "additionalProperties": False,
+            },
+            max_chars=1000,
+        ),
+        delete_project_validation_tool,
+    )
+    registry.register(
+        ToolDefinition(
+            name="run_project_validation",
+            description=(
+                "Run one stored validation recipe for a registered project. Use after edits to prove the change with the project's canonical test/lint/typecheck/build/smoke command. "
+                "This executes a shell command and may require user permission."
+            ),
+            arguments_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+                },
+                "required": ["project_id", "name"],
+                "additionalProperties": False,
+            },
+            max_chars=24000,
+        ),
+        run_project_validation_tool,
     )
     registry.register(
         ToolDefinition(

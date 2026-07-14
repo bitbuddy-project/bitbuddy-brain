@@ -21,6 +21,14 @@ from ..email.service import create_sender_trash_rule as email_create_sender_tras
 from ..memory.episodic import create_episode, count_auto_episodes_for_conversation, delete_episode, get_episode, list_recent_episodes, search_episodes, update_episode
 from ..memory.layers import MemoryLayer, memory_layer
 from ..memory.project import MAX_FILE_BYTES, SKIP_DIRS, SKIP_SUFFIXES, list_projects, load_project, project_brief, project_model, record_project_note, update_structured_project_memory
+from ..memory.project_validation import (
+    delete_validation_recipe,
+    list_validation_recipes,
+    recipe_to_json,
+    run_validation_recipe,
+    upsert_validation_recipe,
+    validation_run_to_json,
+)
 from ..memory.store import archive_memory, create_memory, memory_to_json, merge_memories, move_memory, search_memories, update_memory as update_generic_memory
 from ..skills import archive_skill, create_skill, list_skills, load_skill, patch_skill, skill_to_json, validate_skill, write_skill_file
 from ..tasks import store as task_store
@@ -642,6 +650,107 @@ def get_project_brief_tool(arguments: dict[str, object], definition: ToolDefinit
     )
 
 
+def list_project_validation_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    project_id = require_registered_project_id(arguments)
+    include_suggestions = bool(arguments.get("include_suggestions", True))
+    recipes = list_validation_recipes(project_id, include_suggestions=include_suggestions)
+    data = {"project_id": project_id, "recipes": [recipe_to_json(recipe) for recipe in recipes]}
+    content, truncated = cap_text(json.dumps(data, indent=2), definition.max_chars)
+    stored = sum(1 for recipe in recipes if recipe.source == "stored")
+    suggested = len(recipes) - stored
+    return ToolResult(
+        definition.name,
+        True,
+        content,
+        f"Loaded {stored} stored validation recipe(s)" + (f" and {suggested} suggestion(s)." if suggested else "."),
+        {"project_id": project_id, "include_suggestions": include_suggestions},
+        truncated=truncated,
+    )
+
+
+def upsert_project_validation_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    project_id = require_registered_project_id(arguments)
+    try:
+        recipe = upsert_validation_recipe(
+            project_id,
+            name=str(arguments.get("name") or ""),
+            command=str(arguments.get("command") or ""),
+            kind=str(arguments.get("kind") or "custom"),
+            working_directory=str(arguments.get("working_directory") or "."),
+            description=str(arguments.get("description") or ""),
+        )
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    content, truncated = cap_text(json.dumps(recipe_to_json(recipe), indent=2), definition.max_chars)
+    return ToolResult(
+        definition.name,
+        True,
+        content,
+        f"Saved validation recipe '{recipe.name}' for {project_id}.",
+        {"project_id": project_id, "name": recipe.name, "kind": recipe.kind, "command": recipe.command},
+        truncated=truncated,
+    )
+
+
+def delete_project_validation_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    project_id = require_registered_project_id(arguments)
+    name = str(arguments.get("name") or "").strip()
+    if not name:
+        return invalid_tool_result("name is required.")
+    try:
+        deleted = delete_validation_recipe(project_id, name)
+    except ValueError as error:
+        return invalid_tool_result(str(error))
+    if not deleted:
+        return invalid_tool_result(f"Unknown validation recipe: {name}")
+    return ToolResult(
+        definition.name,
+        True,
+        f"Deleted validation recipe '{name}'.",
+        f"Deleted validation recipe '{name}'.",
+        {"project_id": project_id, "name": name},
+    )
+
+
+def run_project_validation_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    project_id = require_registered_project_id(arguments)
+    name = str(arguments.get("name") or "").strip()
+    if not name:
+        return invalid_tool_result("name is required.")
+    try:
+        run = run_validation_recipe(
+            project_id,
+            name,
+            timeout_seconds=int_value(arguments.get("timeout_seconds"), 300),
+        )
+    except (ValueError, subprocess.TimeoutExpired) as error:
+        return invalid_tool_result(str(error))
+    output = "\n".join(
+        part
+        for part in (
+            f"$ {run.recipe.command}",
+            f"cwd: {run.cwd}",
+            f"exit_code: {run.exit_code}",
+            "",
+            run.stdout.strip(),
+            run.stderr.strip(),
+        )
+        if part
+    )
+    content, truncated = cap_text(output, definition.max_chars)
+    ok = run.exit_code == 0
+    return ToolResult(
+        definition.name,
+        ok,
+        content,
+        f"Validation recipe '{run.recipe.name}' {run.status} with exit code {run.exit_code}.",
+        {"project_id": project_id, "name": run.recipe.name, "kind": run.recipe.kind, "command": run.recipe.command},
+        truncated=truncated,
+        error="" if ok else content,
+        metadata={"validation": validation_run_to_json(run)},
+    )
+
+
 def read_file_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
     project_id = arguments.get("project_id")
     path_str = arguments.get("file_path")
@@ -863,6 +972,18 @@ def run_subagent_tool(arguments: dict[str, object], definition: ToolDefinition) 
     }
     text, truncated = cap_text(json.dumps(content, indent=2), definition.max_chars)
     return ToolResult(definition.name, True, text, f"Subagent completed: {result.report[:180]}", {"run_id": result.run_id, "agent_type": agent_type, "task": task[:160]}, truncated=truncated)
+
+
+def request_user_input_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:
+    """Runtime-intercepted tool; reaching this handler is a defensive error."""
+    return ToolResult(
+        definition.name,
+        False,
+        "",
+        "User question was not intercepted by the active runtime.",
+        {},
+        error="request_user_input requires an interactive Chat or Coding run.",
+    )
 
 
 def list_skills_tool(arguments: dict[str, object], definition: ToolDefinition) -> ToolResult:

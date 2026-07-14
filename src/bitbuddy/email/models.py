@@ -32,6 +32,7 @@ class EmailMessage:
     snippet: str
     flags: list[str] = field(default_factory=list)
     body: str = ""
+    body_html: str = ""
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ def message_to_json(message: EmailMessage, *, include_body: bool = False) -> dic
     }
     if include_body:
         data["body"] = message.body
+        data["body_html"] = message.body_html
     return data
 
 

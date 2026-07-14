@@ -132,7 +132,7 @@ class TaskSchedulerTest(unittest.TestCase):
         self.assertEqual(notifications[0].category, "reminder")
         self.assertEqual(notifications[0].source_kind, "task")
         self.assertEqual(notifications[0].severity, "warning")  # priority >= 4
-        self.assertEqual(notifications[0].action_url, "/tasks")
+        self.assertEqual(notifications[0].action_url, "/")
 
         # A second tick must not re-fire (reminded_at dedup).
         scheduler._process_due_tasks()
@@ -151,7 +151,7 @@ class TaskSchedulerTest(unittest.TestCase):
         self.assertEqual(assistant_messages, [])
         notification = list_notifications()[0]
         self.assertEqual(notification.chat_id, "")
-        self.assertEqual(notification.action_url, "/tasks")
+        self.assertEqual(notification.action_url, "/")
 
 
 class TaskToolsTest(unittest.TestCase):

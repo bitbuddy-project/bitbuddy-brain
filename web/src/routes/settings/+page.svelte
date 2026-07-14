@@ -79,7 +79,9 @@
 		{ value: 'llama.cpp', label: 'llama.cpp', description: 'Local llama.cpp server' },
 		{ value: 'openai', label: 'OpenAI API', description: 'OpenAI API key provider' },
 		{ value: 'codex', label: 'Codex', description: 'ChatGPT/Codex authorization' },
-		{ value: 'anthropic', label: 'Anthropic', description: 'Claude API key provider' }
+		{ value: 'anthropic', label: 'Anthropic', description: 'Claude API key provider' },
+		{ value: 'z.ai', label: 'Z.ai API', description: 'GLM API key provider' },
+		{ value: 'z.ai-coding', label: 'Z.ai Coding Plan', description: 'GLM coding plan endpoint' }
 	];
 	const providerOptions: SelectOption[] = providerTypes;
 	const emailProviderOptions: SelectOption[] = [
@@ -580,7 +582,7 @@
 	}
 
 	function isCloudProvider(type: string): boolean {
-		return type === 'openai' || type === 'anthropic';
+		return type === 'openai' || type === 'anthropic' || type === 'z.ai' || type === 'z.ai-coding';
 	}
 
 	function isCodexProvider(type: string): boolean {
@@ -593,19 +595,23 @@
 		if (type === 'openai') return 'https://api.openai.com';
 		if (type === 'codex') return 'codex://chatgpt';
 		if (type === 'anthropic') return 'https://api.anthropic.com';
+		if (type === 'z.ai') return 'https://api.z.ai/api/paas/v4';
+		if (type === 'z.ai-coding') return 'https://api.z.ai/api/coding/paas/v4';
 		return '';
 	}
 
 	function providerModelDefault(type: string): string {
-		if (type === 'openai') return 'gpt-5.5';
-		if (type === 'codex') return 'gpt-5.5';
+		if (type === 'openai') return 'gpt-5.6-sol';
+		if (type === 'codex') return 'gpt-5.6-sol';
 		if (type === 'anthropic') return 'claude-opus-4-8';
+		if (type === 'z.ai' || type === 'z.ai-coding') return 'glm-5.2';
 		return '';
 	}
 
 	function providerKeyUrl(type: string): string {
 		if (type === 'openai') return 'https://platform.openai.com/api-keys';
 		if (type === 'anthropic') return 'https://console.anthropic.com/settings/keys';
+		if (type === 'z.ai' || type === 'z.ai-coding') return 'https://z.ai/manage-apikey/apikey-list';
 		return '';
 	}
 
@@ -1514,7 +1520,7 @@
 							<div class="provider-list">
 								{#each modelRuntime.providers ?? [] as provider (providerKey(provider))}
 									<div class="provider-card" class:active={modelRuntime.active_provider === providerKey(provider)} class:editing={editingProviderKey === providerKey(provider)} class:unsaved={pendingAddedProviderKey === providerKey(provider)}>
-										<div class="mock-item provider-row">
+										<div class="provider-row">
 											<span>
 												<strong>{providerLabel(provider.type)}</strong>
 												<small>{provider.model || 'No model set'}{provider.type !== 'codex' ? ` · ${provider.url}` : ' · ChatGPT authorization'}</small>
@@ -1817,7 +1823,7 @@
 									/>
 								</div>
 							</div>
-							{#if autonomy.activity_level === 'high' && (modelRuntime.provider.type === 'openai' || modelRuntime.provider.type === 'anthropic')}
+							{#if autonomy.activity_level === 'high' && isCloudProvider(modelRuntime.provider.type)}
 								<div class="inline-error" role="note">
 									Heads up: "Very active" pairs a lot of background work with a cloud API provider
 									({providerLabel(modelRuntime.provider.type)}). On metered API or smaller plans this can run up a real bill.
@@ -2926,34 +2932,43 @@
 
 	.provider-list {
 		display: grid;
-		gap: 0.75rem;
+		gap: 0.65rem;
+	}
+
+	.provider-runtime-panel {
+		border: none;
+		background: transparent;
+		box-shadow: none;
 	}
 
 	.provider-card {
 		overflow: hidden;
-		border: 1px solid var(--card-border);
-		border-radius: 1rem;
+		border: 1px solid color-mix(in srgb, var(--card-border) 88%, transparent);
+		border-radius: 0.5rem;
 		background:
 			var(--card-glass-sheen),
-			var(--card-bg);
+			color-mix(in srgb, var(--card-bg) 94%, var(--surface-inset));
 	}
 
 	.provider-card.active {
-		border-color: color-mix(in srgb, var(--accent) 46%, var(--card-border));
-		box-shadow: inset 0 1px 0 var(--card-top-light), 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
+		border-color: color-mix(in srgb, var(--accent) 48%, var(--card-border));
+		background:
+			var(--card-glass-sheen),
+			color-mix(in srgb, var(--card-bg) 88%, var(--accent-soft));
 	}
 
 	.provider-card.editing {
 		position: relative;
 		z-index: 120;
 		overflow: visible;
-		border-color: color-mix(in srgb, var(--accent) 58%, var(--card-border));
-		background: color-mix(in srgb, var(--card-bg) 92%, var(--accent-soft));
+		border-color: color-mix(in srgb, var(--accent) 62%, var(--card-border));
 	}
 
 	.provider-card.unsaved {
 		border-color: color-mix(in srgb, var(--warning) 58%, var(--card-border));
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 16%, transparent);
+		background:
+			var(--card-glass-sheen),
+			color-mix(in srgb, var(--card-bg) 88%, color-mix(in srgb, var(--warning) 13%, transparent));
 	}
 
 	.warning-badge {
@@ -2963,16 +2978,17 @@
 	}
 
 	.provider-row {
+		display: flex;
 		align-items: flex-start;
+		justify-content: space-between;
 		gap: 1rem;
-		border-bottom: 0;
-		border-radius: 1rem;
-		background: transparent;
+		min-width: 0;
+		padding: 1rem;
+		color: var(--text-muted);
 	}
 
 	.provider-card.editing .provider-row {
-		border-bottom: 1px solid var(--card-border);
-		border-radius: 1rem 1rem 0 0;
+		border-bottom: 1px solid color-mix(in srgb, var(--card-border) 88%, transparent);
 	}
 
 	.provider-row > span {
@@ -2997,8 +3013,8 @@
 
 	.provider-edit-panel {
 		overflow: visible;
-		border-radius: 0 0 1rem 1rem;
-		background: color-mix(in srgb, var(--surface-inset) 48%, transparent);
+		border-radius: 0 0 0.5rem 0.5rem;
+		background: color-mix(in srgb, var(--surface-inset) 38%, transparent);
 	}
 
 	.provider-edit-panel .mock-item {

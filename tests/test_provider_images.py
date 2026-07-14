@@ -14,10 +14,17 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-provider-images-test-")
 
 from bitbuddy.config import ProviderConfig  # noqa: E402
-from bitbuddy.providers import ProviderClient  # noqa: E402
+from bitbuddy.providers import ProviderClient, provider_reasoning_effort  # noqa: E402
 
 
 class ProviderImageTest(unittest.TestCase):
+    def test_gpt_5_6_max_reasoning_effort_passes_through(self) -> None:
+        for provider in ("openai", "codex"):
+            with self.subTest(provider=provider):
+                self.assertEqual(provider_reasoning_effort(provider, "max", "gpt-5.6-sol"), "max")
+
+        self.assertEqual(provider_reasoning_effort("openai", "max", "gpt-5.5"), "high")
+
     def test_ollama_image_bad_request_becomes_chat_message(self) -> None:
         client = ProviderClient(ProviderConfig(type="ollama", url="http://provider.test", model="text-only"))
         messages = [
@@ -133,6 +140,25 @@ class ProviderImageTest(unittest.TestCase):
         # Opus 4.7/4.8 reject enabled+budget_tokens (400) and omit thinking text unless
         # display=summarized is requested.
         self.assertEqual(payloads[0]["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("thinking", "plan"), ("response", "answer")])
+
+    def test_fable_5_forces_adaptive_thinking_even_if_the_client_requested_off(self) -> None:
+        client = ProviderClient(ProviderConfig(type="anthropic", url="https://anthropic.test", model="claude-fable-5", api_key="key", reasoning_effort="off"))
+        payloads = []
+
+        def fake_post_anthropic_sse(_url, payload, headers):
+            payloads.append(payload)
+            return iter([
+                {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "plan"}},
+                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "answer"}},
+                {"type": "message_stop"},
+            ])
+
+        with patch("bitbuddy.providers.post_anthropic_sse", side_effect=fake_post_anthropic_sse):
+            chunks = list(client.stream_chat([{"role": "user", "content": "Hi"}], thinking_enabled=False))
+
+        self.assertEqual(payloads[0]["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(payloads[0]["output_config"], {"effort": "medium"})
         self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("thinking", "plan"), ("response", "answer")])
 
     def test_anthropic_thinking_enabled_uses_budget_for_older_models(self) -> None:
@@ -280,6 +306,25 @@ class ProviderImageTest(unittest.TestCase):
         self.assertEqual(payloads[0]["include"], ["reasoning.encrypted_content"])
         self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("thinking", "plan"), ("response", "answer")])
 
+    def test_codex_xhigh_reasoning_effort_passes_through(self) -> None:
+        client = ProviderClient(ProviderConfig(type="codex", url="codex://chatgpt", model="gpt-5.5", reasoning_effort="xhigh"))
+        payloads = []
+
+        def fake_post_sse_json(_url, payload, headers=None):
+            payloads.append(payload)
+            return iter([
+                {"type": "response.output_text.delta", "delta": "answer"},
+                {"type": "response.completed"},
+            ])
+
+        with patch("bitbuddy.providers.codex_health", return_value=(True, "ok")), \
+                patch("bitbuddy.providers.get_credentials", return_value={"access_token": "token", "account_id": "acct"}), \
+                patch("bitbuddy.providers.post_sse_json", side_effect=fake_post_sse_json):
+            chunks = list(client.stream_chat([{"role": "user", "content": "Hi"}], thinking_enabled=True))
+
+        self.assertEqual(payloads[0]["reasoning"], {"effort": "xhigh", "summary": "auto"})
+        self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("response", "answer")])
+
     def test_codex_supports_native_tools(self) -> None:
         client = ProviderClient(ProviderConfig(type="codex", url="codex://chatgpt", model="gpt-5.5"))
 
@@ -348,6 +393,106 @@ class ProviderImageTest(unittest.TestCase):
             chunks = list(client.stream_chat([{"role": "user", "content": "Read README"}], thinking_enabled=True, tools=tools))
 
         self.assertEqual(payloads[0]["tools"][0]["name"], "read_file")
+        tool_chunks = [chunk for chunk in chunks if chunk.kind == "tool_call"]
+        self.assertEqual(len(tool_chunks), 1)
+        self.assertEqual(tool_chunks[0].tool_call.name, "read_file")
+        self.assertEqual(tool_chunks[0].tool_call.arguments, '{"file_path":"README.md"}')
+        self.assertEqual(tool_chunks[0].tool_call.call_id, "call_1")
+
+    def test_zai_stream_uses_chat_completions_endpoint_and_reasoning_effort(self) -> None:
+        client = ProviderClient(ProviderConfig(type="z.ai", url="https://api.z.ai/api/paas/v4", model="glm-5.2", api_key="key", reasoning_effort="high"))
+        payloads = []
+
+        def fake_post_sse_json(url, payload, headers=None):
+            payloads.append((url, payload, headers))
+            return iter([
+                {"choices": [{"delta": {"reasoning_content": "plan"}}]},
+                {"choices": [{"delta": {"content": "answer"}}]},
+            ])
+
+        with patch("bitbuddy.providers.post_sse_json", side_effect=fake_post_sse_json):
+            chunks = list(client.stream_chat([{"role": "user", "content": "Hi"}], thinking_enabled=True))
+
+        self.assertEqual(payloads[0][0], "https://api.z.ai/api/paas/v4/chat/completions")
+        self.assertEqual(payloads[0][1]["model"], "glm-5.2")
+        self.assertEqual(payloads[0][1]["thinking"], {"type": "enabled"})
+        self.assertEqual(payloads[0][1]["reasoning_effort"], "high")
+        self.assertEqual(payloads[0][2]["Authorization"], "Bearer key")
+        self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("thinking", "plan"), ("response", "answer")])
+
+    def test_zai_coding_stream_maps_reasoning_effort_for_coding_plan(self) -> None:
+        client = ProviderClient(ProviderConfig(type="z.ai-coding", url="https://api.z.ai/api/coding/paas/v4", model="glm-5.2", api_key="key", reasoning_effort="medium"))
+        payloads = []
+
+        def fake_post_sse_json(url, payload, headers=None):
+            payloads.append((url, payload, headers))
+            return iter([{"choices": [{"delta": {"content": "answer"}}]}])
+
+        with patch("bitbuddy.providers.post_sse_json", side_effect=fake_post_sse_json):
+            chunks = list(client.stream_chat([{"role": "user", "content": "Hi"}], thinking_enabled=True))
+
+        self.assertEqual(payloads[0][0], "https://api.z.ai/api/coding/paas/v4/chat/completions")
+        self.assertEqual(payloads[0][1]["thinking"], {"type": "enabled"})
+        self.assertEqual(payloads[0][1]["reasoning_effort"], "high")
+        self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("response", "answer")])
+
+    def test_zai_coding_max_reasoning_effort_is_sent_as_max(self) -> None:
+        client = ProviderClient(ProviderConfig(type="z.ai-coding", url="https://api.z.ai/api/coding/paas/v4", model="glm-5.2", api_key="key", reasoning_effort="max"))
+        payloads = []
+
+        def fake_post_sse_json(url, payload, headers=None):
+            payloads.append((url, payload, headers))
+            return iter([{"choices": [{"delta": {"content": "answer"}}]}])
+
+        with patch("bitbuddy.providers.post_sse_json", side_effect=fake_post_sse_json):
+            chunks = list(client.stream_chat([{"role": "user", "content": "Hi"}], thinking_enabled=True))
+
+        self.assertEqual(payloads[0][1]["thinking"], {"type": "enabled"})
+        self.assertEqual(payloads[0][1]["reasoning_effort"], "max")
+        self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("response", "answer")])
+
+    def test_zai_reasoning_off_disables_thinking(self) -> None:
+        client = ProviderClient(ProviderConfig(type="z.ai", url="https://api.z.ai/api/paas/v4", model="glm-5.2", api_key="key", reasoning_effort="off"))
+        payloads = []
+
+        def fake_post_sse_json(url, payload, headers=None):
+            payloads.append((url, payload, headers))
+            return iter([{"choices": [{"delta": {"reasoning_content": "private", "content": "answer"}}]}])
+
+        with patch("bitbuddy.providers.post_sse_json", side_effect=fake_post_sse_json):
+            chunks = list(client.stream_chat([{"role": "user", "content": "Hi"}], thinking_enabled=True))
+
+        self.assertEqual(payloads[0][1]["thinking"], {"type": "disabled"})
+        self.assertIn("Thinking/reasoning mode is disabled", payloads[0][1]["messages"][0]["content"])
+        self.assertNotIn("reasoning_effort", payloads[0][1])
+        self.assertEqual([(chunk.kind, chunk.text) for chunk in chunks], [("response", "answer")])
+
+    def test_zai_function_call_streams_as_tool_call(self) -> None:
+        client = ProviderClient(ProviderConfig(type="z.ai-coding", url="https://api.z.ai/api/coding/paas/v4", model="glm-5.2", api_key="key"))
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file.",
+                    "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"]},
+                },
+            }
+        ]
+        payloads = []
+
+        def fake_post_sse_json(_url, payload, headers=None):
+            payloads.append(payload)
+            return iter([
+                {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "read_file", "arguments": "{\"file_"}}]}}]},
+                {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "path\":\"README.md\"}"}}]}}]},
+            ])
+
+        with patch("bitbuddy.providers.post_sse_json", side_effect=fake_post_sse_json):
+            chunks = list(client.stream_chat([{"role": "user", "content": "Read README"}], tools=tools))
+
+        self.assertEqual(payloads[0]["tools"], tools)
+        self.assertEqual(payloads[0]["tool_choice"], "auto")
         tool_chunks = [chunk for chunk in chunks if chunk.kind == "tool_call"]
         self.assertEqual(len(tool_chunks), 1)
         self.assertEqual(tool_chunks[0].tool_call.name, "read_file")

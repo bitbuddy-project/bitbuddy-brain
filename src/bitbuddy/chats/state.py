@@ -24,6 +24,8 @@ class ActiveChatRun:
     thinking_enabled: bool = True
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     return_greeting_text: str = ""
+    conversation_gap_minutes: int | None = None
+    conversation_gap_label: str = ""
     assistant_message_id: int | None = None
     assistant_text: str = ""
     thinking_text: str = ""
@@ -36,6 +38,9 @@ class ActiveChatRun:
     permission_request: dict[str, Any] | None = None
     permission_response: threading.Event = field(default_factory=threading.Event)
     permission_granted: bool = False
+    question_request: Any | None = None
+    question_answers: dict[str, str] = field(default_factory=dict)
+    question_response: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
     thread: threading.Thread | None = None
 
@@ -73,6 +78,16 @@ class ActiveChatRun:
                         "tool": self.permission_request.get("tool", ""),
                         "reason": self.permission_request.get("reason", "BitBuddy needs your permission to proceed."),
                         "arguments": self.permission_request.get("arguments", {}),
+                    }
+                )
+
+            if self.question_request is not None:
+                from ..interactions import question_request_to_json
+
+                subscriber.put(
+                    {
+                        "kind": "question_request",
+                        "request": question_request_to_json(self.question_request),
                     }
                 )
 

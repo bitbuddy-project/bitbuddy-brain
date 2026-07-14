@@ -24,8 +24,13 @@ export type ToolEventMetadata = {
     autonomy_intention_delivery?: boolean;
     intention_id?: number;
     intention_kind?: string;
-    diff?: ToolDiff;
+	diff?: ToolDiff;
+	question_request?: QuestionRequest;
 };
+
+export type QuestionOption = { label: string; description: string };
+export type UserQuestion = { id: string; header: string; question: string; options: QuestionOption[] };
+export type QuestionRequest = { id: string; questions: UserQuestion[] };
 
 export type ChatAttachment = {
     id: string;
@@ -39,7 +44,7 @@ export type ChatAttachment = {
 
 export type ChatMessage = {
 	id?: number;
-	kind?: 'message' | 'tool' | 'permission';
+	kind?: 'message' | 'tool' | 'permission' | 'question';
 	role: 'user' | 'assistant' | 'system' | 'tool';
 	content: string;
 	thinking?: string;
@@ -53,7 +58,7 @@ export type ChatMessage = {
 };
 
 export type StreamChunk = {
-	kind?: 'thinking' | 'response' | 'error' | 'chat' | 'snapshot' | 'tool_call' | 'tool_result' | 'tool_error' | 'cancelled' | 'permission_request' | 'heartbeat';
+	kind?: 'thinking' | 'response' | 'error' | 'chat' | 'snapshot' | 'tool_call' | 'tool_result' | 'tool_error' | 'cancelled' | 'permission_request' | 'question_request' | 'question_answered' | 'heartbeat';
 	text?: string;
 	content?: string;
 	thinking?: string;
@@ -66,6 +71,8 @@ export type StreamChunk = {
 	arguments_summary?: Record<string, unknown>;
 	arguments?: Record<string, unknown>;
 	reason?: string;
+	request?: QuestionRequest;
+	interaction_id?: string;
 	result_summary?: string;
 	error?: string;
 	done?: boolean;
@@ -246,11 +253,26 @@ export type ProviderHealth = {
 	log_excerpt?: string;
 };
 
+export type ProviderCapabilities = {
+	provider: string;
+	model: string;
+	context_window_tokens: number | null;
+	streaming_protocol: string;
+	supports_native_tools: boolean;
+	supports_vision: boolean;
+	supports_thinking: boolean;
+	requires_thinking?: boolean;
+	supports_reasoning_effort: boolean;
+	reasoning_efforts: string[];
+	default_reasoning_effort: string;
+};
+
 export type ProviderContext = {
 	provider: string;
 	model: string;
 	used_tokens?: number | null;
 	context_window_tokens: number | null;
+	capabilities?: ProviderCapabilities | null;
 	source?: string;
 	usage_source?: string;
 	window_source?: string;
@@ -562,6 +584,31 @@ export type ProjectNoteMemory = {
     tags?: string[];
 };
 
+export type ValidationRecipe = {
+	name: string;
+	command: string;
+	kind: string;
+	working_directory: string;
+	description: string;
+	created_at?: string;
+	updated_at?: string;
+	last_run_at?: string | null;
+	last_exit_code?: number | null;
+	last_status?: string;
+	last_output?: string;
+	source?: string;
+};
+
+export type ValidationRun = {
+	recipe: ValidationRecipe;
+	cwd: string;
+	exit_code: number;
+	status: string;
+	stdout: string;
+	stderr: string;
+	elapsed_seconds: number;
+};
+
 export type ProjectMemory = {
 	project_card?: ProjectCardMemory;
 	architecture_summary?: ArchitectureSummary;
@@ -571,6 +618,7 @@ export type ProjectMemory = {
 	current_task_memory?: CurrentTaskMemory[];
 	read_before_editing_rules?: ReadBeforeEditingRule[];
 	project_notes?: ProjectNoteMemory[];
+	validation_recipes?: ValidationRecipe[];
 	retrieval_policy?: string;
 };
 
@@ -882,6 +930,48 @@ export async function archiveProjectSpec(projectId: string, specId: string): Pro
 	return data.spec;
 }
 
+export async function getProjectValidationRecipes(projectId: string, options: { includeSuggestions?: boolean } = {}): Promise<ValidationRecipe[]> {
+	const params = new URLSearchParams();
+	if (options.includeSuggestions === false) params.set('include_suggestions', 'false');
+	const query = params.toString() ? `?${params.toString()}` : '';
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}/validation${query}`);
+	if (!response.ok) throw new Error('Could not load project validation recipes.');
+	const data = await response.json();
+	return data.recipes ?? [];
+}
+
+export async function saveProjectValidationRecipe(
+	projectId: string,
+	recipe: { name: string; command: string; kind?: string; working_directory?: string; description?: string }
+): Promise<ValidationRecipe> {
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}/validation`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(recipe)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not save project validation recipe.');
+	return data.recipe;
+}
+
+export async function runProjectValidationRecipe(projectId: string, name: string, timeoutSeconds = 300): Promise<ValidationRun> {
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}/validation/${name}/run`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ confirm: name, timeout_seconds: timeoutSeconds })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Project validation failed.');
+	return data.run;
+}
+
+export async function deleteProjectValidationRecipe(projectId: string, name: string): Promise<boolean> {
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}/validation/${name}`, { method: 'DELETE' });
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not delete project validation recipe.');
+	return Boolean(data.deleted);
+}
+
 export async function getRecentEpisodes(): Promise<Episode[]> {
 	const response = await apiFetch(`${BITBUDDY_API}/memory/episodes`);
 	if (!response.ok) throw new Error('Could not load episodic memories.');
@@ -1072,6 +1162,7 @@ export type EmailMessage = {
 	snippet: string;
 	flags: string[];
 	body?: string;
+	body_html?: string;
 };
 
 export type EmailRule = {
@@ -1518,6 +1609,12 @@ export async function getProviderContext(): Promise<ProviderContext> {
 	return response.json();
 }
 
+export async function getProviderCapabilities(): Promise<ProviderCapabilities> {
+	const response = await apiFetch(`${BITBUDDY_API}/provider/capabilities`);
+	if (!response.ok) throw new Error('Could not load provider capabilities.');
+	return response.json();
+}
+
 export async function getCodexStatus(): Promise<ProviderHealth> {
 	const response = await apiFetch(`${BITBUDDY_API}/provider/codex/status`);
 	const data = await response.json().catch(() => ({}));
@@ -1655,6 +1752,16 @@ export async function grantPermission(chatId: string, granted: boolean): Promise
 	if (!response.ok) throw new Error('Could not send permission response.');
 }
 
+export async function answerChatQuestion(chatId: string, interactionId: string, answers: Record<string, string>): Promise<void> {
+	const response = await apiFetch(`${BITBUDDY_API}/chat/question`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ chat_id: chatId, interaction_id: interactionId, answers })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not send question response.');
+}
+
 export async function streamChat(options: {
 	chatId: string;
 	mode: ChatMode;
@@ -1715,6 +1822,253 @@ export async function getActiveChatNotifications(): Promise<Record<string, numbe
 	if (!response.ok) return {};
 	const data = await response.json();
 	return data.notifications ?? {};
+}
+
+export type CodingRunStep = {
+	id: number;
+	coding_run_id: string;
+	phase: string;
+	kind: string;
+	tool: string;
+	status: string;
+	summary: string;
+	metadata: Record<string, unknown>;
+	created_at: string;
+};
+
+export type CodingRun = {
+	id: string;
+	chat_id: string;
+	run_id: string;
+	project_id: string;
+	user_request: string;
+	status: string;
+	phase: string;
+	created_at: string;
+	updated_at: string;
+	completed_at: string | null;
+	summary: string;
+	metadata: Record<string, unknown>;
+	steps: CodingRunStep[];
+};
+
+export type CodingStageKind = 'plan' | 'build' | 'review' | 'test';
+export type CodingStage = {
+	id: string;
+	kind: CodingStageKind;
+	name: string;
+	provider_key: string;
+	model: string;
+	reasoning_effort: string;
+	instructions: string;
+	approval_gate: boolean;
+	validation_recipes: string[];
+};
+
+export type CodingWorkflow = {
+	id: string;
+	name: string;
+	stages: CodingStage[];
+	is_default: boolean;
+	created_at: string;
+	updated_at: string;
+};
+
+export type CodingStreamEvent = {
+	kind: 'snapshot' | 'stage_started' | 'stage_output' | 'stage_completed' | 'tool_result' | 'validation_result' | 'gate_request' | 'gate_resolved' | 'permission_request' | 'question_request' | 'question_answered' | 'error' | 'done' | 'heartbeat';
+	run?: CodingRun;
+	stage?: CodingStage;
+	stage_id?: string;
+	stage_name?: string;
+	attempt?: number;
+	output?: string;
+	text?: string;
+	status?: string;
+	summary?: string;
+	tool?: string;
+	ok?: boolean;
+	error?: string;
+	reason?: string;
+	arguments?: Record<string, unknown>;
+	request?: QuestionRequest;
+	interaction_id?: string;
+	result?: ValidationRun;
+	action?: string;
+	done?: boolean;
+};
+
+export type CodingEvalTask = {
+	id: string;
+	name: string;
+	prompt: string;
+	project_id: string;
+	validation_recipe: string;
+	tags: string[];
+	created_at: string;
+	updated_at: string;
+};
+
+export type CodingEvalRun = {
+	id: string;
+	task_id: string;
+	coding_run_id: string;
+	provider: string;
+	model: string;
+	status: string;
+	score: number;
+	passed: boolean;
+	metrics: Record<string, unknown>;
+	notes: string;
+	created_at: string;
+};
+
+export async function getCodingRuns(options: { limit?: number; projectId?: string; chatId?: string } = {}): Promise<CodingRun[]> {
+	const params = new URLSearchParams();
+	if (options.limit) params.set('limit', String(options.limit));
+	if (options.projectId) params.set('project_id', options.projectId);
+	if (options.chatId) params.set('chat_id', options.chatId);
+	const query = params.toString() ? `?${params.toString()}` : '';
+	const response = await apiFetch(`${BITBUDDY_API}/coding/runs${query}`);
+	if (!response.ok) return [];
+	const data = await response.json();
+	return data.runs ?? [];
+}
+
+export async function getCodingRun(runId: string): Promise<CodingRun> {
+	const response = await apiFetch(`${BITBUDDY_API}/coding/runs/${encodeURIComponent(runId)}`);
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not load coding run.');
+	return data.run;
+}
+
+export async function getCodingWorkflows(): Promise<CodingWorkflow[]> {
+	const response = await apiFetch(`${BITBUDDY_API}/coding/workflows`);
+	if (!response.ok) throw new Error('Could not load coding workflows.');
+	const data = await response.json();
+	return data.workflows ?? [];
+}
+
+export async function saveCodingWorkflow(workflow: Partial<CodingWorkflow> & { name: string; stages: CodingStage[] }): Promise<CodingWorkflow> {
+	const response = await apiFetch(`${BITBUDDY_API}/coding/workflows`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(workflow)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not save coding workflow.');
+	return data.workflow;
+}
+
+export async function deleteCodingWorkflow(workflowId: string): Promise<boolean> {
+	const response = await apiFetch(`${BITBUDDY_API}/coding/workflows/${encodeURIComponent(workflowId)}`, { method: 'DELETE' });
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not delete coding workflow.');
+	return Boolean(data.deleted);
+}
+
+export async function startCodingWorkflow(options: { project_id: string; workflow_id: string; task: string; attachments?: ChatAttachment[] }): Promise<CodingRun> {
+	const response = await apiFetch(`${BITBUDDY_API}/coding/runs`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(options)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not start coding workflow.');
+	return data.run;
+}
+
+export async function streamCodingWorkflow(runId: string, onEvent: (event: CodingStreamEvent) => void, signal?: AbortSignal): Promise<void> {
+	const response = await apiFetch(`${BITBUDDY_API}/coding/runs/${encodeURIComponent(runId)}/stream`, { signal });
+	if (!response.ok || !response.body) throw new Error('Could not connect to coding workflow.');
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = '';
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		buffer += decoder.decode(value, { stream: true });
+		const frames = buffer.split('\n\n');
+		buffer = frames.pop() ?? '';
+		for (const frame of frames) {
+			for (const line of frame.split('\n')) {
+				if (!line.startsWith('data:')) continue;
+				try { onEvent(JSON.parse(line.slice(5).trim())); } catch { /* ignore malformed event */ }
+			}
+		}
+	}
+}
+
+async function codingRunAction(runId: string, action: string, body: Record<string, unknown> = {}): Promise<void> {
+	const response = await apiFetch(`${BITBUDDY_API}/coding/runs/${encodeURIComponent(runId)}/${action}`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? `Could not ${action} coding workflow.`);
+}
+
+export const answerCodingGate = (runId: string, action: 'approve' | 'revise' | 'stop', feedback = '') => codingRunAction(runId, 'gate', { action, feedback });
+export const answerCodingQuestion = (runId: string, interactionId: string, answers: Record<string, string>) => codingRunAction(runId, 'question', { interaction_id: interactionId, answers });
+export const answerCodingPermission = (runId: string, granted: boolean) => codingRunAction(runId, 'permission', { granted });
+export const cancelCodingWorkflow = (runId: string) => codingRunAction(runId, 'cancel');
+
+export async function getCodingEvalTasks(options: { projectId?: string } = {}): Promise<CodingEvalTask[]> {
+	const params = new URLSearchParams();
+	if (options.projectId) params.set('project_id', options.projectId);
+	const query = params.toString() ? `?${params.toString()}` : '';
+	const response = await apiFetch(`${BITBUDDY_API}/coding/evals/tasks${query}`);
+	if (!response.ok) return [];
+	const data = await response.json();
+	return data.tasks ?? [];
+}
+
+export async function saveCodingEvalTask(task: Partial<CodingEvalTask> & { name: string; prompt: string }): Promise<CodingEvalTask> {
+	const response = await apiFetch(`${BITBUDDY_API}/coding/evals/tasks`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(task)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not save coding eval task.');
+	return data.task;
+}
+
+export async function deleteCodingEvalTask(taskId: string): Promise<boolean> {
+	const response = await apiFetch(`${BITBUDDY_API}/coding/evals/tasks/${encodeURIComponent(taskId)}`, {
+		method: 'DELETE'
+	});
+	if (!response.ok) return false;
+	const data = await response.json().catch(() => ({}));
+	return Boolean(data.deleted);
+}
+
+export async function scoreCodingEvalRun(options: {
+	task_id: string;
+	coding_run_id: string;
+	provider?: string;
+	model?: string;
+	notes?: string;
+}): Promise<CodingEvalRun> {
+	const response = await apiFetch(`${BITBUDDY_API}/coding/evals/score`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(options)
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not score coding eval run.');
+	return data.run;
+}
+
+export async function getCodingEvalRuns(options: { taskId?: string; limit?: number } = {}): Promise<CodingEvalRun[]> {
+	const params = new URLSearchParams();
+	if (options.taskId) params.set('task_id', options.taskId);
+	if (options.limit) params.set('limit', String(options.limit));
+	const query = params.toString() ? `?${params.toString()}` : '';
+	const response = await apiFetch(`${BITBUDDY_API}/coding/evals/runs${query}`);
+	if (!response.ok) return [];
+	const data = await response.json();
+	return data.runs ?? [];
 }
 
 export type SubagentStep = {

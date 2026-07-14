@@ -6,6 +6,7 @@ from .project_overrides import apply_project_memory_overrides, load_project_memo
 from .project_registry import load_project
 from .project_schema import initialize_project_database
 from .project_specs import active_project_specs, spec_to_json
+from .project_validation import list_validation_recipes, recipe_to_json
 
 def project_brief(project_id_or_name: str) -> str:
     """Provides a high-level project briefing. Compact enough for permanent context injection."""
@@ -18,6 +19,7 @@ def project_brief(project_id_or_name: str) -> str:
     decisions = model.get("decisions_preferences") if isinstance(model.get("decisions_preferences"), list) else []
     tasks = model.get("current_task_memory") if isinstance(model.get("current_task_memory"), list) else []
     project_notes = model.get("project_notes") if isinstance(model.get("project_notes"), list) else []
+    validation_recipes = model.get("validation_recipes") if isinstance(model.get("validation_recipes"), list) else []
 
     lines = [f"# {project.name} (Brief)", "", "Project overview from BitBuddy operational memory.", ""]
     if card:
@@ -66,6 +68,16 @@ def project_brief(project_id_or_name: str) -> str:
         lines.append("## Current task memory")
         for task in tasks[:5]:
             lines.append(f"- {task.get('task', '')} [{task.get('status', '')}]: {task.get('notes', '')}")
+        lines.append("")
+
+    if validation_recipes:
+        lines.append("## Validation recipes")
+        for recipe in validation_recipes[:8]:
+            last = f"; last {recipe.get('last_status')}" if recipe.get("last_status") else ""
+            lines.append(
+                f"- {recipe.get('name', '')} [{recipe.get('kind', '')}]: "
+                f"{recipe.get('command', '')} (cwd: {recipe.get('working_directory', '.')}{last})"
+            )
         lines.append("")
 
     if project_notes:
@@ -174,6 +186,14 @@ def project_map(project_id_or_name: str, detail_level: str = "deep", limit: int 
             lines.extend(["## Current task memory"])
             for task, status, notes in tasks:
                 lines.append(f"- {task} [{status}]: {notes}")
+            lines.append("")
+
+        validation_recipes = list_validation_recipes(project.id, include_suggestions=False)
+        if validation_recipes:
+            lines.extend(["## Validation recipes"])
+            for recipe in validation_recipes[:12]:
+                last = f"; last {recipe.last_status}" if recipe.last_status else ""
+                lines.append(f"- {recipe.name} [{recipe.kind}]: {recipe.command} (cwd: {recipe.working_directory}{last})")
             lines.append("")
 
         project_notes = connection.execute(
@@ -320,7 +340,8 @@ def project_model(project_id_or_name: str, limit: int = 80) -> dict[str, object]
             for category, content, source_chat_id, created_at, memory_id, layer, kind, tags in project_notes
         ],
         "project_specs": [spec_to_json(spec, include_body=True) for spec in active_project_specs(project.id, limit=3)],
-        "retrieval_policy": "Load this small model first. Before editing or making exact line-level claims, read the relevant source files listed by read_before_editing_rules and file_index. Project notes are durable user/model-added deltas that may clarify purpose, architecture, decisions, or current tasks. Active project_specs capture intended design; consult them before planning, design, or edits and treat them as authoritative constraints.",
+        "validation_recipes": [recipe_to_json(recipe) for recipe in list_validation_recipes(project.id, include_suggestions=True)],
+        "retrieval_policy": "Load this small model first. Before editing or making exact line-level claims, read the relevant source files listed by read_before_editing_rules and file_index. Project notes are durable user/model-added deltas that may clarify purpose, architecture, decisions, or current tasks. Active project_specs capture intended design; consult them before planning, design, or edits and treat them as authoritative constraints. Validation recipes are the project's preferred commands for proving changes; run the relevant stored recipe after edits when permission allows.",
     }
     apply_project_memory_overrides(model, overrides)
     return model

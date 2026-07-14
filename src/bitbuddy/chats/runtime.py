@@ -22,7 +22,16 @@ from .state import (
     unregister_chat_run,
 )
 from ..continuity import capture_post_chat_episodic_fallback, record_continuity_event
+from ..interactions import parse_question_request, question_answers_tool_result, question_request_to_json
 from ..config import load_config
+from ..coding.runs import (
+    CodingRun,
+    complete_coding_run,
+    record_coding_run_step,
+    should_track_coding_request,
+    start_coding_run,
+    tool_phase,
+)
 from ..autonomy.delivery import mark_intention_surfaced, select_surfaceable_intention, surfaced_intention_text
 from ..lifecycle import lifecycle_quiet_mode
 from ..loop_learning import record_loop_incident
@@ -180,6 +189,24 @@ def return_greeting_context_message(greeting_text: str) -> dict[str, str] | None
                 f"Configured acknowledgment: {greeting}",
                 "Use this only as private context for the next reply.",
                 "If you acknowledge the return, do it once naturally and do not stack it with a separate time-of-day greeting.",
+                "Do not mention this context block.",
+            ]
+        ),
+    }
+
+
+def conversation_timing_context_message(gap_minutes: int | None, gap_label: str) -> dict[str, str] | None:
+    if gap_minutes is None or gap_minutes < 0 or not gap_label:
+        return None
+    return {
+        "role": "system",
+        "content": "\n".join(
+            [
+                "[Conversation Timing Context]",
+                f"It has been {gap_label} since the user's last chat message ({gap_minutes} minutes).",
+                "Keep this as quiet background context, not a required greeting or topic.",
+                "Do not mention the gap for ordinary or short absences. For a substantial gap, you may warmly and lightly acknowledge the return when it genuinely fits the reply.",
+                "A little tenderness is welcome, but never guilt the user, imply you were waiting, or state the exact duration unless it is relevant or they ask.",
                 "Do not mention this context block.",
             ]
         ),
@@ -1051,6 +1078,9 @@ def start_chat_run(run: ActiveChatRun) -> None:
 
         try:
             messages = run.prompt_messages
+            timing_message = conversation_timing_context_message(run.conversation_gap_minutes, run.conversation_gap_label)
+            if timing_message is not None:
+                messages = [*messages, timing_message]
             return_greeting_message = return_greeting_context_message(run.return_greeting_text)
             if return_greeting_message is not None:
                 messages = [*messages, return_greeting_message]
@@ -1071,6 +1101,9 @@ def start_chat_run(run: ActiveChatRun) -> None:
             last_successful_tool_result: ToolResult | None = None
             all_successful_tool_results: list[ToolResult] = []
             successful_tool_results: list[ToolResult] = []
+            coding_run: CodingRun | None = None
+            coding_run_saw_inspect = False
+            coding_run_saw_plan = False
 
             def enqueue_tool_calls(calls: list[ToolCall]) -> int:
                 queued_signatures = {tool_signature(call) for call in pending_tool_calls}
@@ -1093,6 +1126,68 @@ def start_chat_run(run: ActiveChatRun) -> None:
                     added += 1
 
                 return added
+
+            def ensure_coding_run(project_id: str = "") -> CodingRun | None:
+                nonlocal coding_run
+                if coding_run is not None:
+                    return coding_run
+                if not should_track_coding_request(initial_latest_user_text):
+                    return None
+                coding_run = start_coding_run(
+                    chat_id=run.chat_id,
+                    run_id=run.run_id,
+                    project_id=project_id,
+                    user_request=initial_latest_user_text,
+                    metadata={"mode": run.mode, "model": run.model or config.provider.model},
+                )
+                log_activity(
+                    "coding_run.started",
+                    "Started coding work loop",
+                    {"coding_run_id": coding_run.id, "chat_id": run.chat_id, "project_id": project_id},
+                )
+                return coding_run
+
+            def record_coding_tool_result(tool_call: ToolCall, result: ToolResult) -> None:
+                nonlocal coding_run, coding_run_saw_inspect, coding_run_saw_plan
+                phase = tool_phase(tool_call.tool, tool_call.arguments)
+                if phase == "requested":
+                    return
+                project_id = ""
+                if isinstance(result.arguments_summary, dict):
+                    raw_project = result.arguments_summary.get("project_id")
+                    project_id = str(raw_project or "").strip()
+                if not project_id:
+                    raw_project = tool_call.arguments.get("project_id")
+                    project_id = str(raw_project or "").strip() if isinstance(raw_project, str) else ""
+                active = ensure_coding_run(project_id)
+                if active is None:
+                    return
+                if phase == "inspect":
+                    coding_run_saw_inspect = True
+                if phase == "edit" and coding_run_saw_inspect and not coding_run_saw_plan:
+                    coding_run = record_coding_run_step(
+                        active.id,
+                        phase="plan",
+                        kind="runtime",
+                        status="completed",
+                        summary="Moved from inspection into an edit step.",
+                        project_id=project_id,
+                        metadata={"trigger_tool": tool_call.tool},
+                    )
+                    coding_run_saw_plan = True
+                coding_run = record_coding_run_step(
+                    active.id,
+                    phase=phase,
+                    kind="tool",
+                    tool=result.tool,
+                    status="completed" if result.ok else "error",
+                    summary=result.summary,
+                    project_id=project_id,
+                    metadata={
+                        "arguments_summary": result.arguments_summary,
+                        "error": result.error if not result.ok else "",
+                    },
+                )
 
             def tool_protocol_error_event(summary: str, error: str) -> None:
                 tool_event = create_runtime_tool_event(
@@ -1648,7 +1743,9 @@ def start_chat_run(run: ActiveChatRun) -> None:
                 try:
                     throw_if_cancelled()
                     tool_announcement = ""
+                    current_tool_call: ToolCall | None = None
                     tool_call = pending_tool_calls.pop(0) if pending_tool_calls else parse_tool_call(response_text)
+                    current_tool_call = tool_call
                     missing_arguments = missing_required_arguments(tool_call)
                     if suppress_incomplete_tool_after_success(tool_call, missing_arguments):
                         if malformed_tool_rounds >= 2:
@@ -1731,8 +1828,38 @@ def start_chat_run(run: ActiveChatRun) -> None:
 
                     throw_if_cancelled()
 
-                    mode_error = executor.check_mode_restrictions(tool_call)
-                    if mode_error:
+                    if tool_call.tool == "request_user_input":
+                        request = parse_question_request(tool_call.arguments)
+                        with run.lock:
+                            run.question_request = request
+                            run.question_answers = {}
+                            run.question_response.clear()
+                        run.broadcast({"kind": "question_request", "request": question_request_to_json(request)})
+                        log_activity(
+                            "question.requested",
+                            "Paused chat for user input",
+                            {"chat_id": run.chat_id, "interaction_id": request.id, "question_count": len(request.questions)},
+                        )
+                        while not run.question_response.is_set():
+                            if run.cancel_requested.is_set():
+                                raise ChatCancelled()
+                            run.question_response.wait(timeout=0.25)
+                        result = ToolResult(
+                            tool="request_user_input",
+                            ok=True,
+                            content=question_answers_tool_result(request, run.question_answers),
+                            summary="User answered the requested questions.",
+                            arguments_summary={"interaction_id": request.id, "question_count": len(request.questions)},
+                        )
+                        with run.lock:
+                            run.question_request = None
+                            run.question_answers = {}
+                        run.broadcast({"kind": "question_answered", "interaction_id": request.id})
+                    else:
+                        result = None
+
+                    mode_error = executor.check_mode_restrictions(tool_call) if result is None else ""
+                    if mode_error and result is None:
                         result = ToolResult(
                             tool=tool_call.tool,
                             ok=False,
@@ -1742,7 +1869,7 @@ def start_chat_run(run: ActiveChatRun) -> None:
                             error=mode_error,
                         )
                         throw_if_cancelled()
-                    else:
+                    elif result is None:
                         result = None
 
                     # Permission check. Mode boundaries are enforced first so Plan mode never asks
@@ -1837,6 +1964,15 @@ def start_chat_run(run: ActiveChatRun) -> None:
 					},
 				)
                 broadcast_tool_event("tool_result" if result.ok else "tool_error", updated_event)
+                if current_tool_call is not None:
+                    try:
+                        record_coding_tool_result(current_tool_call, result)
+                    except Exception as coding_error:
+                        log_activity(
+                            "coding_run.record_failed",
+                            "Failed to record coding-run tool step",
+                            {"tool": result.tool, "error": str(coding_error)},
+                        )
 
                 log_activity(
                     "tool.succeeded" if result.ok else "tool.failed",
@@ -1949,12 +2085,39 @@ def start_chat_run(run: ActiveChatRun) -> None:
             if run.assistant_text.strip():
                 schedule_memory_consolidation(run.chat_id, model=run.model)
 
+            if coding_run is not None:
+                try:
+                    record_coding_run_step(
+                        coding_run.id,
+                        phase="summarize",
+                        kind="runtime",
+                        status="completed",
+                        summary=(run.assistant_text.strip()[:1000] or "Final response prepared."),
+                    )
+                    complete_coding_run(coding_run.id, summary=run.assistant_text.strip()[:2000])
+                    log_activity(
+                        "coding_run.completed",
+                        "Completed coding work loop",
+                        {"coding_run_id": coding_run.id, "chat_id": run.chat_id},
+                    )
+                except Exception as coding_error:
+                    log_activity(
+                        "coding_run.complete_failed",
+                        "Failed to complete coding work loop",
+                        {"coding_run_id": coding_run.id, "error": str(coding_error)},
+                    )
+
             with run.lock:
                 run.status = "complete"
 
             run.broadcast({"done": True})
         except ChatCancelled:
             persist(force=True)
+            if coding_run is not None:
+                try:
+                    complete_coding_run(coding_run.id, status="failed", summary="Coding run cancelled.")
+                except Exception:
+                    pass
 
             with run.lock:
                 run.status = "cancelled"
@@ -1962,6 +2125,11 @@ def start_chat_run(run: ActiveChatRun) -> None:
             run.broadcast({"kind": "cancelled", "text": "Stopped.", "done": True})
         except Exception as error:
             persist(force=True)
+            if coding_run is not None:
+                try:
+                    complete_coding_run(coding_run.id, status="failed", summary=str(error))
+                except Exception:
+                    pass
 
             with run.lock:
                 run.status = "failed"

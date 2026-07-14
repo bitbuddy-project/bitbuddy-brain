@@ -9,10 +9,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
-os.environ.setdefault("HOME", tempfile.mkdtemp(prefix="bitbuddy-continuity-test-"))
+os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-continuity-test-")
 
 from bitbuddy.chats.repository import create_chat, recent_continuity_context, replace_chat_messages, update_tool_event, create_tool_event  # noqa: E402
-from bitbuddy.prompt_builder import build_chat_messages  # noqa: E402
+from bitbuddy.prompt_builder import build_chat_messages, conversation_messages_for_provider  # noqa: E402
 
 
 class ConversationContinuityTest(unittest.TestCase):
@@ -74,6 +74,45 @@ class ConversationContinuityTest(unittest.TestCase):
 
         self.assertIn("tool get_project_brief completed", context)
         self.assertIn("Loaded project brief for anchorbox-fa44bda3", context)
+
+    def test_provider_conversation_compacts_older_long_history(self) -> None:
+        messages = []
+        for index in range(60):
+            messages.append({"role": "user", "content": f"old request {index} " + ("details " * 120)})
+            messages.append({"role": "assistant", "content": f"old answer {index} " + ("result " * 120)})
+        messages.append({"role": "user", "content": "recent exact request should stay raw"})
+
+        provider_messages = conversation_messages_for_provider(messages)
+
+        self.assertLess(len(provider_messages), len(messages))
+        self.assertEqual(provider_messages[0]["role"], "system")
+        self.assertIn("[Compacted Chat History]", provider_messages[0]["content"])
+        self.assertIn("old request 0", provider_messages[0]["content"])
+        self.assertEqual(provider_messages[-1], {"role": "user", "content": "recent exact request should stay raw"})
+
+    def test_provider_conversation_does_not_compact_short_history(self) -> None:
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        self.assertEqual(conversation_messages_for_provider(messages), messages)
+
+    def test_provider_conversation_uses_context_window_before_static_thresholds(self) -> None:
+        messages = []
+        for index in range(20):
+            messages.append({"role": "user", "content": f"request {index} " + ("details " * 20)})
+            messages.append({"role": "assistant", "content": f"answer {index} " + ("result " * 20)})
+        messages.append({"role": "user", "content": "latest request"})
+
+        large_window = conversation_messages_for_provider(messages, context_window_tokens=10000)
+        small_window = conversation_messages_for_provider(messages, context_window_tokens=1000)
+
+        self.assertEqual(large_window, messages)
+        self.assertLess(len(small_window), len(messages))
+        self.assertEqual(small_window[0]["role"], "system")
+        self.assertIn("[Compacted Chat History]", small_window[0]["content"])
+        self.assertEqual(small_window[-1], {"role": "user", "content": "latest request"})
 
 
 if __name__ == "__main__":

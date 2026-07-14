@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import re
 from typing import Any
 
 from ...calendar.secrets import get_credentials, put_credentials
@@ -290,7 +291,7 @@ def gmail_access_token(config: EmailConfig) -> str:
 
 def gmail_message_to_email(data: dict[str, Any], *, mailbox: str, include_body: bool) -> EmailMessage:
     headers = gmail_headers(data)
-    body = gmail_body(data.get("payload") if isinstance(data, dict) else {}) if include_body else ""
+    body, body_html = gmail_bodies(data.get("payload") if isinstance(data, dict) else {}) if include_body else ("", "")
     snippet = str(data.get("snippet") or "")
     return EmailMessage(
         id=str(data.get("id") or ""),
@@ -302,6 +303,7 @@ def gmail_message_to_email(data: dict[str, Any], *, mailbox: str, include_body: 
         snippet=snippet or body[:260],
         flags=[str(label) for label in data.get("labelIds", []) if isinstance(label, str)],
         body=body,
+        body_html=body_html,
     )
 
 
@@ -317,25 +319,35 @@ def gmail_headers(data: dict[str, Any]) -> dict[str, str]:
 
 
 def gmail_body(payload: Any) -> str:
+    return gmail_bodies(payload)[0]
+
+
+def gmail_bodies(payload: Any) -> tuple[str, str]:
+    """Return a readable fallback and the original HTML alternative, when present."""
     if not isinstance(payload, dict):
-        return ""
-    mime_type = str(payload.get("mimeType") or "")
-    body = payload.get("body") if isinstance(payload.get("body"), dict) else {}
-    data = body.get("data") if isinstance(body, dict) else None
-    if data and mime_type in {"text/plain", "text/html"}:
-        text = decode_gmail_data(str(data))
-        return strip_html(text) if mime_type == "text/html" else text.strip()
-    parts = payload.get("parts")
-    if isinstance(parts, list):
-        html_parts: list[str] = []
-        for part in parts:
-            text = gmail_body(part)
-            if text and isinstance(part, dict) and str(part.get("mimeType") or "") == "text/plain":
-                return text
-            if text:
+        return "", ""
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+
+    def collect(part: Any) -> None:
+        if not isinstance(part, dict):
+            return
+        mime_type = str(part.get("mimeType") or "").casefold()
+        body = part.get("body") if isinstance(part.get("body"), dict) else {}
+        data = body.get("data") if isinstance(body, dict) else None
+        if data and mime_type in {"text/plain", "text/html"}:
+            text = decode_gmail_data(str(data))
+            if mime_type == "text/plain":
+                plain_parts.append(text.strip())
+            else:
                 html_parts.append(text)
-        return "\n\n".join(html_parts).strip()
-    return ""
+        for child in part.get("parts") or []:
+            collect(child)
+
+    collect(payload)
+    html_body = "\n\n".join(part for part in html_parts if part.strip()).strip()
+    plain_body = "\n\n".join(part for part in plain_parts if part).strip()
+    return plain_body or strip_html(html_body), html_body
 
 
 def decode_gmail_data(value: str) -> str:
@@ -344,6 +356,6 @@ def decode_gmail_data(value: str) -> str:
 
 
 def strip_html(value: str) -> str:
-    import re
-
-    return " ".join(re.sub(r"<[^>]+>", " ", value).split())
+    without_hidden_content = re.sub(r"<(?:style|script)[^>]*>.*?</(?:style|script)\s*>", " ", value or "", flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", without_hidden_content)
+    return " ".join(text.split())

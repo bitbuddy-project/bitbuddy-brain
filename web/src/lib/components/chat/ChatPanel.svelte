@@ -21,22 +21,39 @@
 	import ChatHeader from './ChatHeader.svelte';
 	import MessageList from './MessageList.svelte';
 	import SteeringCard from './SteeringCard.svelte';
-	import { PROVIDER_SUPPORTS_EFFORT } from '$lib/providerModels';
+	import { anthropicModelRequiresThinking, clampReasoningEffortForProvider, providerSupportsReasoningEffort, reasoningEffortOptionsForProvider, reasoningEffortOptionsFromValues } from '$lib/providerModels';
 
-	let reasoningEffortVisible = $derived(PROVIDER_SUPPORTS_EFFORT.has(chatSession.contextUsage?.provider ?? ''));
+	let activeProvider = $derived(chatSession.contextUsage?.provider ?? '');
+	let activeModel = $derived(chatSession.contextUsage?.model ?? '');
+	let activeCapabilities = $derived(chatSession.contextUsage?.capabilities ?? null);
+	let reasoningEffortVisible = $derived(
+		activeCapabilities
+			? activeCapabilities.supports_reasoning_effort
+			: providerSupportsReasoningEffort(activeProvider, activeModel)
+	);
+	let reasoningEffortOptions = $derived(
+		activeCapabilities?.reasoning_efforts?.length
+			? reasoningEffortOptionsFromValues(activeCapabilities.reasoning_efforts, activeProvider)
+			: reasoningEffortOptionsForProvider(activeProvider, activeModel)
+	);
+	let requiresThinking = $derived(
+		activeCapabilities?.requires_thinking ?? (activeProvider === 'anthropic' && anthropicModelRequiresThinking(activeModel))
+	);
+
+	$effect(() => {
+		if (requiresThinking && !chatSession.thinkEnabled) setThinkEnabled(true);
+	});
 
 	// Combined thinking control for level-providing providers: "off" means thinking is
 	// disabled; a level means thinking on at that effort.
 	let thinkingLevel = $derived(
-		!chatSession.thinkEnabled
+		!requiresThinking && !chatSession.thinkEnabled
 			? 'off'
-			: ['low', 'medium', 'high'].includes(chatSession.reasoningEffort)
-				? chatSession.reasoningEffort
-				: 'medium'
+			: clampReasoningEffortForProvider(activeProvider, chatSession.reasoningEffort, activeModel)
 	);
 
 	function setThinkingLevel(level: string) {
-		if (level === 'off') {
+		if (level === 'off' && !requiresThinking) {
 			setThinkEnabled(false);
 			return;
 		}
@@ -76,9 +93,14 @@
 			<ChatComposer
 				mode={chatSession.mode}
 				buddyName={chatSession.buddyName}
+				bind:draft={chatSession.draft}
+				bind:attachments={chatSession.attachments}
+				messageHistory={chatSession.messages.filter((message) => message.role === 'user').map((message) => message.content)}
+				historyKey={chatSession.currentChatId}
 				contextUsage={chatSession.contextUsage}
 				thinkEnabled={chatSession.thinkEnabled}
 				thinkingLevel={thinkingLevel}
+				reasoningEffortOptions={reasoningEffortOptions}
 				reasoningEffortVisible={reasoningEffortVisible}
 				disabled={false}
 				isStreaming={chatSession.isStreaming}

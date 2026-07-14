@@ -1,5 +1,5 @@
 import type { ChatAttachment, ChatMessage, ChatMode, ChatSummary, ProviderContext, StreamChunk } from '$lib/api/bitbuddy';
-import { ApiError, cancelChat, deleteChat, deleteChatMessageTurn, getActiveChatNotifications, getChat, getChatContextUsage, getConfig, getProviderContext, getRecentChats, grantPermission, sendActiveChat, streamChat, trimChatFromMessage, updateModelRuntimeConfig } from '$lib/api/bitbuddy';
+import { ApiError, answerChatQuestion, cancelChat, deleteChat, deleteChatMessageTurn, getActiveChatNotifications, getChat, getChatContextUsage, getConfig, getProviderContext, getRecentChats, grantPermission, sendActiveChat, streamChat, trimChatFromMessage, updateModelRuntimeConfig } from '$lib/api/bitbuddy';
 
 let contextTimer: number | undefined;
 let externalChatSyncTimer: number | undefined;
@@ -58,7 +58,7 @@ export const chatSession = $state({
 	pendingSteer: null as PendingSteerMessage | null,
 	backgroundNotifications: {} as Record<string, number>,
 	thinkEnabled: true,
-	// Reasoning effort for the active provider (off|low|medium|high). Mirrors the
+	// Reasoning effort for the active provider. Mirrors the
 	// active provider's persisted reasoning_effort; the chat-bar dropdown edits it.
 	reasoningEffort: 'medium',
 	// Thinking setting captured at the start of the active stream. Visibility of the
@@ -332,6 +332,8 @@ async function attemptReconnect() {
 				if (chunk.kind === 'response') appendAssistantText(chunk.text ?? '');
 				if (chunk.kind === 'tool_call' || chunk.kind === 'tool_result' || chunk.kind === 'tool_error') handleToolChunk(chunk);
 				if (chunk.kind === 'permission_request') handlePermissionChunk(chunk);
+				if (chunk.kind === 'question_request') handleQuestionChunk(chunk);
+				if (chunk.kind === 'question_answered') markQuestionAnswered(chunk.interaction_id ?? '');
 				if (chunk.kind === 'chat' && chunk.chat_id) {
 					syncPendingSteerChatId(stream, chunk.chat_id);
 					stream.chatId = chunk.chat_id;
@@ -498,6 +500,8 @@ export async function sendMessage(content: string, attachments: ChatAttachment[]
 				if (chunk.kind === 'response') appendAssistantText(chunk.text ?? '');
 				if (chunk.kind === 'tool_call' || chunk.kind === 'tool_result' || chunk.kind === 'tool_error') handleToolChunk(chunk);
 				if (chunk.kind === 'permission_request') handlePermissionChunk(chunk);
+				if (chunk.kind === 'question_request') handleQuestionChunk(chunk);
+				if (chunk.kind === 'question_answered') markQuestionAnswered(chunk.interaction_id ?? '');
 				if (chunk.kind === 'cancelled') clearStreamState();
 				if (chunk.done) {
 					completed = true;
@@ -618,6 +622,11 @@ export async function stopActiveResponse() {
 			}
 		}
 	}
+	chatSession.messages = chatSession.messages.map((message) =>
+		['question', 'permission'].includes(message.kind ?? '') && message.status === 'running'
+			? { ...message, status: 'error' }
+			: message
+	);
 
 	if (pending && chatSession.pendingSteer === pending) {
 		chatSession.pendingSteer = null;
@@ -826,6 +835,34 @@ function handlePermissionChunk(chunk: StreamChunk) {
 	saveStreamState();
 }
 
+function handleQuestionChunk(chunk: StreamChunk) {
+	if (!chunk.request) return;
+	upsertTimelineItem(normalizeTimelineItem({
+		kind: 'question',
+		role: 'system',
+		content: chunk.request.questions.map((item) => item.question).join('\n'),
+		status: 'running',
+		mode: chatSession.turnMode,
+		metadata: { question_request: chunk.request }
+	}));
+	saveStreamState();
+}
+
+function markQuestionAnswered(interactionId: string) {
+	chatSession.messages = chatSession.messages.map((message) =>
+		message.kind === 'question' && message.status === 'running' && (!interactionId || message.metadata?.question_request?.id === interactionId)
+			? { ...message, status: 'success' }
+			: message
+	);
+	saveStreamState();
+}
+
+export async function respondToQuestion(interactionId: string, answers: Record<string, string>) {
+	if (!chatSession.currentChatId) return;
+	await answerChatQuestion(chatSession.currentChatId, interactionId, answers);
+	markQuestionAnswered(interactionId);
+}
+
 export async function respondToPermission(granted: boolean) {
 	if (!chatSession.currentChatId) return;
 
@@ -847,6 +884,14 @@ export async function respondToPermission(granted: boolean) {
 
 function upsertTimelineItem(event: ChatMessage) {
 	if (!event.id) {
+		if (event.kind === 'question' && event.status === 'running') {
+			const requestId = event.metadata?.question_request?.id;
+			const existing = chatSession.messages.findIndex((message) => message.kind === 'question' && message.status === 'running' && message.metadata?.question_request?.id === requestId);
+			if (existing >= 0) {
+				chatSession.messages[existing] = event;
+				return;
+			}
+		}
 		if (event.kind === 'permission' && event.status === 'running') {
 			let updated = false;
 			chatSession.messages = chatSession.messages.map((message) => {

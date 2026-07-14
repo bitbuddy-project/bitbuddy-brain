@@ -66,7 +66,7 @@ def _process_due_tasks() -> None:
 
 def _fire(task: store.Task, tz: str) -> None:
     # Reminders surface as a toast notification only — they deliberately do NOT
-    # post into chat. Clicking the toast opens the Tasks page.
+    # post into chat. Clicking the toast opens the main chat.
     when = _local_label(task.remind_at, tz) if task.remind_at else ""
     title = f"Reminder: {task.title}"
     body = task.notes or (f"Reminder you set{f' for {when}' if when else ''}: {task.title}.")
@@ -77,7 +77,7 @@ def _fire(task: store.Task, tz: str) -> None:
         title=title,
         body=body,
         source_kind="task",
-        action_url="/tasks",
+        action_url="/",
         metadata={"task_id": task.id, "task_remind_at": task.remind_at, "task_priority": task.priority},
     )
 

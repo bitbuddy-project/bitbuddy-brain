@@ -22,7 +22,7 @@ from .loop_learning import loop_lessons_prompt
 from .personality import build_personality_prompt, load_selected_personality
 from .memory.project import load_project, project_list_context
 from .memory.store import layered_memory_context
-from .providers import ProviderClient
+from .providers import ProviderClient, estimate_cloud_tokens
 from .self_notes import select_self_notes_for_context
 from .self_model import self_context_prompt
 from .skills import skill_catalog_prompt
@@ -70,6 +70,13 @@ MAX_RAW_TOOL_HISTORY_EVENTS = 3
 PREVIOUS_TOOL_RESULT_CONTENT_CHARS = 24000
 PREVIOUS_TOOL_SUMMARY_CHARS = 4000
 MAX_CACHED_TOOL_RESULTS_PER_CHAT = 6
+CHAT_COMPACTION_TRIGGER_MESSAGES = 48
+CHAT_COMPACTION_TRIGGER_CHARS = 80000
+CHAT_COMPACTION_RECENT_MESSAGES = 28
+CHAT_COMPACTION_MIN_RECENT_MESSAGES = 8
+CHAT_COMPACTION_MAX_CHARS = 12000
+CHAT_COMPACTION_ENTRY_CHARS = 700
+CHAT_COMPACTION_CONTEXT_TARGET_RATIO = 0.82
 
 _RECENT_TOOL_RESULT_CONTEXT_LOCK = threading.Lock()
 _RECENT_TOOL_RESULT_CONTEXT_BY_CHAT_ID: dict[str, list[dict[str, Any]]] = {}
@@ -156,7 +163,7 @@ def chat_context_usage(body: dict[str, Any]) -> dict[str, Any]:
 
     client = ProviderClient(load_config().provider)
     context = client.context_window(model=model)
-    base_prompt_messages = build_chat_messages(messages, mode, chat_id=chat_id)
+    base_prompt_messages = build_chat_messages(messages, mode, chat_id=chat_id, model=model)
     token_count = client.count_tokens(base_prompt_messages, model=model)
 
     base_usage = {
@@ -164,6 +171,7 @@ def chat_context_usage(body: dict[str, Any]) -> dict[str, Any]:
         "model": context.get("model"),
         "used_tokens": token_count.get("used_tokens"),
         "context_window_tokens": context.get("context_window_tokens"),
+        "capabilities": context.get("capabilities"),
         "usage_source": token_count.get("source"),
         "window_source": context.get("source"),
         "message_count": len(base_prompt_messages),
@@ -193,6 +201,7 @@ def chat_context_usage(body: dict[str, Any]) -> dict[str, Any]:
         ),
         "usage_source": selected_usage.get("usage_source"),
         "window_source": selected_usage.get("window_source", base_usage.get("window_source")),
+        "capabilities": selected_usage.get("capabilities", base_usage.get("capabilities")),
         "measurement": selected_usage.get("measurement", "base_estimate"),
         "label": selected_usage.get("label", "base_prompt"),
         "message_count": selected_usage.get("message_count", base_usage.get("message_count")),
@@ -201,7 +210,12 @@ def chat_context_usage(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_chat_messages(messages: list[dict[str, Any]], mode: str, chat_id: str = "") -> list[dict[str, Any]]:
+def build_chat_messages(
+    messages: list[dict[str, Any]],
+    mode: str,
+    chat_id: str = "",
+    model: str | None = None,
+) -> list[dict[str, Any]]:
     config = load_config()
     personality = load_selected_personality(config.personality)
     mode = normalize_mode(mode)
@@ -292,7 +306,12 @@ def build_chat_messages(messages: list[dict[str, Any]], mode: str, chat_id: str 
         result.append({"role": "system", "content": self_notes})
 
     result.extend(cached_tool_context_messages(chat_id, messages))
-    result.extend(conversation_messages_for_provider(messages))
+    result.extend(
+        conversation_messages_for_provider(
+            messages,
+            context_window_tokens=compaction_context_window_tokens(config, model),
+        )
+    )
 
     return result
 
@@ -581,7 +600,24 @@ def tool_context_entry_message(entry: dict[str, Any], source: str = "history") -
     return {"role": "user", "content": "\n".join(lines)}
 
 
-def conversation_messages_for_provider(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def compaction_context_window_tokens(config: Any, model: str | None = None) -> int | None:
+    provider = getattr(config, "provider", None)
+    provider_type = str(getattr(provider, "type", "") or "")
+    if provider_type not in {"openai", "codex", "anthropic", "z.ai", "z.ai-coding"}:
+        return None
+    try:
+        context = ProviderClient(provider).context_window(model=model)
+    except Exception:
+        return None
+    tokens = context.get("context_window_tokens")
+    return tokens if isinstance(tokens, int) and tokens > 0 else None
+
+
+def conversation_messages_for_provider(
+    messages: list[dict[str, Any]],
+    *,
+    context_window_tokens: int | None = None,
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     raw_tool_history_indexes = recent_raw_tool_history_indexes(messages)
 
@@ -610,7 +646,120 @@ def conversation_messages_for_provider(messages: list[dict[str, Any]]) -> list[d
 
         result.append(provider_message_with_attachments(message, role, content))
 
-    return result
+    return compact_provider_conversation(result, context_window_tokens=context_window_tokens)
+
+
+def compact_provider_conversation(
+    messages: list[dict[str, Any]],
+    *,
+    context_window_tokens: int | None = None,
+) -> list[dict[str, Any]]:
+    """Compact older chat turns for the model prompt while preserving stored history.
+
+    This is prompt-time compaction: the database and UI still keep the full
+    timeline, but old provider messages become a bounded private digest once the
+    prompt would otherwise carry a long transcript.
+    """
+    token_target = compaction_token_target(context_window_tokens)
+    if token_target is not None:
+        if provider_messages_token_estimate(messages) <= token_target:
+            return messages
+    elif len(messages) <= CHAT_COMPACTION_TRIGGER_MESSAGES and provider_messages_char_count(messages) <= CHAT_COMPACTION_TRIGGER_CHARS:
+        return messages
+
+    if len(messages) <= 1:
+        return messages
+
+    recent_count = min(CHAT_COMPACTION_RECENT_MESSAGES, max(1, len(messages) - 1))
+    min_recent = min(CHAT_COMPACTION_MIN_RECENT_MESSAGES, recent_count)
+
+    while recent_count >= min_recent:
+        older = messages[:-recent_count]
+        recent = messages[-recent_count:]
+        if not older:
+            return messages
+        candidate = [compacted_chat_history_message(older), *recent]
+        if token_target is None or provider_messages_token_estimate(candidate) <= token_target:
+            return candidate
+        recent_count -= 1
+
+    older = messages[:-min_recent]
+    recent = messages[-min_recent:]
+    return [compacted_chat_history_message(older), *recent]
+
+
+def compaction_token_target(context_window_tokens: int | None) -> int | None:
+    if not isinstance(context_window_tokens, int) or context_window_tokens <= 0:
+        return None
+    return max(1, int(context_window_tokens * CHAT_COMPACTION_CONTEXT_TARGET_RATIO))
+
+
+def provider_messages_token_estimate(messages: list[dict[str, Any]]) -> int:
+    return estimate_cloud_tokens(messages)
+
+
+def provider_messages_char_count(messages: list[dict[str, Any]]) -> int:
+    total = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            total += len(json.dumps(content, ensure_ascii=False))
+    return total
+
+
+def compacted_chat_history_message(messages: list[dict[str, Any]]) -> dict[str, str]:
+    lines = [
+        "[Compacted Chat History]",
+        "Older turns from this same chat were compacted to keep the model prompt inside the context window. Use this as private continuity; the most recent turns below remain raw and authoritative.",
+        "",
+    ]
+    omitted = 0
+    current_chars = sum(len(line) + 1 for line in lines)
+    for index, message in enumerate(messages, start=1):
+        entry = compacted_chat_entry(index, message)
+        if not entry:
+            continue
+        if current_chars + len(entry) + 1 > CHAT_COMPACTION_MAX_CHARS:
+            omitted += 1
+            continue
+        lines.append(entry)
+        current_chars += len(entry) + 1
+    if omitted:
+        lines.append(f"- ... {omitted} older compacted turn(s) omitted from this digest.")
+    lines.append("")
+    lines.append(f"Recent raw window starts after {len(messages)} compacted turn(s).")
+    return {"role": "system", "content": "\n".join(lines)}
+
+
+def compacted_chat_entry(index: int, message: dict[str, Any]) -> str:
+    role = str(message.get("role") or "message")
+    content = message.get("content")
+    if not isinstance(content, str):
+        content = json.dumps(content, ensure_ascii=False)
+    clean = " ".join(str(content or "").split())
+    if not clean:
+        return ""
+
+    label = role
+    if clean.startswith("[Previous Tool Event]") or clean.startswith("[Previous Tool Result Working Context]"):
+        label = "tool-context"
+        clean = compact_tool_context_for_history(clean)
+    return f"- {index}. {label}: {clipped_text(clean, CHAT_COMPACTION_ENTRY_CHARS)}"
+
+
+def compact_tool_context_for_history(content: str) -> str:
+    useful_lines: list[str] = []
+    for line in content.splitlines():
+        clean = line.strip()
+        if not clean:
+            continue
+        if clean.startswith(("[", "This message is private", "source:", "result_content_private_working_context:")):
+            continue
+        if clean.startswith(("tool:", "status:", "project_id:", "file_path:", "command:", "summary:")):
+            useful_lines.append(clean)
+    return " ".join(useful_lines) if useful_lines else " ".join(content.split())
 
 
 def provider_message_with_attachments(message: dict[str, Any], role: str, content: str) -> dict[str, Any]:

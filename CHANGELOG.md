@@ -2,24 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
-## [v0.3.0] - 2026-06-28
+## [v0.4.0] - 2026-07-14
 
 ### Added
-- Add `bitbuddy version`, `bitbuddy --version`, and `bitbuddy -V` output backed by the package version.
-- Add a user-facing tasks & reminders system. Ask BitBuddy to remember a task ("remind me to call the dentist at 4pm", "add a task to review the PR Friday") and it stores it; a background scheduler pops a toast notification when a reminder comes due (clicking it opens the Tasks page). Times you give in plain language are interpreted in your configured timezone. Tasks are managed via new `create_task` / `list_tasks` / `update_task` / `complete_task` / `delete_task` tools, a `/tasks` HTTP API, and a Tasks page in the dashboard.
-- Add Project Specs: project-scoped Markdown specs with draft, active, and archived states; the Projects dashboard can create, edit, and archive specs, and active specs are injected into project context.
-- Add a guided Linux desktop-control setup flow with `bitbuddy mcp setup-computer-use-linux`, the `enable_desktop_control` tool, and an HTTP enable endpoint that reports capabilities and remediation steps.
+- Add a full-width Coding workspace with reusable Plan/Build/Review/Test flows, independent provider and model selection per stage, approval gates, project validation, background runs, and one bounded repair pass.
+- Add a shared structured-question interaction for Chat and Coding so OpenAI, Anthropic, and GLM models can pause a live run, offer focused choices plus a custom response, and resume with the user's answer.
+- Add GPT-5.6 Sol, Terra, and Luna support to the OpenAI API and Codex model catalogs, including GPT-5.6 `max` reasoning effort and 1.05M-token OpenAI context metadata.
+- Add `bitbuddy restart` to restart an active user systemd service or fall back to restarting/starting the detached backend process; setup now uses the same restart path after configuration changes.
+- Add coding work-loop tracking with inspect, plan, edit, verify, and summarize phases, plus a `/coding/runs` API for recent coding-run telemetry.
+- Add coding eval tasks and scoring APIs for comparing recorded coding runs against expected inspect/edit/verify/validation behavior.
+- Add project validation recipes for canonical test/lint/typecheck/build/smoke commands. Recipes are stored in project memory, exposed through tools and HTTP APIs, suggested from project files, and runnable through the chat permission flow.
+- Add Z.ai API and Z.ai Coding Plan providers with GLM model catalogs, Chat Completions streaming, native tool-call support, reasoning effort, API-key storage, and context-window metadata.
+- Add provider capability profiles so the chat UI can show reasoning levels, native-tool support, vision support, streaming protocol, and context metadata from backend truth instead of hardcoded UI guesses.
+- Add Claude Fable 5 preview support with required adaptive thinking and a Jul 19 availability notice that is superseded when the connected Anthropic account still lists the model.
+- Render HTML email alternatives in a sandboxed preview instead of flattening newsletter markup into raw CSS text.
+- Give BitBuddy private context for the time since the user's last chat message, with discretion to make a warm acknowledgment only after a substantial absence.
 
 ### Changed
-- `bitbuddy serve` now hosts the built web UI on its own port (same origin as the API), making it the single local hub all first-party clients connect to. The static SPA is auto-built (and rebuilt when stale) on startup, degrading to API-only with a warning if no build tooling is present.
-- `bitbuddy dashboard` now just ensures the backend is running (auto-starting `bitbuddy serve` if needed) and opens the browser at it, instead of spawning a separate Vite dev server. `bitbuddy web` remains for development with hot-reload.
-- `bitbuddy update` now rebuilds the static web UI (via pnpm/npm) so the freshly pulled version is what `serve` hosts.
+- Default new OpenAI API and Codex providers to `gpt-5.6-sol` (was `gpt-5.5`).
+- Compact older provider conversation turns against the active model's context window while keeping complete stored chat history and recent turns unchanged.
+- Make `bitbuddy update` automatically stash and restore local changes by default, smoke-check the updated CLI, and run Doctor after reinstalling and rebuilding.
+- Remove the standalone Tasks dashboard page while retaining task/reminder tools, the `/tasks` API, local storage, and desktop notifications; reminder notifications now return to Chat.
 - Polish the chat UI with bounded thinking-stream scrolling, a more compact steering card, and clearer permission request wording.
+- Clean up Settings provider setup so configured providers read as a simple list with clearer active/editing/unsaved states and less nested border noise.
 
 ### Fixed
-- Fix the web UI reporting "backend not running" when opened directly at `http://127.0.0.1:8787` instead of via `bitbuddy dashboard`: the backend now hands the page its API token when serving `index.html` to a loopback client, so a direct local visit authenticates without the `?bitbuddy_token` query param. LAN clients (`--allow-lan`) are unaffected and still use the tokenized dashboard URL.
-- Reduce repetitive autonomous questions by rejecting project implementation questions BitBuddy should answer through self-research and suppressing near-duplicate question topics.
-- Fix Gmail (and Codex) OAuth sign-in returning a 404 after the same-port web UI move: the browser's redirect to `/email/gmail/callback` is a navigation, so the SPA fallback was serving `index.html` (which has no such client route, hence the 404) before the callback handler ran. Public API paths are now exempt from the SPA fallback so OAuth callbacks reach their handlers.
+- Fix HTML-only Gmail and IMAP messages showing stylesheet text instead of readable content.
+- Keep provider-specific reasoning choices and required thinking behavior correct for GPT-5.6, Claude Fable 5, Codex, and GLM models.
+
+## [v0.3.0] - 2026-06-28
+
+### Release notes
+- Add bitbuddy version, `bitbuddy --version`, and `bitbuddy -V` output backed by the package version.
+- Add Tasks & Reminders with chat tools, `/tasks` API, dashboard Tasks page, timezone-aware reminder parsing, and due reminder notifications.
+- Add Project Specs for project-scoped Markdown specs with draft, active, and archived states; active specs are included in project context.
+- Add guided Linux desktop-control setup via CLI, tool, and HTTP enable flow with capability/remediation reporting.
+- Serve the built dashboard from `bitbuddy serve` on the same origin as the API; `bitbuddy dashboard` now ensures the backend is running and opens it.
+- Rebuild the static web UI during `bitbuddy update`.
+- Fix direct local visits to `http://127.0.0.1:8787` by injecting loopback auth data into served `index.html`.
+- Reduce repetitive autonomous questions and fix OAuth callback routes being swallowed by the SPA fallback.
 
 ## [v0.2.1] - 2026-06-15
 

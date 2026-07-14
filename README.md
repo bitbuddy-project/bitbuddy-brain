@@ -58,6 +58,15 @@ While running, the server monitors registered project memories on the configured
 
 `bitbuddy serve` also starts BitBuddy's managed local SearxNG-compatible web search backend when web search is enabled. The LLM uses this backend through the `web_search` tool; users do not need to start a separate SearxNG process for the default setup.
 
+Restart the backend after configuration or application changes:
+
+```bash
+bitbuddy restart
+```
+
+The command restarts the active user systemd service when BitBuddy is service-managed. Otherwise, it restarts the detached `bitbuddy serve` process, or starts a new detached backend if none is running.
+Setup automatically restarts an already-running backend after it saves configuration changes.
+
 ## Dashboard
 
 Open the local web UI:
@@ -85,7 +94,7 @@ The service runs `bitbuddy serve --host 127.0.0.1 --port 8787`, which hosts both
 
 ## Providers
 
-BitBuddy stores local model provider settings in `~/.bitbuddy/config.yaml`.
+BitBuddy stores model provider settings in `~/.bitbuddy/config.yaml`. Supported providers include Ollama, llama.cpp, OpenAI API, Codex, Anthropic, Z.ai API, and Z.ai Coding Plan.
 
 Check provider connectivity:
 
@@ -105,7 +114,9 @@ Run a diagnostic streaming call that separates thinking from response output:
 bitbuddy provider stream-test --prompt "Say hello briefly."
 ```
 
-Ollama uses `/api/chat`. llama.cpp uses the OpenAI-compatible `/v1/chat/completions` stream. BitBuddy separates explicit `reasoning_content` fields and `<think>...</think>` text from normal response text.
+Ollama uses `/api/chat`. llama.cpp uses the OpenAI-compatible `/v1/chat/completions` stream. Z.ai uses OpenAI-compatible Chat Completions at `https://api.z.ai/api/paas/v4`, while Z.ai Coding Plan uses `https://api.z.ai/api/coding/paas/v4`. BitBuddy separates explicit `reasoning_content` fields and `<think>...</think>` text from normal response text.
+
+Provider context responses include a capability profile with context window, streaming protocol, native-tool support, vision support, and provider/model-specific reasoning-effort levels. The chat UI uses that profile so OpenAI/Codex, Anthropic, Z.ai, and local providers do not share the wrong reasoning options.
 
 ## Web App
 
@@ -189,11 +200,19 @@ BitBuddy does not receive broad home-directory access by default. Project paths 
 
 Project Specs are Markdown notes attached to a registered project. Create and edit specs from the Projects dashboard, mark active specs when they should guide future work, and archive old specs without deleting their history. Active specs are included in project context for chat and autonomous work.
 
+Project validation recipes are named commands attached to a registered project, such as `test`, `lint`, `typecheck`, `build`, or `smoke`. BitBuddy includes them in project memory and can run a stored recipe after code edits, with the normal shell permission gate. Suggested recipes are inferred from files such as `package.json` and `pyproject.toml`; save a recipe when it should become canonical for that project.
+
+Coding work loops are recorded as structured runs with inspect, plan, edit, verify, and summarize phases. These runs are backend telemetry for making BitBuddy's coding behavior easier to evaluate and improve. Coding eval APIs can store named benchmark tasks and score recorded runs against completion, project match, inspect/edit/verify behavior, failed steps, and required validation recipes.
+
+The Coding button beside the Chat/Plan/Debug mode control opens a dedicated coding workspace. Saved flows can use separate configured providers, models, reasoning levels, instructions, and approval gates for every Plan, Build, Review, and Test stage. A run snapshots those choices, continues in the background when you return to Chat, and keeps ordinary chat's active provider unchanged. Review or Test findings receive one automatic Build repair pass before the run stops for attention.
+
+Chat and Coding also expose a shared structured-question tool. OpenAI-compatible providers, Anthropic, and GLM models can pause a live run for one to three focused questions, show meaningful choices plus a custom answer field, and resume the same model context after the user responds.
+
 Generated artifacts default to `~/.bitbuddy/artifacts`. BitBuddy has first-class `write_file`, `patch_file`, and `make_directory` tools for creating deterministic files there, then `run_shell_command` with `working_directory` for validation/export commands. Writes outside the managed artifacts workspace require approval.
 
 ## Tasks And Reminders
 
-Ask BitBuddy to remember a task or reminder, such as "remind me to call the dentist at 4pm". Tasks are stored locally, can be managed from the Tasks page, and can trigger desktop notifications when reminders come due.
+Ask BitBuddy to remember a task or reminder, such as "remind me to call the dentist at 4pm". Tasks are stored locally and can trigger desktop notifications when reminders come due.
 
 ## MCP And Desktop Control
 
