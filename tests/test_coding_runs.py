@@ -14,6 +14,7 @@ os.environ["HOME"] = tempfile.mkdtemp(prefix="bitbuddy-coding-runs-test-")
 from bitbuddy.coding.runs import (  # noqa: E402
     complete_coding_run,
     coding_run_to_json,
+    delete_coding_run,
     list_coding_runs,
     record_coding_run_step,
     should_track_coding_request,
@@ -76,6 +77,13 @@ class CodingRunsTest(unittest.TestCase):
         data = coding_run_to_json(listed[0])
         self.assertEqual(data["summary"], "Fixed the failing tests.")
         self.assertEqual(data["steps"][-1]["phase"], "completed")
+
+    def test_delete_removes_run_and_steps(self) -> None:
+        run = start_coding_run(chat_id="", run_id="del-1", project_id="del-proj", user_request="delete me")
+        record_coding_run_step(run.id, phase="inspect", tool="read_file", status="completed", summary="looked")
+        self.assertTrue(delete_coding_run(run.id))
+        self.assertFalse(delete_coding_run(run.id))
+        self.assertEqual(list_coding_runs(project_id="del-proj"), [])
 
 
 if __name__ == "__main__":

@@ -673,7 +673,7 @@ def default_tool_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="write_file",
-            description="Create or replace a text file. Relative paths default to ~/.bitbuddy/artifacts; use root_path or project_id for approved writes elsewhere. Prefer this over shell heredocs for generated artifacts.",
+            description="Create a new file or fully rewrite one. For edits to an existing file prefer patch_file, which changes only the matched region instead of rewriting everything. Relative paths default to ~/.bitbuddy/artifacts; use root_path or project_id for approved writes elsewhere. Prefer this over shell heredocs for generated artifacts.",
             arguments_schema={
                 "type": "object",
                 "properties": {
@@ -694,7 +694,7 @@ def default_tool_registry() -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="patch_file",
-            description="Patch a text file by replacing old_text with new_text. Relative paths default to ~/.bitbuddy/artifacts; use root_path or project_id for approved project edits.",
+            description="Preferred way to edit an existing file: replace old_text with new_text, changing only the matched region so unrelated content is never clobbered. Reach for write_file only to create a new file or fully rewrite one. Relative paths default to ~/.bitbuddy/artifacts; use root_path or project_id for approved project edits.",
             arguments_schema={
                 "type": "object",
                 "properties": {

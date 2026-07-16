@@ -3,6 +3,7 @@ import {
 	answerCodingPermission,
 	answerCodingQuestion,
 	cancelCodingWorkflow,
+	deleteCodingRun,
 	getCodingRun,
 	getCodingRuns,
 	getCodingWorkflows,
@@ -35,6 +36,7 @@ export const codingSession = $state({
 	activeStageId: '',
 	activeStageName: '',
 	stageOutput: '',
+	stageThinking: '',
 	events: [] as CodingStreamEvent[],
 	pendingGate: null as CodingStreamEvent | null,
 	pendingQuestion: null as QuestionRequest | null,
@@ -79,14 +81,21 @@ export function replaceWorkflow(workflow: CodingWorkflow) {
 	else codingSession.workflows = [workflow, ...codingSession.workflows];
 }
 
-export async function beginCodingRun(projectId: string, workflowId: string, task: string, attachments: ChatAttachment[] = []) {
+export async function beginCodingRun(projectId: string, workflowId: string, task: string, attachments: ChatAttachment[] = [], bypassPermissions = false) {
 	codingSession.error = '';
-	const run = await startCodingWorkflow({ project_id: projectId, workflow_id: workflowId, task, attachments });
+	const run = await startCodingWorkflow({ project_id: projectId, workflow_id: workflowId, task, attachments, bypass_permissions: bypassPermissions });
 	codingSession.activeRun = run;
 	codingSession.recentRuns = [run, ...codingSession.recentRuns.filter((item) => item.id !== run.id)];
 	codingSession.events = [];
 	codingSession.stageOutput = '';
+	codingSession.stageThinking = '';
 	connectToRun(run.id);
+}
+
+export async function removeCodingRun(runId: string) {
+	await deleteCodingRun(runId);
+	codingSession.recentRuns = codingSession.recentRuns.filter((run) => run.id !== runId);
+	if (codingSession.activeRun?.id === runId) codingSession.activeRun = null;
 }
 
 function connectToRun(runId: string) {
@@ -105,7 +114,12 @@ function handleCodingEvent(event: CodingStreamEvent) {
 		codingSession.activeStageId = event.stage?.id ?? '';
 		codingSession.activeStageName = event.stage?.name ?? '';
 		codingSession.stageOutput = '';
+		codingSession.stageThinking = '';
 	}
+	if (event.kind === 'stage_thinking') codingSession.stageThinking = event.text ?? '';
+	// Once a round's tools (or the stage) land, the reasoning that preceded them is persisted as its
+	// own step, so drop the live copy to avoid showing it twice.
+	if (event.kind === 'tool_result' || event.kind === 'stage_completed') codingSession.stageThinking = '';
 	if (event.kind === 'stage_output' || event.kind === 'stage_completed') codingSession.stageOutput = event.text ?? event.output ?? '';
 	if (event.kind === 'gate_request') codingSession.pendingGate = event;
 	if (event.kind === 'gate_resolved') codingSession.pendingGate = null;

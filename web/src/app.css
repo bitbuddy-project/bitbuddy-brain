@@ -444,12 +444,12 @@ body :is(.title-mark, .card-icon, .project-icon, .empty-icon, .file-glyph) {
 }
 
 /* Form controls */
-body :is(input, select, textarea):not(.chat-body textarea) {
+body :is(input, select, textarea):not(:is(.chat-body, .coding-body) textarea) {
   border-color: color-mix(in srgb, var(--bg-soft) 55%, var(--border));
   background: color-mix(in srgb, var(--surface-inset) 82%, #000);
 }
 
-:root.light body :is(input, select, textarea):not(.chat-body textarea) {
+:root.light body :is(input, select, textarea):not(:is(.chat-body, .coding-body) textarea) {
   background: color-mix(in srgb, var(--surface-inset) 88%, white 12%);
 }
 

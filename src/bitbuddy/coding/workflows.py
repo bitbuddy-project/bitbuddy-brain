@@ -33,6 +33,7 @@ class CodingWorkflow:
     is_default: bool
     created_at: str
     updated_at: str
+    bypass_permissions: bool = False
 
 
 def ensure_workflow_database() -> None:
@@ -45,11 +46,15 @@ def ensure_workflow_database() -> None:
                 name text not null,
                 stages text not null default '[]',
                 is_default integer not null default 0,
+                bypass_permissions integer not null default 0,
                 created_at text default current_timestamp,
                 updated_at text default current_timestamp
             )
             """
         )
+        columns = {str(row[1]) for row in connection.execute("pragma table_info(coding_workflows)").fetchall()}
+        if "bypass_permissions" not in columns:
+            connection.execute("alter table coding_workflows add column bypass_permissions integer not null default 0")
         count = int(connection.execute("select count(*) from coding_workflows").fetchone()[0])
         if count == 0:
             workflow = default_workflow()
@@ -66,12 +71,12 @@ def default_workflow() -> CodingWorkflow:
     model = provider.model
     effort = provider.reasoning_effort
     stages = (
-        CodingStage(str(uuid.uuid4()), "plan", "Plan", provider_key, model, effort, "Inspect the project and produce an implementation-ready plan.", True, ()),
+        CodingStage(str(uuid.uuid4()), "plan", "Plan", provider_key, model, effort, "Inspect the project and produce an implementation-ready plan.", False, ()),
         CodingStage(str(uuid.uuid4()), "build", "Build", provider_key, model, effort, "Implement the approved plans and verify your edits as you work.", False, ()),
         CodingStage(str(uuid.uuid4()), "review", "Review", provider_key, model, effort, "Review the implementation independently for correctness, regressions, and missed requirements.", False, ()),
         CodingStage(str(uuid.uuid4()), "test", "Test", provider_key, model, effort, "Run the selected project checks and assess whether the implementation is ready.", False, ()),
     )
-    return CodingWorkflow(str(uuid.uuid4()), "Plan, build, review, test", stages, True, "", "")
+    return CodingWorkflow(str(uuid.uuid4()), "Plan, build, review, test", stages, True, "", "", False)
 
 
 def parse_stage(raw: object, index: int = 0) -> CodingStage:
@@ -119,7 +124,7 @@ def validate_stages(stages: tuple[CodingStage, ...]) -> None:
             raise ValueError(f"Stage `{stage.name}` must select a model.")
 
 
-def save_workflow(*, name: str, stages: list[object], workflow_id: str = "", is_default: bool | None = None) -> CodingWorkflow:
+def save_workflow(*, name: str, stages: list[object], workflow_id: str = "", is_default: bool | None = None, bypass_permissions: bool = False) -> CodingWorkflow:
     ensure_workflow_database()
     clean_name = name.strip()[:120]
     if not clean_name:
@@ -136,12 +141,13 @@ def save_workflow(*, name: str, stages: list[object], workflow_id: str = "", is_
             connection.execute("update coding_workflows set is_default = 0")
         connection.execute(
             """
-            insert into coding_workflows (id, name, stages, is_default)
-            values (?, ?, ?, ?)
+            insert into coding_workflows (id, name, stages, is_default, bypass_permissions)
+            values (?, ?, ?, ?, ?)
             on conflict(id) do update set name = excluded.name, stages = excluded.stages,
-                is_default = excluded.is_default, updated_at = current_timestamp
+                is_default = excluded.is_default, bypass_permissions = excluded.bypass_permissions,
+                updated_at = current_timestamp
             """,
-            (selected_id, clean_name, json.dumps([stage_to_json(stage) for stage in parsed]), int(default_value)),
+            (selected_id, clean_name, json.dumps([stage_to_json(stage) for stage in parsed]), int(default_value), int(bool(bypass_permissions))),
         )
     return get_workflow(selected_id)
 
@@ -149,14 +155,14 @@ def save_workflow(*, name: str, stages: list[object], workflow_id: str = "", is_
 def list_workflows() -> list[CodingWorkflow]:
     ensure_workflow_database()
     with db_connection(GLOBAL_DB_PATH) as connection:
-        rows = connection.execute("select id, name, stages, is_default, created_at, updated_at from coding_workflows order by is_default desc, updated_at desc").fetchall()
+        rows = connection.execute("select id, name, stages, is_default, created_at, updated_at, bypass_permissions from coding_workflows order by is_default desc, updated_at desc").fetchall()
     return [workflow_from_row(row) for row in rows]
 
 
 def get_workflow(workflow_id: str) -> CodingWorkflow:
     ensure_workflow_database()
     with db_connection(GLOBAL_DB_PATH) as connection:
-        row = connection.execute("select id, name, stages, is_default, created_at, updated_at from coding_workflows where id = ?", (workflow_id,)).fetchone()
+        row = connection.execute("select id, name, stages, is_default, created_at, updated_at, bypass_permissions from coding_workflows where id = ?", (workflow_id,)).fetchone()
     if row is None:
         raise ValueError(f"Unknown coding workflow: {workflow_id}")
     return workflow_from_row(row)
@@ -194,6 +200,7 @@ def workflow_to_json(workflow: CodingWorkflow) -> dict[str, Any]:
         "name": workflow.name,
         "stages": [stage_to_json(stage) for stage in workflow.stages],
         "is_default": workflow.is_default,
+        "bypass_permissions": workflow.bypass_permissions,
         "created_at": workflow.created_at,
         "updated_at": workflow.updated_at,
     }
@@ -205,4 +212,5 @@ def workflow_from_row(row: Any) -> CodingWorkflow:
     except (TypeError, json.JSONDecodeError):
         raw_stages = []
     stages = tuple(parse_stage(raw, index) for index, raw in enumerate(raw_stages))
-    return CodingWorkflow(str(row[0]), str(row[1]), stages, bool(row[3]), str(row[4] or ""), str(row[5] or ""))
+    bypass = bool(row[6]) if len(row) > 6 else False
+    return CodingWorkflow(str(row[0]), str(row[1]), stages, bool(row[3]), str(row[4] or ""), str(row[5] or ""), bypass)

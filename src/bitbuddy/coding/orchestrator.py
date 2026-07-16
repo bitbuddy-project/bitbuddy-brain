@@ -17,7 +17,7 @@ from ..interactions import (
     validate_question_answers,
 )
 from ..memory.project_registry import load_project
-from ..memory.project_validation import run_validation_recipe, validation_run_to_json
+from ..memory.project_validation import list_validation_recipes, run_validation_recipe, validation_run_to_json
 from ..providers import ProviderClient
 from ..toolbox.base import READ_ONLY_TOOLS, ToolCall, ToolExecutor, ToolParseError, ToolRegistry, ToolResult, needs_permission, openai_tools_schema, parse_tool_calls, tool_instruction_message
 from ..toolbox.registry import default_tool_registry
@@ -25,7 +25,7 @@ from ..utils import log_activity
 from .runs import coding_run_to_json, complete_coding_run, get_coding_run, record_coding_run_step, start_coding_run, tool_phase, update_coding_run
 from .workflows import CodingStage, CodingWorkflow, get_workflow, stage_to_json, validate_stages, workflow_to_json
 
-MAX_STAGE_TOOL_ROUNDS = 10
+MAX_STAGE_TOOL_ROUNDS = 24
 TERMINAL_STATUSES = {"completed", "needs_attention", "cancelled", "failed"}
 
 
@@ -40,6 +40,7 @@ class ActiveCodingWorkflow:
     task: str
     workflow: CodingWorkflow
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    bypass_permissions: bool = False
     status: str = "running"
     stage_id: str = ""
     stage_name: str = ""
@@ -136,7 +137,7 @@ def _normalize_attachments(raw: list[Any] | None) -> list[dict[str, Any]]:
     return result
 
 
-def start_workflow_run(*, project_id: str, task: str, workflow_id: str, attachments: list[Any] | None = None) -> ActiveCodingWorkflow:
+def start_workflow_run(*, project_id: str, task: str, workflow_id: str, attachments: list[Any] | None = None, bypass_permissions: bool = False) -> ActiveCodingWorkflow:
     if active_workflow_runs():
         raise ValueError("Another coding workflow is already active.")
     clean_task = task.strip()
@@ -146,6 +147,7 @@ def start_workflow_run(*, project_id: str, task: str, workflow_id: str, attachme
     workflow = get_workflow(workflow_id)
     validate_stages(workflow.stages)
     clean_attachments = _normalize_attachments(attachments)
+    effective_bypass = bool(bypass_permissions) or bool(workflow.bypass_permissions)
     coding_run = start_coding_run(
         chat_id="",
         run_id=str(uuid.uuid4()),
@@ -158,9 +160,10 @@ def start_workflow_run(*, project_id: str, task: str, workflow_id: str, attachme
             "active_stage_id": "",
             "repair_count": 0,
             "attachments": clean_attachments,
+            "bypass_permissions": effective_bypass,
         },
     )
-    active = ActiveCodingWorkflow(coding_run.id, project_id, clean_task, workflow, clean_attachments)
+    active = ActiveCodingWorkflow(coding_run.id, project_id, clean_task, workflow, clean_attachments, effective_bypass)
     with ACTIVE_CODING_LOCK:
         ACTIVE_CODING_RUNS[coding_run.id] = active
     thread = threading.Thread(target=_run_workflow, args=(active,), name=f"bitbuddy-coding-{coding_run.id[:8]}", daemon=True)
@@ -262,6 +265,21 @@ def _run_stage_with_gate(active: ActiveCodingWorkflow, stage: CodingStage, conte
             raise CodingCancelled()
 
 
+def _record_thinking(active: ActiveCodingWorkflow, stage: CodingStage, phase: str, thinking: str) -> None:
+    # Persist each round's reasoning as its own step so it stays pinned in the feed right
+    # before the tool calls it produced, instead of one stage-level blob that accumulates
+    # and trails the live cursor. Broadcast only this round's text for the live view.
+    record_coding_run_step(
+        active.coding_run_id,
+        phase=phase,
+        kind="thinking",
+        status="completed",
+        summary=thinking[:2000],
+        metadata={"stage_id": stage.id, "thinking": thinking[:16000]},
+    )
+    active.broadcast({"kind": "stage_thinking", "stage_id": stage.id, "text": thinking})
+
+
 def _execute_stage(active: ActiveCodingWorkflow, stage: CodingStage, context: str, *, feedback: str = "", repair: bool = False) -> str:
     _throw_if_cancelled(active)
     active.stage_id = stage.id
@@ -277,7 +295,13 @@ def _execute_stage(active: ActiveCodingWorkflow, stage: CodingStage, context: st
     active.broadcast({"kind": "stage_started", "stage": stage_to_json(stage), "attempt": active.attempt, "repair": repair})
     validation_runs: list[dict[str, Any]] = []
     if stage.kind == "test":
-        for recipe in stage.validation_recipes:
+        recipe_names = list(stage.validation_recipes)
+        if not recipe_names:
+            # The default flow pins no recipes to the Test stage, which left the model
+            # guessing shell commands. Fall back to every stored recipe for the project
+            # so saved checks (e.g. check, build) run automatically.
+            recipe_names = [recipe.name for recipe in list_validation_recipes(active.project_id)]
+        for recipe in recipe_names:
             _throw_if_cancelled(active)
             result = run_validation_recipe(active.project_id, recipe)
             validation_runs.append(validation_run_to_json(result))
@@ -323,6 +347,9 @@ def _execute_stage(active: ActiveCodingWorkflow, stage: CodingStage, context: st
         _throw_if_cancelled(active)
         chunks = list(client.stream_chat(messages, model=stage.model, should_cancel=active.cancel_requested.is_set, thinking_enabled=stage.reasoning_effort != "off", tools=tools_schema))
         response = "".join(str(getattr(chunk, "text", "")) for chunk in chunks if getattr(chunk, "kind", "") == "response").strip()
+        thinking = "".join(str(getattr(chunk, "text", "")) for chunk in chunks if getattr(chunk, "kind", "") == "thinking").strip()
+        if thinking:
+            _record_thinking(active, stage, phase, thinking)
         calls = _native_calls(chunks) if native_tools else _text_calls(response)
         if not calls:
             output = response
@@ -345,7 +372,30 @@ def _execute_stage(active: ActiveCodingWorkflow, stage: CodingStage, context: st
             active.broadcast({"kind": "tool_result", "stage_id": stage.id, "tool": call.tool, "ok": result.ok, "summary": result.summary, "error": result.error, "metadata": result.metadata or {}})
             messages.append(result.to_model_message())
     if not output:
-        output = "Stage reached its tool-round limit without a final report."
+        # The stage exhausted its tool-round budget without producing a report.
+        # Mirror the chat runtime: disable tools and ask for a synthesis from the
+        # work already gathered, so the stage returns something usable (and a real
+        # verdict for review/test) instead of a canned failure string.
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "The tool-call round limit was reached. Tools are now disabled for this stage. "
+                    "Write your final report now from the tool results already gathered above; do not output another tool call."
+                    + (f" {verdict_instruction}" if verdict_instruction else "")
+                ),
+            }
+        )
+        _throw_if_cancelled(active)
+        final_chunks = list(client.stream_chat(messages, model=stage.model, should_cancel=active.cancel_requested.is_set, thinking_enabled=stage.reasoning_effort != "off", tools=None))
+        final_thinking = "".join(str(getattr(chunk, "text", "")) for chunk in final_chunks if getattr(chunk, "kind", "") == "thinking").strip()
+        if final_thinking:
+            _record_thinking(active, stage, phase, final_thinking)
+        output = "".join(str(getattr(chunk, "text", "")) for chunk in final_chunks if getattr(chunk, "kind", "") == "response").strip()
+        if output:
+            active.broadcast({"kind": "stage_output", "stage_id": stage.id, "text": output})
+        else:
+            output = "Stage reached its tool-round limit without a final report."
     validation_failed = any(int(item.get("exit_code", 1)) != 0 for item in validation_runs)
     record_coding_run_step(
         active.coding_run_id,
@@ -396,8 +446,15 @@ def _execute_stage_tool(active: ActiveCodingWorkflow, stage: CodingStage, regist
 
     mode_error = executor.check_mode_restrictions(call)
     if mode_error:
-        return ToolResult(call.tool, False, "", f"Blocked in {stage.kind} stage", {}, error=mode_error)
+        # Review runs in read-only plan mode, but it must be able to execute stored
+        # validation recipes so its verdict reflects real check/build results rather
+        # than penalizing the diff as "unvalidated".
+        if not (stage.kind == "review" and call.tool == "run_project_validation"):
+            return ToolResult(call.tool, False, "", f"Blocked in {stage.kind} stage", {}, error=mode_error)
     required, reason = needs_permission(call, registry.definition(call.tool))
+    if required and active.bypass_permissions:
+        record_coding_run_step(active.coding_run_id, phase=stage.kind, kind="interaction", status="completed", summary=f"Auto-approved {call.tool} (trusted flow).", metadata={"interaction": "permission", "stage_id": stage.id, "tool": call.tool, "auto_approved": True})
+        required = False
     if required:
         with active.lock:
             active.permission_request = {"tool": call.tool, "reason": reason, "arguments": call.arguments}
@@ -520,9 +577,16 @@ def _stage_registry(stage: CodingStage) -> ToolRegistry:
 
 def _stage_policy(stage: CodingStage) -> str:
     if stage.kind == "plan":
-        return "Inspect deeply and produce a concrete plan. You are read-only and must not edit or run mutating build/test commands."
+        return (
+            "Inspect deeply and produce a concrete plan. You are read-only: write, patch, create, delete and mutating shell tools "
+            "are not available to you and any such call will be rejected, so do not attempt them. Deliver the plan as your final message; "
+            "a later Build stage does the editing."
+        )
     if stage.kind == "review":
-        return "Review independently. You are read-only; inspect the actual project and report specific findings rather than editing them yourself."
+        return (
+            "Review independently. You are read-only: write, patch, create, delete and mutating shell tools are not available and any "
+            "such call will be rejected, so do not attempt them. Inspect the actual project and report specific findings rather than editing them yourself."
+        )
     if stage.kind == "test":
         return "Validate the actual implementation. You may run validation and approved shell checks, but you must not edit project files."
     return "Implement the task in the selected project. Inspect before editing, make focused changes, and verify them. Do not commit, reset, or discard user work."

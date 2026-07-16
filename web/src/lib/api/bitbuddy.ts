@@ -866,6 +866,17 @@ export async function addProject(options: { name: string; paths: string[] }): Pr
 	return data.project;
 }
 
+export async function updateProjectPaths(projectId: string, paths: string[]): Promise<ProjectSummary> {
+	const response = await apiFetch(`${BITBUDDY_API}/projects/${encodeURIComponent(projectId)}`, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ paths })
+	});
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not update project directories.');
+	return data.project;
+}
+
 export async function getProjectMemory(projectId: string): Promise<ProjectMemoryResponse> {
 	const response = await apiFetch(`${BITBUDDY_API}/projects/${projectId}/memory`);
 	if (!response.ok) throw new Error('Could not load project memory.');
@@ -1870,12 +1881,13 @@ export type CodingWorkflow = {
 	name: string;
 	stages: CodingStage[];
 	is_default: boolean;
+	bypass_permissions: boolean;
 	created_at: string;
 	updated_at: string;
 };
 
 export type CodingStreamEvent = {
-	kind: 'snapshot' | 'stage_started' | 'stage_output' | 'stage_completed' | 'tool_result' | 'validation_result' | 'gate_request' | 'gate_resolved' | 'permission_request' | 'question_request' | 'question_answered' | 'error' | 'done' | 'heartbeat';
+	kind: 'snapshot' | 'stage_started' | 'stage_thinking' | 'stage_output' | 'stage_completed' | 'tool_result' | 'validation_result' | 'gate_request' | 'gate_resolved' | 'permission_request' | 'question_request' | 'question_answered' | 'error' | 'done' | 'heartbeat';
 	run?: CodingRun;
 	stage?: CodingStage;
 	stage_id?: string;
@@ -1966,7 +1978,14 @@ export async function deleteCodingWorkflow(workflowId: string): Promise<boolean>
 	return Boolean(data.deleted);
 }
 
-export async function startCodingWorkflow(options: { project_id: string; workflow_id: string; task: string; attachments?: ChatAttachment[] }): Promise<CodingRun> {
+export async function deleteCodingRun(runId: string): Promise<boolean> {
+	const response = await apiFetch(`${BITBUDDY_API}/coding/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' });
+	const data = await response.json().catch(() => ({}));
+	if (!response.ok) throw new Error(data.error ?? 'Could not delete coding run.');
+	return Boolean(data.deleted);
+}
+
+export async function startCodingWorkflow(options: { project_id: string; workflow_id: string; task: string; attachments?: ChatAttachment[]; bypass_permissions?: boolean }): Promise<CodingRun> {
 	const response = await apiFetch(`${BITBUDDY_API}/coding/runs`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },

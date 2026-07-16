@@ -520,7 +520,7 @@ def tool_instruction_message(registry: ToolRegistry, native_tools: bool = False)
             "- Use glob_files for file discovery and search_text for content search before using run_shell_command for those tasks.",
             "- Use list_directory for directory inspection and read_file_range for large-file slices.",
             "- Use read_file for a known text file.",
-            "- For generated artifacts or project files, prefer write_file, patch_file, and make_directory over shell heredocs. Relative paths default to ~/.bitbuddy/artifacts.",
+            "- For generated artifacts or project files, prefer write_file, patch_file, and make_directory over shell heredocs. To edit an existing file use patch_file (it changes only the matched region); reserve write_file for new files or a full rewrite. Relative paths default to ~/.bitbuddy/artifacts.",
             "- For artifact workflows such as KiCad, CAD, images, data files, scripts, or reports: generate deterministic source/scripts/files first, validate with command-line tools when available, then optionally use desktop MCP to inspect or open apps.",
             "- For coding work, follow the coding loop: inspect relevant project context/files, form a short working plan, edit with file tools, run the relevant project validation recipe when one exists, then summarize what changed and how it was verified.",
             "- Use list_project_validation after loading project context to discover stored validation recipes. Use run_project_validation after edits when a stored recipe fits the change and permission allows.",

@@ -22,6 +22,7 @@
 		getProjectSpec,
 		getProjectSpecs,
 		getProjects,
+		updateProjectPaths,
 		updateProjectSpec,
 		type ProjectSpec,
 		type ProjectSummary
@@ -36,6 +37,11 @@
 	let pendingDeleteProject = $state<ProjectSummary | null>(null);
 	let projectName = $state('');
 	let projectPaths = $state('');
+
+	let editPathsProject = $state<ProjectSummary | null>(null);
+	let editPathsValue = $state('');
+	let savingPaths = $state(false);
+	let editPathsError = $state('');
 
 	let selectedProject = $state<ProjectSummary | null>(null);
 	let specs = $state<ProjectSpec[]>([]);
@@ -121,6 +127,36 @@
 			error = caught instanceof Error ? caught.message : 'Could not delete project.';
 		} finally {
 			deleting = false;
+		}
+	}
+
+	function openEditPaths(project: ProjectSummary) {
+		editPathsProject = project;
+		editPathsValue = (project.paths ?? []).join('\n');
+		editPathsError = '';
+	}
+
+	async function submitEditPaths() {
+		if (!editPathsProject) return;
+		const paths = editPathsValue
+			.split('\n')
+			.map((path) => path.trim())
+			.filter(Boolean);
+		if (paths.length === 0) {
+			editPathsError = 'At least one directory is required.';
+			return;
+		}
+		savingPaths = true;
+		try {
+			const updated = await updateProjectPaths(editPathsProject.id, paths);
+			if (selectedProject?.id === updated.id) selectedProject = updated;
+			editPathsProject = null;
+			await loadProjects();
+			error = '';
+		} catch (caught) {
+			editPathsError = caught instanceof Error ? caught.message : 'Could not update directories.';
+		} finally {
+			savingPaths = false;
 		}
 	}
 
@@ -422,14 +458,25 @@
 										<span>{project.access ?? 'read-only'}</span>
 									</div>
 								</div>
-								<button
-									class="delete-project-button"
-									type="button"
-									aria-label="Delete project"
-									onclick={(event) => { event.stopPropagation(); requestRemoveProject(project); }}
-								>
-									<TrashIcon size={18} weight="bold" />
-								</button>
+								<div class="project-card-actions">
+									<button
+										class="edit-project-button"
+										type="button"
+										aria-label="Change project directories"
+										title="Change directories"
+										onclick={(event) => { event.stopPropagation(); openEditPaths(project); }}
+									>
+										<PencilSimpleIcon size={18} weight="bold" />
+									</button>
+									<button
+										class="delete-project-button"
+										type="button"
+										aria-label="Delete project"
+										onclick={(event) => { event.stopPropagation(); requestRemoveProject(project); }}
+									>
+										<TrashIcon size={18} weight="bold" />
+									</button>
+								</div>
 							</div>
 						{/each}
 					</div>
@@ -474,6 +521,28 @@
 			<div class="form-actions">
 				<button class="cancel-button" type="button" onclick={closeSpecEditor} disabled={specSaving}>Cancel</button>
 				<button class="submit-button" type="submit" disabled={specSaving}>{specSaving ? 'Saving...' : 'Save spec'}</button>
+			</div>
+		</form>
+	{/if}
+</Overlay>
+
+<Overlay open={Boolean(editPathsProject)} label="Change project directories" onClose={() => (editPathsProject = null)}>
+	{#if editPathsProject}
+		<form class="paths-editor" onsubmit={(event) => { event.preventDefault(); void submitEditPaths(); }}>
+			<div class="paths-editor-head">
+				<h3>Change directories</h3>
+				<p>Re-point <strong>{editPathsProject.name}</strong> at a new location. Its memory and history are kept.</p>
+			</div>
+			{#if editPathsError}
+				<div class="inline-error">{editPathsError}</div>
+			{/if}
+			<label class="field">
+				<span>Directories <small>(one path per line)</small></span>
+				<textarea bind:value={editPathsValue} rows="4" placeholder="/home/dustin/dev/active/anchorbox" autocomplete="off"></textarea>
+			</label>
+			<div class="form-actions">
+				<button class="cancel-button" type="button" onclick={() => (editPathsProject = null)} disabled={savingPaths}>Cancel</button>
+				<button class="submit-button" type="submit" disabled={savingPaths}>{savingPaths ? 'Saving...' : 'Save directories'}</button>
 			</div>
 		</form>
 	{/if}
@@ -742,6 +811,80 @@
 		border-color: var(--danger);
 		background: color-mix(in srgb, var(--danger) 10%, transparent);
 		color: var(--danger);
+	}
+
+	.project-card-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin-left: auto;
+		flex: 0 0 auto;
+	}
+
+	.edit-project-button {
+		width: 2rem;
+		height: 2rem;
+		display: grid;
+		place-items: center;
+		flex: 0 0 auto;
+		border: 1px solid var(--border);
+		border-radius: 0.6rem;
+		background: transparent;
+		color: var(--text-muted);
+		cursor: pointer;
+		transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+	}
+
+	.edit-project-button:hover {
+		border-color: var(--accent);
+		background: color-mix(in srgb, var(--accent) 10%, transparent);
+		color: var(--accent);
+	}
+
+	.paths-editor {
+		display: flex;
+		flex-direction: column;
+		gap: 0.85rem;
+		padding: 1.25rem;
+	}
+
+	.paths-editor-head h3 {
+		font-size: 1.1rem;
+		font-weight: 900;
+		letter-spacing: -0.01em;
+	}
+
+	.paths-editor-head p {
+		margin-top: 0.25rem;
+		color: var(--text-soft);
+		font-size: 0.85rem;
+	}
+
+	.paths-editor .field {
+		display: grid;
+		gap: 0.35rem;
+	}
+
+	.paths-editor .field small {
+		color: var(--text-muted);
+		font-weight: 500;
+	}
+
+	.paths-editor textarea {
+		width: 100%;
+		padding: 0.85rem;
+		border: 1px solid var(--border);
+		border-radius: 0.9rem;
+		background: var(--surface-inset);
+		color: var(--text);
+		font-family: var(--font-mono, inherit);
+		font-size: 0.88rem;
+		resize: vertical;
+	}
+
+	.paths-editor textarea:focus {
+		border-color: var(--accent);
+		box-shadow: 0 0 0 3px var(--accent-soft);
 	}
 
 	.empty-icon,

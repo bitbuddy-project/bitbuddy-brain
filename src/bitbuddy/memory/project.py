@@ -80,6 +80,7 @@ from .project_registry import (
     project_list_context,
     register_project,
     unregister_project,
+    update_project_paths,
     upsert_global_project,
 )
 from .project_schema import initialize_project_database

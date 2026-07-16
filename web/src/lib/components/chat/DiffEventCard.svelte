@@ -124,15 +124,9 @@
 							</button>
 						</div>
 						{#if rawExpanded}
-							<pre aria-label={`Raw diff for ${file.path}`}>
-{#each diffLines(file) as line}
-<code class={lineKind(line)}>{line}</code>
-{/each}</pre>
+							<pre aria-label={`Raw diff for ${file.path}`}>{#each diffLines(file) as line}<code class={lineKind(line)}>{line}</code>{/each}</pre>
 						{:else}
-							<pre class="clean-diff" aria-label={`Changed lines for ${file.path}`}>
-{#each cleanLines(file) as line}
-<code class={line.kind}>{line.text}</code>
-{/each}</pre>
+							<pre class="clean-diff" aria-label={`Changed lines for ${file.path}`}>{#each cleanLines(file) as line}<code class={line.kind}>{line.text}</code>{/each}</pre>
 						{/if}
 						{#if file.truncated}
 							<div class="truncated-note">Diff was truncated.</div>

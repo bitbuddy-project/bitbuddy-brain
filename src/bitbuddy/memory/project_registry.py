@@ -101,6 +101,28 @@ def register_project(name: str, raw_paths: list[str]) -> Project:
     return Project(project_id, name, paths, database_path, metadata_path)
 
 
+def update_project_paths(project_id_or_name: str, raw_paths: list[str]) -> Project:
+    """Re-point an existing project at new directories, keeping its id and memory."""
+    if not raw_paths:
+        raise ValueError("At least one project path is required.")
+    project = load_project(project_id_or_name)
+    paths = tuple(resolve_allowed_path(path) for path in raw_paths)
+
+    raw = yaml.safe_load(project.metadata_path.read_text(encoding="utf-8")) or {}
+    raw["paths"] = [str(path) for path in paths]
+    project.metadata_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+    updated = Project(project.id, project.name, paths, project.database_path, project.metadata_path)
+    upsert_global_project(updated)
+
+    log_activity(
+        "project.paths_updated",
+        f"Updated project directories for {project.name}",
+        {"project_id": project.id, "paths": [str(path) for path in paths]},
+    )
+    return updated
+
+
 def find_project_by_canonical_path(canonical_path: Path) -> Project | None:
     for metadata_path in sorted(PROJECTS_DIR.glob("*/project.yaml")):
         raw = yaml.safe_load(metadata_path.read_text(encoding="utf-8")) or {}

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.4.1] - Unreleased
+
+### Added
+- Rebuild the Coding workspace as a focused conversation-style work surface: choose a saved flow and project from the header, submit the task from the familiar composer, and follow each stage, tool call, diff, report, and live reasoning in one timeline.
+- Add compact menus for switching or editing coding flows and reopening or deleting recent coding runs without a persistent configuration sidebar.
+- Add live stage-thinking events and persist each reasoning round beside the tool calls it led to, so active work remains visible and completed runs retain the useful trace.
+- Add trusted coding flows and a per-run trust option to automatically approve tool permission requests when the user explicitly opts in.
+- Add the ability to change a registered project's directories while preserving its project identity, memory, specs, validation recipes, and run history.
+- Add deletion of completed coding runs from the UI and API; active runs remain protected until stopped.
+
+### Changed
+- Make the default Plan stage run without an approval gate, move flow editing into an on-demand overlay, and keep stage configuration available without taking over the workspace.
+- Run all saved project validation recipes automatically in a Test stage when that stage has no recipes selected, and permit Review stages to run stored validation checks while otherwise remaining read-only.
+- Increase the coding stage tool-round limit and ask the model for a final synthesis with tools disabled when that limit is reached.
+- Strengthen stage instructions and file-tool guidance so plans and reviews stay within their read-only capabilities and edits favor targeted patches over full-file rewrites.
+- Polish Coding's responsive message surface, status treatment, composer options, and diff rendering to match the rest of Chat.
+
 ## [v0.4.0] - 2026-07-14
 
 ### Added

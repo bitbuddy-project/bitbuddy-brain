@@ -8,8 +8,16 @@
 	import TrashIcon from 'phosphor-svelte/lib/TrashIcon';
 	import ArrowUpIcon from 'phosphor-svelte/lib/ArrowUpIcon';
 	import ArrowDownIcon from 'phosphor-svelte/lib/ArrowDownIcon';
+	import ShieldCheckIcon from 'phosphor-svelte/lib/ShieldCheckIcon';
 	import PageHeader from '$lib/components/PageHeader.svelte';
 	import ChatComposer from '$lib/components/chat/ChatComposer.svelte';
+	import CodingFlowMenu from '$lib/components/chat/CodingFlowMenu.svelte';
+	import CodingRunsMenu from '$lib/components/chat/CodingRunsMenu.svelte';
+	import ToolEventCard from '$lib/components/chat/ToolEventCard.svelte';
+	import MarkdownMessage from '$lib/components/chat/MarkdownMessage.svelte';
+	import ThinkingStream from '$lib/components/chat/ThinkingStream.svelte';
+	import BitBuddyFace from '$lib/components/chat/BitBuddyFace.svelte';
+	import Overlay from '$lib/components/ui/Overlay.svelte';
 	import SelectMenu from '$lib/components/ui/SelectMenu.svelte';
 	import type { SelectOption } from '$lib/components/ui/SelectMenu.svelte';
 	import type { PendingChatAttachment } from '$lib/stores/chat.svelte';
@@ -18,6 +26,8 @@
 		getProjectValidationRecipes,
 		getProviderModels,
 		saveCodingWorkflow,
+		type ChatMessage,
+		type CodingRun,
 		type CodingRunStep,
 		type ChatAttachment,
 		type CodingStage,
@@ -25,6 +35,7 @@
 		type CodingWorkflow,
 		type ProviderEntry,
 		type QuestionRequest,
+		type ToolDiff,
 		type ValidationRecipe
 	} from '$lib/api/bitbuddy';
 	import { buildProviderModelOptions, reasoningEffortOptionsForProvider } from '$lib/providerModels';
@@ -32,6 +43,7 @@
 		beginCodingRun,
 		codingSession,
 		initializeCoding,
+		removeCodingRun,
 		replaceWorkflow,
 		resolveCodingGate,
 		resolveCodingPermission,
@@ -53,15 +65,28 @@
 	let revisionFeedback = $state('');
 	let questionAnswers = $state<Record<string, string>>({});
 	let questionCustom = $state<Record<string, string>>({});
+	let flowMenuOpen = $state(false);
+	let runsMenuOpen = $state(false);
+	let editorOpen = $state(false);
+	let bypassThisRun = $state(false);
 
 	let selectedStage = $derived(draft?.stages.find((stage) => stage.id === selectedStageId) ?? null);
 	let selectedProvider = $derived(selectedStage ? providerFor(selectedStage.provider_key) : undefined);
 	let activeBusy = $derived(Boolean(codingSession.activeRun && !['completed', 'needs_attention', 'cancelled', 'failed'].includes(codingSession.activeRun.status)));
 	let workflowRuns = $derived(codingSession.recentRuns.filter((run) => run.metadata?.source === 'workflow'));
-	let visibleSteps = $derived((codingSession.activeRun?.steps ?? []).filter((step) => ['stage', 'tool'].includes(step.kind)));
+	let visibleSteps = $derived((codingSession.activeRun?.steps ?? []).filter((step) => ['stage', 'tool', 'thinking'].includes(step.kind)));
+	// The stage step is only persisted once a stage finishes, so while a stage is running we render a
+	// live block (streaming thoughts + working indicator) until its final step shows up in visibleSteps.
+	let liveStageActive = $derived(
+		activeBusy &&
+		Boolean(codingSession.activeStageId) &&
+		!visibleSteps.some((step) => step.kind === 'stage' && step.metadata?.stage_id === codingSession.activeStageId)
+	);
 	let projectOptions = $derived<SelectOption[]>(codingSession.projects.map((project) => ({ value: project.id, label: project.name })));
 	let providerOptions = $derived<SelectOption[]>(codingSession.providers.map((provider) => ({ value: providerKey(provider), label: providerLabel(provider), description: provider.model })));
 	let runAttachments = $derived((codingSession.activeRun?.metadata?.attachments ?? []) as ChatAttachment[]);
+	let flowTrusted = $derived(Boolean(draft?.bypass_permissions));
+	let effectiveBypass = $derived(flowTrusted || bypassThisRun);
 
 	onMount(async () => {
 		await initializeCoding();
@@ -180,10 +205,14 @@
 	}
 
 	function duplicateFlow() {
-		if (!draft) return;
-		draft = { ...cloneWorkflow(draft), id: '', name: `${draft.name} copy`, is_default: false, stages: draft.stages.map((stage) => ({ ...stage, id: crypto.randomUUID() })) };
+		if (!draft) {
+			selectWorkflow(codingSession.workflows.find((workflow) => workflow.is_default) ?? codingSession.workflows[0]);
+			if (!draft) return;
+		}
+		draft = { ...cloneWorkflow(draft!), id: '', name: `${draft!.name} copy`, is_default: false, stages: draft!.stages.map((stage) => ({ ...stage, id: crypto.randomUUID() })) };
 		selectedWorkflowId = '';
 		selectedStageId = draft.stages[0]?.id ?? '';
+		editorOpen = true;
 	}
 
 	async function removeFlow() {
@@ -192,6 +221,7 @@
 			await deleteCodingWorkflow(draft.id);
 			codingSession.workflows = codingSession.workflows.filter((workflow) => workflow.id !== draft?.id);
 			selectWorkflow(codingSession.workflows[0]);
+			editorOpen = false;
 		} catch (caught) { localError = caught instanceof Error ? caught.message : 'Could not delete flow.'; }
 	}
 
@@ -201,7 +231,7 @@
 		if (!draft.id && selectedWorkflowId) draft.id = selectedWorkflowId;
 		if (!projectId || !draft.id || (!message.trim() && attachments.length === 0)) { localError = 'Choose a project, save the flow, and describe the coding task.'; return; }
 		starting = true; localError = '';
-		try { await beginCodingRun(projectId, draft.id, message.trim() || 'Use the attached files as the coding task.', attachments); }
+		try { await beginCodingRun(projectId, draft.id, message.trim() || 'Use the attached files as the coding task.', attachments, bypassThisRun); }
 		catch (caught) { localError = caught instanceof Error ? caught.message : 'Could not start coding run.'; }
 		finally { starting = false; }
 	}
@@ -215,9 +245,34 @@
 		stage.validation_recipes = stage.validation_recipes.includes(name) ? stage.validation_recipes.filter((item) => item !== name) : [...stage.validation_recipes, name];
 	}
 
-	function stepOutput(step: CodingRunStep) {
-		const diff = step.metadata?.diff as { files?: Array<{ path?: string; unified?: string }> } | undefined;
-		if (diff?.files?.length) return diff.files.map((file) => `${file.path ?? 'file'}\n${file.unified ?? ''}`).join('\n\n');
+	// Adapt a coding tool step into the ChatMessage shape the chat ToolEventCard/DiffEventCard expect,
+	// so the coding feed reuses the same cards, diff highlighting, and tool-input rendering as chat.
+	function toolMessage(step: CodingRunStep): ChatMessage {
+		const metadata = step.metadata ?? {};
+		return {
+			role: 'tool',
+			kind: 'tool',
+			content: step.summary,
+			status: step.status === 'error' || step.status === 'failed' ? 'error' : step.status === 'running' ? 'running' : 'completed',
+			metadata: {
+				tool: step.tool,
+				arguments_summary: metadata.arguments_summary as Record<string, unknown> | undefined,
+				result_summary: step.summary,
+				error: typeof metadata.error === 'string' ? metadata.error : undefined,
+				diff: metadata.diff as ToolDiff | undefined
+			}
+		};
+	}
+
+	function stageName(step: CodingRunStep) {
+		return String((step.metadata?.stage as CodingStage | undefined)?.name ?? step.phase);
+	}
+
+	function stepThinking(step: CodingRunStep) {
+		return typeof step.metadata?.thinking === 'string' ? step.metadata.thinking : '';
+	}
+
+	function stageReport(step: CodingRunStep) {
 		return typeof step.metadata?.output === 'string' ? step.metadata.output : step.summary;
 	}
 
@@ -231,138 +286,186 @@
 		await resolveCodingQuestion(request.id, questionAnswers);
 		questionAnswers = {}; questionCustom = {};
 	}
+
+	function selectRun(run: CodingRun) {
+		codingSession.activeRun = run;
+		runsMenuOpen = false;
+	}
+
+	async function deleteRun(runId: string) {
+		try { await removeCodingRun(runId); }
+		catch (caught) { localError = caught instanceof Error ? caught.message : 'Could not delete run.'; }
+	}
 </script>
 
-<section class="coding-wrap" aria-label="BitBuddy Coding workspace">
-	<PageHeader icon={CodeIcon} variant="chat" eyebrow="Coding workspace" title={activeBusy ? (codingSession.activeStageName || 'Workflow running') : 'Coding'}>
+<section class="coding-wrap" data-mode="Code" aria-label="BitBuddy Coding workspace">
+	<PageHeader icon={CodeIcon} variant="chat" eyebrow="Coding workspace" title={activeBusy ? (codingSession.activeStageName || 'Workflow running') : (draft?.name || 'Coding')}>
 		{#snippet action()}
 			{#if activeBusy}<span class="run-status">{codingSession.activeRun?.status.replaceAll('_', ' ')}</span>{/if}
+			<CodingFlowMenu
+				workflows={codingSession.workflows}
+				selectedId={selectedWorkflowId}
+				open={flowMenuOpen}
+				disabled={activeBusy}
+				onToggle={() => (flowMenuOpen = !flowMenuOpen)}
+				onSelect={selectWorkflow}
+				onNew={duplicateFlow}
+				onEdit={() => (editorOpen = true)}
+			/>
+			<div class="project-pill"><SelectMenu value={projectId} options={projectOptions} placeholder="Project" ariaLabel="Coding project" disabled={activeBusy} compact onChange={(value) => (projectId = value)} /></div>
+			<CodingRunsMenu
+				runs={workflowRuns}
+				open={runsMenuOpen}
+				activeRunId={codingSession.activeRun?.id ?? ''}
+				onToggle={() => (runsMenuOpen = !runsMenuOpen)}
+				onSelect={selectRun}
+				onDelete={deleteRun}
+			/>
 			<button class="header-button" type="button" onclick={() => goto('/')}><ArrowLeftIcon size={17} weight="bold" /> Chat</button>
 		{/snippet}
 	</PageHeader>
 
-	<div class="coding-grid">
-		<aside class="flow-sidebar">
-			<div class="section-heading"><span>Saved flows</span><button type="button" onclick={duplicateFlow} title="Duplicate selected flow"><PlusIcon size={15} /></button></div>
-			<div class="flow-list">
-				{#each codingSession.workflows as workflow}
-					<button class:active={selectedWorkflowId === workflow.id} type="button" onclick={() => selectWorkflow(workflow)}>
-						<strong>{workflow.name}</strong><small>{workflow.stages.map((stage) => stage.name).join(' → ')}</small>
-					</button>
-				{/each}
-			</div>
-			<div class="section-heading recent"><span>Recent runs</span></div>
-			<div class="run-list">
-				{#each workflowRuns.slice(0, 8) as run}
-					<button type="button" onclick={() => (codingSession.activeRun = run)}><strong>{run.user_request}</strong><small class:bad={['failed', 'needs_attention'].includes(run.status)}>{run.status.replaceAll('_', ' ')}</small></button>
-				{/each}
-			</div>
-		</aside>
+	<div class="coding-body">
+		{#if localError || codingSession.error}<p class="error-banner">{localError || codingSession.error}</p>{/if}
 
-		<main class="workspace">
-			{#if localError || codingSession.error}<p class="error-banner">{localError || codingSession.error}</p>{/if}
-
-			<div class="config-row">
-				<section class="flow-canvas">
-					<div class="canvas-header">
-						<div class="flow-title"><span>Flow</span>{#if draft}<input bind:value={draft.name} aria-label="Flow name" disabled={activeBusy} />{:else}<strong>Choose a saved flow</strong>{/if}</div>
-						<div class="canvas-actions">
-							<button type="button" onclick={() => addStage('plan')} disabled={activeBusy}><PlusIcon size={14} /> Plan</button>
-							<button type="button" onclick={() => addStage('review')} disabled={activeBusy}><PlusIcon size={14} /> Review</button>
-							<button type="button" onclick={() => addStage('test')} disabled={activeBusy}><PlusIcon size={14} /> Test</button>
-							<button class="save" type="button" onclick={saveFlow} disabled={saving || activeBusy}><FloppyDiskIcon size={15} /> {saving ? 'Saving…' : 'Save'}</button>
-						</div>
-					</div>
-
-					<div class="stage-strip">
-						{#each draft?.stages ?? [] as stage, index (stage.id)}
-							<div class="stage-link" class:current={codingSession.activeStageId === stage.id}>
-								<button class="stage-card" class:selected={selectedStageId === stage.id} type="button" onclick={() => (selectedStageId = stage.id)}>
-									<span class="stage-number">{index + 1}</span><strong>{stage.name}</strong>
-									<small>{providerLabel(providerFor(stage.provider_key))} · {stage.model}</small>
-									{#if stage.approval_gate}<em>approval</em>{/if}
-								</button>
-								<div class="stage-order">
-									<button type="button" onclick={() => moveStage(stage, -1)} disabled={!canMove(stage, -1) || activeBusy} aria-label="Move stage up"><ArrowUpIcon size={13} /></button>
-									<button type="button" onclick={() => moveStage(stage, 1)} disabled={!canMove(stage, 1) || activeBusy} aria-label="Move stage down"><ArrowDownIcon size={13} /></button>
+		<div class="conversation-scroll">
+			{#if codingSession.activeRun}
+				<div class="user-turn">
+					<div class="user-bubble"><p>{codingSession.activeRun.user_request}</p>{#if runAttachments.length}<div class="run-attachments">{#each runAttachments as attachment}<span>{attachment.name}</span>{/each}</div>{/if}</div>
+				</div>
+			{/if}
+			{#if visibleSteps.length || liveStageActive}
+				<div class="timeline">
+					{#each visibleSteps as step (step.id)}
+						{#if step.kind === 'thinking'}
+							<ThinkingStream content={stepThinking(step)} error="" isStreaming={false} autoCollapse storageKey={`coding-think-${step.id}`} />
+						{:else if step.kind === 'stage'}
+							<div class="stage-turn" class:error={step.status === 'error'}>
+								<div class="stage-avatar"><BitBuddyFace size="2.4rem" /></div>
+								<div class="stage-content">
+									<div class="stage-heading"><strong>{stageName(step)}</strong><span class="stage-status" class:error={step.status === 'error'}>{step.status}</span></div>
+									<div class="stage-report"><MarkdownMessage content={stageReport(step)} /></div>
 								</div>
 							</div>
-						{/each}
-					</div>
-				</section>
-
-				<aside class="stage-editor">
-					{#if selectedStage}
-						<div class="editor-header"><div><span>Stage settings</span><strong>{selectedStage.name}</strong></div>{#if selectedStage.kind !== 'build'}<button type="button" onclick={() => removeStage(selectedStage)} disabled={activeBusy} title="Remove stage"><TrashIcon size={16} /></button>{/if}</div>
-						<div class="editor-grid">
-							<label><span>Name</span><input bind:value={selectedStage.name} disabled={activeBusy} /></label>
-							<label><span>Provider</span><SelectMenu value={selectedStage.provider_key} options={providerOptions} ariaLabel="Stage provider" disabled={activeBusy} onChange={(value) => changeProvider(selectedStage, value)} /></label>
-							<label><span>Model</span><SelectMenu value={selectedStage.model} options={modelOptions(selectedStage)} ariaLabel="Stage model" disabled={activeBusy} onChange={(value) => (selectedStage.model = value)} /></label>
-							<label><span>Reasoning</span><SelectMenu value={selectedStage.reasoning_effort} options={reasoningEffortOptionsForProvider(selectedProvider?.type ?? '', selectedStage.model)} ariaLabel="Stage reasoning" disabled={activeBusy} onChange={(value) => (selectedStage.reasoning_effort = value)} /></label>
-							<label class="instructions"><span>Instructions</span><textarea bind:value={selectedStage.instructions} rows="3" disabled={activeBusy}></textarea></label>
-						</div>
-						<label class="check"><input type="checkbox" bind:checked={selectedStage.approval_gate} disabled={activeBusy} /><span>Pause for approval after this stage</span></label>
-						{#if selectedStage.kind === 'test'}
-							<div class="recipes"><span>Validation recipes</span>{#if recipes.length}{#each recipes as recipe}<label class="check"><input type="checkbox" checked={selectedStage.validation_recipes.includes(recipe.name)} onchange={() => toggleRecipe(selectedStage, recipe.name)} disabled={activeBusy} /><span><strong>{recipe.name}</strong><small>{recipe.command}</small></span></label>{/each}{:else}<small>No validation recipes found for this project.</small>{/if}</div>
+						{:else}
+							<ToolEventCard message={toolMessage(step)} />
 						{/if}
-					{:else}<div class="empty-editor">Select a stage to configure it.</div>{/if}
-					{#if draft?.id && !draft.is_default}<button class="delete-flow" type="button" onclick={removeFlow} disabled={activeBusy}><TrashIcon size={15} /> Delete flow</button>{/if}
-				</aside>
-			</div>
+					{/each}
+					{#if liveStageActive}
+						<div class="stage-turn live">
+							<div class="stage-avatar"><BitBuddyFace size="2.4rem" isThinking={!codingSession.stageOutput} isTyping={Boolean(codingSession.stageOutput)} /></div>
+							<div class="stage-content">
+								<div class="stage-heading"><strong>{codingSession.activeStageName || 'Working'}</strong><span class="stage-status running">running</span></div>
+								{#if codingSession.stageThinking}<ThinkingStream content={codingSession.stageThinking} error="" isStreaming={true} storageKey="coding-live" />{/if}
+								{#if codingSession.stageOutput}<div class="stage-report"><MarkdownMessage content={codingSession.stageOutput} /></div>{:else}<div class="stage-working"><span></span>Working…</div>{/if}
+							</div>
+						</div>
+					{/if}
+				</div>
+			{:else if activeBusy}
+				<div class="working-state"><span></span>{codingSession.activeStageName || 'Starting coding flow…'}</div>
+			{:else}
+				<div class="empty-output">
+					<strong>What should BitBuddy work on?</strong>
+					<span>Pick a flow and project up top, then describe the task below. The stages and their work appear here as they run.</span>
+				</div>
+			{/if}
+		</div>
 
-			<section class="coding-conversation">
-				<div class="conversation-toolbar">
-					<div class="project-picker"><span>Project</span><SelectMenu value={projectId} options={projectOptions} placeholder="Choose project" ariaLabel="Coding project" disabled={activeBusy} compact onChange={(value) => (projectId = value)} /></div>
-					<div class="output-state"><span>Run</span><strong>{codingSession.activeRun ? codingSession.activeRun.status.replaceAll('_', ' ') : 'Ready'}</strong></div>
-				</div>
-				<div class="conversation-scroll">
-					{#if codingSession.activeRun}
-						<div class="user-turn">
-							<div class="user-bubble"><p>{codingSession.activeRun.user_request}</p>{#if runAttachments.length}<div class="run-attachments">{#each runAttachments as attachment}<span>{attachment.name}</span>{/each}</div>{/if}</div>
-						</div>
-					{/if}
-					{#if visibleSteps.length}
-						<div class="timeline">
-							{#each visibleSteps as step}
-								<article class:tool={step.kind === 'tool'} class:error={step.status === 'error'}>
-									<header><span>{step.kind === 'stage' ? String((step.metadata?.stage as CodingStage | undefined)?.name ?? step.phase) : step.tool}</span><small>{step.status}</small></header>
-									<pre>{stepOutput(step)}</pre>
-								</article>
-							{/each}
-						</div>
-					{:else if activeBusy}
-						<div class="working-state"><span></span>{codingSession.activeStageName || 'Starting coding flow…'}</div>
-					{:else}
-						<div class="empty-output"><strong>What should BitBuddy work on?</strong><span>Choose a project and flow, then send a task below. The stages and their work will appear here as they run.</span></div>
-					{/if}
-				</div>
-				<ChatComposer
-					mode="Code"
-					buddyName="BitBuddy"
-					contextUsage={null}
-					thinkEnabled={false}
-					thinkingLevel="off"
-					reasoningEffortOptions={[]}
-					reasoningEffortVisible={false}
-					showThinkingControls={false}
-					disabled={activeBusy || starting || !draft || !projectId}
-					isStreaming={activeBusy}
-					bind:draft={codingDraft}
-					bind:attachments={codingAttachments}
-					messageHistory={workflowRuns.map((run) => run.user_request)}
-					historyKey="coding"
-					placeholder="Describe what you want BitBuddy to build..."
-					contextLabel={draft ? `Runs through ${draft.name}` : 'Choose a coding flow'}
-					onDraftChange={() => {}}
-					onSend={startRun}
-					onStop={stopCodingRun}
-					onThinkToggle={() => {}}
-					onThinkingLevelChange={() => {}}
-				/>
-			</section>
-		</main>
+		<div class="run-options">
+			{#if flowTrusted}
+				<span class="trust-pill on"><ShieldCheckIcon size={14} weight="fill" /> Trusted flow — permission prompts off</span>
+			{:else}
+				<label class="trust-toggle" class:on={bypassThisRun}>
+					<input type="checkbox" bind:checked={bypassThisRun} disabled={activeBusy} />
+					<ShieldCheckIcon size={14} weight={bypassThisRun ? 'fill' : 'regular'} />
+					<span>Skip permission prompts for this run</span>
+				</label>
+			{/if}
+		</div>
+
+		<ChatComposer
+			mode="Code"
+			buddyName="BitBuddy"
+			contextUsage={null}
+			thinkEnabled={false}
+			thinkingLevel="off"
+			reasoningEffortOptions={[]}
+			reasoningEffortVisible={false}
+			showThinkingControls={false}
+			disabled={activeBusy || starting || !draft || !projectId}
+			isStreaming={activeBusy}
+			bind:draft={codingDraft}
+			bind:attachments={codingAttachments}
+			messageHistory={workflowRuns.map((run) => run.user_request)}
+			historyKey="coding"
+			placeholder="Describe what you want BitBuddy to build..."
+			contextLabel={draft ? `Runs through ${draft.name}` : 'Choose a coding flow'}
+			onDraftChange={() => {}}
+			onSend={startRun}
+			onStop={stopCodingRun}
+			onThinkToggle={() => {}}
+			onThinkingLevelChange={() => {}}
+		/>
 	</div>
 </section>
+
+<Overlay open={editorOpen} wide label="Edit coding flow" onClose={() => (editorOpen = false)}>
+	<div class="flow-editor">
+		<div class="editor-top">
+			<div class="flow-title">
+				<span>Flow</span>
+				{#if draft}<input bind:value={draft.name} aria-label="Flow name" disabled={activeBusy} />{:else}<strong>Choose a saved flow</strong>{/if}
+			</div>
+			<button class="save" type="button" onclick={saveFlow} disabled={saving || activeBusy || !draft}><FloppyDiskIcon size={15} /> {saving ? 'Saving…' : 'Save'}</button>
+		</div>
+
+		<div class="add-actions">
+			<button type="button" onclick={() => addStage('plan')} disabled={activeBusy || !draft}><PlusIcon size={14} /> Plan</button>
+			<button type="button" onclick={() => addStage('review')} disabled={activeBusy || !draft}><PlusIcon size={14} /> Review</button>
+			<button type="button" onclick={() => addStage('test')} disabled={activeBusy || !draft}><PlusIcon size={14} /> Test</button>
+		</div>
+
+		<div class="stage-strip">
+			{#each draft?.stages ?? [] as stage, index (stage.id)}
+				<div class="stage-link" class:current={codingSession.activeStageId === stage.id}>
+					<button class="stage-card" class:selected={selectedStageId === stage.id} type="button" onclick={() => (selectedStageId = stage.id)}>
+						<span class="stage-number">{index + 1}</span><strong>{stage.name}</strong>
+						<small>{providerLabel(providerFor(stage.provider_key))} · {stage.model}</small>
+						{#if stage.approval_gate}<em>approval</em>{/if}
+					</button>
+					<div class="stage-order">
+						<button type="button" onclick={() => moveStage(stage, -1)} disabled={!canMove(stage, -1) || activeBusy} aria-label="Move stage up"><ArrowUpIcon size={13} /></button>
+						<button type="button" onclick={() => moveStage(stage, 1)} disabled={!canMove(stage, 1) || activeBusy} aria-label="Move stage down"><ArrowDownIcon size={13} /></button>
+					</div>
+				</div>
+			{/each}
+		</div>
+
+		<div class="stage-editor">
+			{#if selectedStage}
+				<div class="editor-header"><div><span>Stage settings</span><strong>{selectedStage.name}</strong></div>{#if selectedStage.kind !== 'build'}<button type="button" onclick={() => removeStage(selectedStage)} disabled={activeBusy} title="Remove stage"><TrashIcon size={16} /></button>{/if}</div>
+				<div class="editor-grid">
+					<label><span>Name</span><input bind:value={selectedStage.name} disabled={activeBusy} /></label>
+					<label><span>Provider</span><SelectMenu value={selectedStage.provider_key} options={providerOptions} ariaLabel="Stage provider" disabled={activeBusy} onChange={(value) => changeProvider(selectedStage, value)} /></label>
+					<label><span>Model</span><SelectMenu value={selectedStage.model} options={modelOptions(selectedStage)} ariaLabel="Stage model" disabled={activeBusy} onChange={(value) => (selectedStage.model = value)} /></label>
+					<label><span>Reasoning</span><SelectMenu value={selectedStage.reasoning_effort} options={reasoningEffortOptionsForProvider(selectedProvider?.type ?? '', selectedStage.model)} ariaLabel="Stage reasoning" disabled={activeBusy} onChange={(value) => (selectedStage.reasoning_effort = value)} /></label>
+					<label class="instructions"><span>Instructions</span><textarea bind:value={selectedStage.instructions} rows="3" disabled={activeBusy}></textarea></label>
+				</div>
+				<label class="check"><input type="checkbox" bind:checked={selectedStage.approval_gate} disabled={activeBusy} /><span>Pause for approval after this stage</span></label>
+				{#if selectedStage.kind === 'test'}
+					<div class="recipes"><span>Validation recipes</span>{#if recipes.length}{#each recipes as recipe}<label class="check"><input type="checkbox" checked={selectedStage.validation_recipes.includes(recipe.name)} onchange={() => toggleRecipe(selectedStage, recipe.name)} disabled={activeBusy} /><span><strong>{recipe.name}</strong><small>{recipe.command}</small></span></label>{/each}{:else}<small>No validation recipes found for this project.</small>{/if}</div>
+				{/if}
+			{:else}<div class="empty-editor">Select a stage to configure it.</div>{/if}
+		</div>
+
+		{#if draft}
+			<label class="check trust-check"><input type="checkbox" bind:checked={draft.bypass_permissions} disabled={activeBusy} /><span><strong>Trust this flow</strong><small>Skip all permission prompts whenever this flow runs.</small></span></label>
+		{/if}
+
+		{#if draft?.id && !draft.is_default}<button class="delete-flow" type="button" onclick={removeFlow} disabled={activeBusy}><TrashIcon size={15} /> Delete flow</button>{/if}
+	</div>
+</Overlay>
 
 {#if codingSession.pendingGate}
 	<div class="modal"><div class="modal-card"><span class="modal-kicker">Stage approval</span><h2>{codingSession.pendingGate.stage_name} is ready</h2><pre>{codingSession.pendingGate.output}</pre><textarea bind:value={revisionFeedback} rows="3" placeholder="What should this stage revise?"></textarea><footer><button type="button" onclick={() => resolveCodingGate('stop')}>Stop</button><button type="button" onclick={() => resolveCodingGate('revise', revisionFeedback)} disabled={!revisionFeedback.trim()}>Revise</button><button class="primary" type="button" onclick={() => resolveCodingGate('approve')}>Continue</button></footer></div></div>
@@ -378,80 +481,765 @@
 {/if}
 
 <style>
-	.coding-wrap { width: 100%; max-width: 100%; height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: .72rem; --page-accent: #a78bfa; --page-soft: rgba(167,139,250,.16); }
-	.header-button, .canvas-actions button { display: inline-flex; align-items: center; gap: .4rem; border: 1px solid var(--border); border-radius: .65rem; padding: .58rem .78rem; color: var(--text-soft); font-weight: 720; }
-	.header-button:hover, .canvas-actions button:hover { color: var(--accent); border-color: var(--accent); }
-	.run-status { padding: .42rem .65rem; border-radius: 999px; background: color-mix(in srgb, var(--warning) 14%, transparent); color: var(--warning); font-size: .74rem; font-weight: 800; text-transform: capitalize; }
-	.coding-grid { min-height: 0; display: grid; grid-template-columns: 15.5rem minmax(32rem, 1fr) 21rem; gap: .72rem; }
-	.flow-sidebar, .stage-editor, .flow-canvas { border: 1px solid color-mix(in srgb, var(--bg-soft) 70%, var(--border)); border-radius: 1.15rem; background: color-mix(in srgb, var(--panel) 92%, transparent); }
-	.flow-sidebar, .stage-editor { min-height: 0; overflow: auto; padding: .9rem; }
-	.section-heading, .editor-header, .canvas-header { display: flex; justify-content: space-between; align-items: center; gap: .7rem; }
-	.section-heading { color: var(--text-soft); font-size: .72rem; font-weight: 820; letter-spacing: .08em; text-transform: uppercase; }
-	.section-heading button, .editor-header button { display: grid; place-items: center; width: 1.9rem; height: 1.9rem; border-radius: .5rem; color: var(--text-soft); }
-	.flow-list, .run-list { display: grid; gap: .42rem; margin-top: .65rem; }
-	.flow-list button, .run-list button { display: grid; gap: .24rem; padding: .68rem .72rem; border: 1px solid transparent; border-radius: .72rem; text-align: left; color: var(--text); }
-	.flow-list button:hover, .flow-list button.active { border-color: color-mix(in srgb, #a78bfa 45%, var(--border)); background: rgba(167,139,250,.09); }
-	.flow-list small, .run-list small { color: var(--text-soft); font-size: .7rem; overflow: hidden; text-overflow: ellipsis; }
-	.run-list strong { font-size: .78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.run-list small.bad { color: var(--warning); }
-	.section-heading.recent { margin-top: 1.3rem; }
-	.workspace { min-width: 0; min-height: 0; overflow: auto; display: grid; align-content: start; gap: .72rem; }
-	label { display: grid; gap: .35rem; color: var(--text-soft); font-size: .74rem; font-weight: 700; } input, textarea { width: 100%; border: 1px solid var(--border); border-radius: .62rem; background: var(--bg-soft); color: var(--text); padding: .65rem .7rem; font: inherit; resize: vertical; } input:focus, textarea:focus { outline: none; border-color: var(--accent); }
-	.error-banner { margin: 0; padding: .7rem .85rem; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border)); border-radius: .75rem; background: color-mix(in srgb, var(--danger) 8%, var(--panel)); color: var(--danger); }
-	.flow-canvas { padding: .9rem; }.canvas-header > div:first-child { display: flex; align-items: center; gap: .6rem; }.canvas-header span, .editor-header span { color: var(--text-soft); font-size: .7rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }.canvas-actions { display: flex; flex-wrap: wrap; gap: .35rem; }.canvas-actions button { padding: .45rem .55rem; font-size: .72rem; }.canvas-actions .save { color: #a78bfa; }
-	.stage-strip { display: flex; gap: .55rem; overflow-x: auto; padding-top: .85rem; }.stage-link { position: relative; flex: 0 0 10rem; }.stage-link.current .stage-card { box-shadow: 0 0 0 2px var(--success); }.stage-card { width: 100%; min-height: 8.2rem; display: grid; align-content: start; gap: .25rem; padding: .72rem; border: 1px solid var(--border); border-radius: .8rem; text-align: left; color: var(--text); background: var(--bg-soft); }.stage-card.selected { border-color: #a78bfa; background: rgba(167,139,250,.08); }.stage-card small { color: var(--text-soft); font-size: .68rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.stage-card em { justify-self: start; margin-top: .2rem; padding: .16rem .35rem; border-radius: 999px; background: rgba(245,158,11,.12); color: var(--warning); font-size: .62rem; font-style: normal; }.stage-number { color: #a78bfa; font-size: .66rem; font-weight: 850; }.stage-order { position: absolute; top: .35rem; right: .35rem; display: flex; }.stage-order button { display: grid; place-items: center; width: 1.45rem; height: 1.45rem; color: var(--text-soft); }
-	.timeline { display: grid; gap: .65rem; padding: .8rem; }.timeline article { border-left: 3px solid #a78bfa; border-radius: .55rem; background: var(--bg-soft); padding: .7rem .8rem; }.timeline article.tool { border-left-color: var(--accent); }.timeline article.error { border-left-color: var(--danger); }.timeline article header { display: flex; justify-content: space-between; text-transform: capitalize; }.timeline article small { color: var(--text-soft); }.timeline pre, .modal pre { margin: .55rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: .78rem/1.5 ui-monospace, monospace; color: var(--text-soft); max-height: 24rem; overflow: auto; }.empty-output, .empty-editor { padding: 2rem 1rem; color: var(--text-soft); text-align: center; line-height: 1.5; }
-	.stage-editor { display: grid; align-content: start; gap: .8rem; }.editor-header > div { display: grid; gap: .2rem; }.editor-header strong { font-size: 1.05rem; }.check { display: flex; align-items: flex-start; gap: .5rem; }.check input { width: auto; margin-top: .12rem; }.recipes { display: grid; gap: .55rem; padding-top: .3rem; border-top: 1px solid var(--border); }.recipes > span { font-size: .74rem; font-weight: 800; }.recipes .check span { display: grid; gap: .15rem; min-width: 0; }.recipes small { color: var(--text-soft); font-weight: 500; overflow-wrap: anywhere; }.delete-flow { margin-top: 1rem; display: inline-flex; align-items: center; gap: .35rem; color: var(--danger); }
-	.modal { position: fixed; inset: 0; z-index: 10000; display: grid; place-items: center; padding: 1rem; background: rgba(2,6,15,.66); backdrop-filter: blur(8px); }.modal-card { width: min(42rem, 100%); max-height: calc(100vh - 2rem); overflow: auto; padding: 1.2rem; border: 1px solid var(--border); border-radius: 1rem; background: var(--panel-raised); box-shadow: var(--shadow-panel); }.modal-kicker { color: #a78bfa; font-size: .7rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }.modal h2 { margin: .3rem 0 .7rem; }.modal footer { display: flex; justify-content: flex-end; gap: .55rem; margin-top: 1rem; }.modal footer button { padding: .62rem .9rem; border: 1px solid var(--border); border-radius: .6rem; }.modal footer .primary { background: #7c3aed; color: white; border-color: transparent; }.question-modal fieldset { display: grid; gap: .45rem; margin: .9rem 0; padding: 0; border: 0; }.question-modal legend { display: grid; gap: .2rem; margin-bottom: .25rem; }.question-modal fieldset > button { display: grid; gap: .15rem; padding: .7rem; border: 1px solid var(--border); border-radius: .65rem; text-align: left; }.question-modal fieldset > button.selected { border-color: #a78bfa; background: rgba(167,139,250,.09); }.question-modal button small { color: var(--text-soft); }
-	@media (max-width: 1350px) { .coding-grid { grid-template-columns: 13rem minmax(28rem, 1fr) 19rem; } }
-	@media (max-width: 1100px) { .coding-grid { grid-template-columns: 1fr; overflow: auto; }.flow-sidebar, .stage-editor { overflow: visible; }.flow-list, .run-list { grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }.workspace { overflow: visible; }.coding-wrap { overflow: auto; }.stage-editor { order: 2; } }
-	@media (max-width: 700px) { .canvas-header { align-items: flex-start; flex-direction: column; }.coding-grid { min-width: 0; } }
+	/* Coding mirrors the Chat surface: a header with dropdowns, one big transcript,
+	   and the shared composer at the bottom. Flow editing lives in an overlay. */
+	.coding-wrap {
+		width: 100%;
+		max-width: 100%;
+		height: 100%;
+		max-height: calc(100vh - 3rem);
+		display: grid;
+		grid-template-rows: auto minmax(0, 1fr);
+		gap: 0.72rem;
+		overflow: hidden;
+		--page-accent: #a78bfa;
+		--page-soft: rgba(167, 139, 250, 0.16);
+		--mode-color: #a78bfa;
+		--mode-soft: rgba(167, 139, 250, 0.22);
+		--mode-border: rgba(167, 139, 250, 0.28);
+		--mode-glow: rgba(167, 139, 250, 0.15);
+	}
 
-	/* Coding uses the same conversation proportions as Chat: compact setup above,
-	   one wide scrolling transcript, and the shared composer at the bottom. */
-	.coding-wrap { overflow: hidden; }
-	.coding-grid { grid-template-columns: 13.5rem minmax(0, 1fr); overflow: hidden; }
-	.workspace { display: flex; flex-direction: column; overflow: hidden; align-content: normal; }
-	.config-row { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(19rem, 28rem); gap: .72rem; }
-	.flow-canvas, .stage-editor, .coding-conversation { border: 1px solid color-mix(in srgb, var(--bg-soft) 70%, var(--border)); border-radius: 1.05rem; background: color-mix(in srgb, var(--panel) 92%, transparent); }
-	.flow-canvas, .stage-editor { min-width: 0; max-height: 25rem; overflow: auto; padding: .78rem; }
-	.flow-title { min-width: 0; display: flex; align-items: baseline; gap: .55rem; }
-	.flow-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.flow-title input { width: min(20rem, 32vw); padding: .42rem .55rem; }
-	.canvas-header span, .editor-header span, .conversation-toolbar span { color: var(--text-soft); font-size: .68rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
-	.stage-strip { gap: .45rem; padding-top: .7rem; padding-bottom: .1rem; }
-	.stage-link { flex-basis: 8.25rem; }
-	.stage-card { min-height: 5.8rem; gap: .2rem; padding: .58rem; border-radius: .72rem; }
-	.stage-card small { font-size: .64rem; }
-	.stage-card em { margin-top: 0; padding: .12rem .3rem; font-size: .58rem; }
-	.stage-order { top: .25rem; right: .25rem; }
-	.stage-order button { width: 1.3rem; height: 1.3rem; }
-	.stage-editor { display: grid; align-content: start; gap: .62rem; }
-	.editor-header strong { font-size: .9rem; }
-	.editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
-	.editor-grid .instructions { grid-column: 1 / -1; }
-	.stage-editor label { gap: .3rem; font-size: .7rem; }
-	.stage-editor input, .stage-editor textarea { padding: .58rem .65rem; }
-	.delete-flow { margin-top: 0; font-size: .72rem; }
-	.coding-conversation { flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
-	.conversation-toolbar { min-height: 3.55rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .48rem .78rem; border-bottom: 1px solid var(--border); }
-	.project-picker { width: min(20rem, 48%); display: grid; grid-template-columns: auto minmax(9rem, 1fr); align-items: center; gap: .55rem; }
-	.output-state { display: grid; justify-items: end; gap: .1rem; }
-	.output-state strong { font-size: .78rem; text-transform: capitalize; }
-	.conversation-scroll { min-height: 0; overflow: auto; padding: 1rem clamp(.8rem, 3vw, 2.5rem); }
-	.user-turn { display: flex; justify-content: flex-end; margin-bottom: 1rem; }
-	.user-bubble { width: min(42rem, 82%); padding: .72rem .9rem; border-radius: 1rem 1rem .28rem 1rem; background: color-mix(in srgb, var(--accent) 18%, var(--bg-soft)); color: var(--text); }
-	.user-bubble p { margin: 0; white-space: pre-wrap; }
-	.run-attachments { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .55rem; }
-	.run-attachments span { max-width: 15rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: .25rem .45rem; border: 1px solid var(--border); border-radius: .45rem; color: var(--text-soft); font-size: .68rem; }
-	.timeline { max-width: 64rem; margin: 0 auto; padding: 0; }
-	.timeline article { border-radius: .62rem; padding: .72rem .82rem; }
-	.timeline article.tool { margin-left: 1.15rem; }
-	.empty-output { min-height: 100%; display: grid; place-content: center; gap: .25rem; }
-	.empty-output strong { color: var(--text); font-size: 1rem; }
-	.working-state { height: 100%; display: flex; align-items: center; justify-content: center; gap: .55rem; color: var(--text-soft); }
-	.working-state span { width: .55rem; height: .55rem; border-radius: 50%; background: #a78bfa; box-shadow: 0 0 0 .35rem rgba(167,139,250,.12); animation: coding-pulse 1.3s ease-in-out infinite; }
-	@keyframes coding-pulse { 50% { opacity: .42; transform: scale(.8); } }
-	@media (max-width: 1150px) { .coding-grid { grid-template-columns: 12.5rem minmax(0, 1fr); }.config-row { grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem); } }
-	@media (max-width: 900px) { .coding-wrap { overflow: auto; height: auto; min-height: 100%; }.coding-grid { grid-template-columns: 1fr; overflow: visible; }.flow-sidebar { overflow: visible; }.flow-list, .run-list { grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); }.workspace { overflow: visible; }.config-row { grid-template-columns: 1fr; }.flow-canvas, .stage-editor { max-height: none; }.stage-editor { display: grid; }.coding-conversation { flex-basis: auto; min-height: 32rem; }.section-heading.recent { margin-top: .7rem; } }
-	@media (max-width: 650px) { .flow-title { width: 100%; }.flow-title input { width: 100%; }.conversation-toolbar { align-items: stretch; flex-direction: column; }.project-picker { width: 100%; }.output-state { display: none; }.editor-grid { grid-template-columns: 1fr; }.editor-grid .instructions { grid-column: auto; }.user-bubble { width: 92%; } }
+	:global(:root.light) .coding-wrap {
+		--page-accent: #7c3aed;
+		--page-soft: rgba(124, 58, 237, 0.14);
+		--mode-color: #7c3aed;
+		--mode-soft: rgba(124, 58, 237, 0.16);
+		--mode-border: rgba(124, 58, 237, 0.3);
+		--mode-glow: rgba(124, 58, 237, 0.18);
+	}
+
+	.header-button {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		height: 2.75rem;
+		border: 1px solid var(--border);
+		border-radius: 0.82rem;
+		padding: 0 0.85rem;
+		color: var(--text-soft);
+		font-weight: 720;
+	}
+
+	.header-button:hover {
+		color: var(--mode-color);
+		border-color: var(--mode-color);
+	}
+
+	.project-pill {
+		min-width: 9rem;
+		max-width: 12rem;
+	}
+
+	.run-status {
+		padding: 0.42rem 0.65rem;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--warning) 14%, transparent);
+		color: var(--warning);
+		font-size: 0.74rem;
+		font-weight: 800;
+		text-transform: capitalize;
+	}
+
+	/* Message surface — same treatment as ChatPanel's .chat-body. */
+	.coding-body {
+		--chat-canvas-bg: var(--bg-soft);
+		--chat-panel-bg:
+			radial-gradient(circle at 24% 0%, rgba(88, 66, 128, 0.14), transparent 27rem),
+			linear-gradient(135deg, var(--glass-overlay, rgba(255, 255, 255, 0.03)), transparent 24rem),
+			var(--panel-shell, var(--panel));
+		position: relative;
+		min-height: 0;
+		min-width: 0;
+		display: grid;
+		grid-template-rows: minmax(0, 1fr) auto auto;
+		border: 1px solid color-mix(in srgb, var(--bg-soft) 74%, var(--border));
+		border-radius: 1.45rem;
+		background: var(--chat-panel-bg);
+		overflow: hidden;
+	}
+
+	.coding-body::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		z-index: 1;
+		border-top: 1px solid rgba(255, 255, 255, 0.24);
+		border-radius: inherit;
+		pointer-events: none;
+	}
+
+	:global(:root.light) .coding-body {
+		--chat-canvas-bg: #d3e1ef;
+		--chat-panel-bg:
+			radial-gradient(circle at 24% 0%, rgba(124, 58, 237, 0.08), transparent 27rem),
+			linear-gradient(135deg, rgba(255, 255, 255, 0.28), transparent 24rem),
+			#d8e6f4;
+		border-color: rgba(73, 104, 145, 0.22);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+	}
+
+	.error-banner {
+		margin: 0.7rem 0.7rem 0;
+		padding: 0.7rem 0.85rem;
+		border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+		border-radius: 0.75rem;
+		background: color-mix(in srgb, var(--danger) 8%, var(--panel));
+		color: var(--danger);
+		position: relative;
+		z-index: 2;
+	}
+
+	.conversation-scroll {
+		min-height: 0;
+		overflow: auto;
+		padding: 1.25rem clamp(0.8rem, 3vw, 2.5rem);
+		position: relative;
+		z-index: 2;
+	}
+
+	.user-turn {
+		display: flex;
+		justify-content: flex-end;
+		margin-bottom: 1rem;
+	}
+
+	.user-bubble {
+		width: min(42rem, 82%);
+		padding: 0.72rem 0.9rem;
+		border-radius: 1rem 1rem 0.28rem 1rem;
+		background: color-mix(in srgb, var(--mode-color) 18%, var(--bg-soft));
+		color: var(--text);
+	}
+
+	.user-bubble p {
+		margin: 0;
+		white-space: pre-wrap;
+	}
+
+	.run-attachments {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+		margin-top: 0.55rem;
+	}
+
+	.run-attachments span {
+		max-width: 15rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		padding: 0.25rem 0.45rem;
+		border: 1px solid var(--border);
+		border-radius: 0.45rem;
+		color: var(--text-soft);
+		font-size: 0.68rem;
+	}
+
+	.timeline {
+		max-width: 64rem;
+		margin: 0 auto;
+		display: grid;
+		gap: 0.85rem;
+	}
+
+	/* Stage turns read like an assistant message: avatar gutter + name, collapsible thoughts, report. */
+	.stage-turn {
+		display: grid;
+		grid-template-columns: 2.4rem minmax(0, 1fr);
+		gap: 0.7rem;
+		align-items: start;
+	}
+
+	.stage-avatar {
+		width: 2.4rem;
+		height: 2.4rem;
+	}
+
+	.stage-content {
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.stage-heading {
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+	}
+
+	.stage-heading strong {
+		color: var(--text);
+		font-size: 0.8rem;
+		font-weight: 850;
+		letter-spacing: 0.03em;
+	}
+
+	.stage-status {
+		padding: 0.12rem 0.45rem;
+		border-radius: 999px;
+		border: 1px solid var(--chip-border, var(--border));
+		color: var(--text-soft);
+		font-size: 0.66rem;
+		font-weight: 800;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+	}
+
+	.stage-status.running {
+		color: var(--mode-color);
+		border-color: var(--mode-border);
+		background: color-mix(in srgb, var(--mode-color) 10%, transparent);
+	}
+
+	.stage-status.error {
+		color: var(--danger);
+		border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+		background: color-mix(in srgb, var(--danger) 10%, transparent);
+	}
+
+	.stage-report {
+		border: 1px solid var(--card-border, var(--border));
+		border-radius: 1rem;
+		background: var(--surface-card, var(--bg-soft));
+		padding: 0.6rem 0.9rem;
+		color: var(--text);
+	}
+
+	.stage-turn.error .stage-report {
+		border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+	}
+
+	.stage-working {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		color: var(--text-soft);
+		font-size: 0.82rem;
+	}
+
+	.stage-working span {
+		width: 0.5rem;
+		height: 0.5rem;
+		border-radius: 50%;
+		background: var(--mode-color);
+		box-shadow: 0 0 0 0.3rem rgba(167, 139, 250, 0.12);
+		animation: coding-pulse 1.3s ease-in-out infinite;
+	}
+
+	.modal pre {
+		margin: 0.55rem 0 0;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		font: 0.78rem/1.5 ui-monospace, monospace;
+		color: var(--text-soft);
+		max-height: 24rem;
+		overflow: auto;
+	}
+
+	.empty-output {
+		min-height: 100%;
+		display: grid;
+		place-content: center;
+		gap: 0.25rem;
+		padding: 2rem 1rem;
+		text-align: center;
+		color: var(--text-soft);
+		line-height: 1.5;
+	}
+
+	.empty-output strong {
+		color: var(--text);
+		font-size: 1rem;
+	}
+
+	.working-state {
+		height: 100%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.55rem;
+		color: var(--text-soft);
+	}
+
+	.working-state span {
+		width: 0.55rem;
+		height: 0.55rem;
+		border-radius: 50%;
+		background: var(--mode-color);
+		box-shadow: 0 0 0 0.35rem rgba(167, 139, 250, 0.12);
+		animation: coding-pulse 1.3s ease-in-out infinite;
+	}
+
+	@keyframes coding-pulse {
+		50% { opacity: 0.42; transform: scale(0.8); }
+	}
+
+	.run-options {
+		position: relative;
+		z-index: 2;
+		display: flex;
+		justify-content: flex-start;
+		padding: 0 clamp(0.8rem, 3vw, 2.5rem);
+		padding-left: calc(clamp(0.8rem, 3vw, 2.5rem) + 50px);
+		margin-bottom: -0.35rem;
+	}
+
+	.trust-toggle,
+	.trust-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.3rem 0.6rem;
+		border-radius: 999px;
+		font-size: 0.72rem;
+		font-weight: 700;
+		color: var(--text-soft);
+		border: 1px solid transparent;
+		cursor: pointer;
+	}
+
+	.trust-toggle input {
+		width: auto;
+		margin: 0;
+		accent-color: var(--mode-color);
+	}
+
+	.trust-toggle:hover {
+		color: var(--text);
+	}
+
+	.trust-toggle.on {
+		color: var(--mode-color);
+		background: color-mix(in srgb, var(--mode-color) 12%, transparent);
+		border-color: var(--mode-border);
+	}
+
+	.trust-pill.on {
+		cursor: default;
+		color: var(--success);
+		background: color-mix(in srgb, var(--success) 12%, transparent);
+		border-color: color-mix(in srgb, var(--success) 40%, transparent);
+	}
+
+	/* Flow editor overlay */
+	.flow-editor {
+		display: grid;
+		gap: 0.85rem;
+		padding: 1.15rem;
+	}
+
+	.editor-top {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.7rem;
+	}
+
+	.flow-title {
+		min-width: 0;
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+	}
+
+	.flow-title span,
+	.editor-header span {
+		color: var(--text-soft);
+		font-size: 0.68rem;
+		font-weight: 800;
+		letter-spacing: 0.07em;
+		text-transform: uppercase;
+	}
+
+	.flow-title input {
+		width: min(20rem, 60vw);
+		border: 1px solid var(--border);
+		border-radius: 0.62rem;
+		background: var(--bg-soft);
+		color: var(--text);
+		padding: 0.5rem 0.6rem;
+		font: inherit;
+		font-weight: 700;
+	}
+
+	.editor-top .save {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: 0.65rem;
+		color: var(--mode-color);
+		font-weight: 720;
+	}
+
+	.editor-top .save:hover:not(:disabled) {
+		border-color: var(--mode-color);
+	}
+
+	.add-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+	}
+
+	.add-actions button {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		padding: 0.45rem 0.6rem;
+		border: 1px solid var(--border);
+		border-radius: 0.6rem;
+		color: var(--text-soft);
+		font-size: 0.74rem;
+		font-weight: 700;
+	}
+
+	.add-actions button:hover:not(:disabled) {
+		color: var(--mode-color);
+		border-color: var(--mode-color);
+	}
+
+	.stage-strip {
+		display: flex;
+		gap: 0.45rem;
+		overflow-x: auto;
+		padding-bottom: 0.2rem;
+	}
+
+	.stage-link {
+		position: relative;
+		flex: 0 0 8.5rem;
+	}
+
+	.stage-link.current .stage-card {
+		box-shadow: 0 0 0 2px var(--success);
+	}
+
+	.stage-card {
+		width: 100%;
+		min-height: 5.8rem;
+		display: grid;
+		align-content: start;
+		gap: 0.2rem;
+		padding: 0.58rem;
+		border: 1px solid var(--border);
+		border-radius: 0.72rem;
+		text-align: left;
+		color: var(--text);
+		background: var(--bg-soft);
+	}
+
+	.stage-card.selected {
+		border-color: var(--mode-color);
+		background: color-mix(in srgb, var(--mode-color) 8%, transparent);
+	}
+
+	.stage-card small {
+		color: var(--text-soft);
+		font-size: 0.64rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.stage-card em {
+		justify-self: start;
+		padding: 0.12rem 0.3rem;
+		border-radius: 999px;
+		background: rgba(245, 158, 11, 0.12);
+		color: var(--warning);
+		font-size: 0.58rem;
+		font-style: normal;
+	}
+
+	.stage-number {
+		color: var(--mode-color);
+		font-size: 0.66rem;
+		font-weight: 850;
+	}
+
+	.stage-order {
+		position: absolute;
+		top: 0.25rem;
+		right: 0.25rem;
+		display: flex;
+	}
+
+	.stage-order button {
+		display: grid;
+		place-items: center;
+		width: 1.3rem;
+		height: 1.3rem;
+		color: var(--text-soft);
+	}
+
+	.stage-editor {
+		display: grid;
+		align-content: start;
+		gap: 0.7rem;
+		padding-top: 0.4rem;
+		border-top: 1px solid var(--border);
+	}
+
+	.editor-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.7rem;
+	}
+
+	.editor-header > div {
+		display: grid;
+		gap: 0.2rem;
+	}
+
+	.editor-header strong {
+		font-size: 0.95rem;
+	}
+
+	.editor-header button {
+		display: grid;
+		place-items: center;
+		width: 1.9rem;
+		height: 1.9rem;
+		border-radius: 0.5rem;
+		color: var(--text-soft);
+	}
+
+	.editor-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.55rem;
+	}
+
+	.editor-grid .instructions {
+		grid-column: 1 / -1;
+	}
+
+	label {
+		display: grid;
+		gap: 0.3rem;
+		color: var(--text-soft);
+		font-size: 0.7rem;
+		font-weight: 700;
+	}
+
+	.stage-editor input,
+	.stage-editor textarea {
+		width: 100%;
+		border: 1px solid var(--border);
+		border-radius: 0.62rem;
+		background: var(--bg-soft);
+		color: var(--text);
+		padding: 0.58rem 0.65rem;
+		font: inherit;
+		resize: vertical;
+	}
+
+	.stage-editor input:focus,
+	.stage-editor textarea:focus {
+		outline: none;
+		border-color: var(--mode-color);
+	}
+
+	.check {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.5rem;
+		font-size: 0.74rem;
+	}
+
+	.check input {
+		width: auto;
+		margin-top: 0.12rem;
+	}
+
+	.recipes {
+		display: grid;
+		gap: 0.55rem;
+		padding-top: 0.3rem;
+		border-top: 1px solid var(--border);
+	}
+
+	.recipes > span {
+		font-size: 0.74rem;
+		font-weight: 800;
+	}
+
+	.recipes .check span {
+		display: grid;
+		gap: 0.15rem;
+		min-width: 0;
+	}
+
+	.recipes small {
+		color: var(--text-soft);
+		font-weight: 500;
+		overflow-wrap: anywhere;
+	}
+
+	.trust-check {
+		padding-top: 0.4rem;
+		border-top: 1px solid var(--border);
+	}
+
+	.trust-check span {
+		display: grid;
+		gap: 0.15rem;
+	}
+
+	.trust-check small {
+		color: var(--text-soft);
+		font-weight: 500;
+	}
+
+	.empty-editor {
+		padding: 2rem 1rem;
+		color: var(--text-soft);
+		text-align: center;
+	}
+
+	.delete-flow {
+		justify-self: start;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		color: var(--danger);
+		font-size: 0.78rem;
+		font-weight: 700;
+	}
+
+	/* Shared modal styling (gate / question / permission) */
+	.modal {
+		position: fixed;
+		inset: 0;
+		z-index: 10000;
+		display: grid;
+		place-items: center;
+		padding: 1rem;
+		background: rgba(2, 6, 15, 0.66);
+		backdrop-filter: blur(8px);
+	}
+
+	.modal-card {
+		width: min(42rem, 100%);
+		max-height: calc(100vh - 2rem);
+		overflow: auto;
+		padding: 1.2rem;
+		border: 1px solid var(--border);
+		border-radius: 1rem;
+		background: var(--panel-raised);
+		box-shadow: var(--shadow-panel);
+	}
+
+	.modal-kicker {
+		color: var(--mode-color);
+		font-size: 0.7rem;
+		font-weight: 850;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+
+	.modal h2 {
+		margin: 0.3rem 0 0.7rem;
+	}
+
+	.modal textarea {
+		width: 100%;
+		border: 1px solid var(--border);
+		border-radius: 0.62rem;
+		background: var(--bg-soft);
+		color: var(--text);
+		padding: 0.65rem 0.7rem;
+		font: inherit;
+		resize: vertical;
+	}
+
+	.modal footer {
+		display: flex;
+		justify-content: flex-end;
+		gap: 0.55rem;
+		margin-top: 1rem;
+	}
+
+	.modal footer button {
+		padding: 0.62rem 0.9rem;
+		border: 1px solid var(--border);
+		border-radius: 0.6rem;
+	}
+
+	.modal footer .primary {
+		background: #7c3aed;
+		color: white;
+		border-color: transparent;
+	}
+
+	.question-modal fieldset {
+		display: grid;
+		gap: 0.45rem;
+		margin: 0.9rem 0;
+		padding: 0;
+		border: 0;
+	}
+
+	.question-modal legend {
+		display: grid;
+		gap: 0.2rem;
+		margin-bottom: 0.25rem;
+	}
+
+	.question-modal fieldset > button {
+		display: grid;
+		gap: 0.15rem;
+		padding: 0.7rem;
+		border: 1px solid var(--border);
+		border-radius: 0.65rem;
+		text-align: left;
+	}
+
+	.question-modal fieldset > button.selected {
+		border-color: var(--mode-color);
+		background: color-mix(in srgb, var(--mode-color) 9%, transparent);
+	}
+
+	.question-modal label {
+		display: grid;
+		gap: 0.3rem;
+	}
+
+	.question-modal label input {
+		width: 100%;
+		border: 1px solid var(--border);
+		border-radius: 0.62rem;
+		background: var(--bg-soft);
+		color: var(--text);
+		padding: 0.6rem 0.7rem;
+		font: inherit;
+	}
+
+	.question-modal button small {
+		color: var(--text-soft);
+	}
+
+	@media (max-width: 760px) {
+		.coding-wrap {
+			height: calc(100vh - 2rem);
+			max-height: none;
+		}
+
+		.project-pill {
+			min-width: 7rem;
+		}
+
+		.editor-grid {
+			grid-template-columns: 1fr;
+		}
+
+		.editor-grid .instructions {
+			grid-column: auto;
+		}
+	}
 </style>

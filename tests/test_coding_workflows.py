@@ -44,6 +44,23 @@ class CodingWorkflowTests(unittest.TestCase):
             item.stop()
         self.temp.cleanup()
 
+    def test_default_flow_does_not_gate_plan_stage(self) -> None:
+        seeded = workflows.list_workflows()
+        plan = next(item for item in seeded[0].stages if item.kind == "plan")
+        self.assertFalse(plan.approval_gate)
+        self.assertFalse(seeded[0].bypass_permissions)
+
+    def test_bypass_permissions_round_trips(self) -> None:
+        saved = workflows.save_workflow(
+            name="Trusted",
+            stages=[stage("build", "openai", "gpt-test")],
+            bypass_permissions=True,
+        )
+        self.assertTrue(saved.bypass_permissions)
+        self.assertTrue(workflows.workflow_to_json(saved)["bypass_permissions"])
+        reloaded = workflows.get_workflow(saved.id)
+        self.assertTrue(reloaded.bypass_permissions)
+
     def test_default_and_multi_provider_flow_round_trip(self) -> None:
         seeded = workflows.list_workflows()
         self.assertEqual(len(seeded), 1)

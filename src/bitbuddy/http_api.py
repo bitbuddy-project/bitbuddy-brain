@@ -56,9 +56,10 @@ from .coding.evals import (
     score_coding_run_for_task,
     upsert_eval_task,
 )
-from .coding.runs import coding_run_to_json, complete_coding_run, get_coding_run, list_coding_runs
+from .coding.runs import coding_run_to_json, complete_coding_run, delete_coding_run, get_coding_run, list_coding_runs
 from .coding.workflows import delete_workflow, list_workflows, save_workflow, workflow_to_json
 from .coding.orchestrator import (
+    TERMINAL_STATUSES as CODING_TERMINAL_STATUSES,
     active_coding_run,
     answer_coding_question,
     cancel_workflow_run,
@@ -96,6 +97,7 @@ from .memory.project import (
     run_validation_recipe,
     spec_to_json,
     unregister_project,
+    update_project_paths,
     update_project_spec,
     upsert_validation_recipe,
     validation_run_to_json,
@@ -760,6 +762,7 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                         name=str(body.get("name") or ""),
                         stages=body.get("stages") if isinstance(body.get("stages"), list) else [],
                         is_default=bool(body.get("is_default")) if "is_default" in body else None,
+                        bypass_permissions=bool(body.get("bypass_permissions")),
                     )
                 except ValueError as error:
                     self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
@@ -775,6 +778,7 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                         task=str(body.get("task") or ""),
                         workflow_id=str(body.get("workflow_id") or ""),
                         attachments=body.get("attachments") if isinstance(body.get("attachments"), list) else [],
+                        bypass_permissions=bool(body.get("bypass_permissions")),
                     )
                 except ValueError as error:
                     self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
@@ -1526,6 +1530,28 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                 self.send_json(memory_to_json(memory))
                 return
 
+            if path.startswith("/projects/") and "/" not in path.removeprefix("/projects/").strip("/"):
+                project_id = unquote(path.removeprefix("/projects/").strip("/"))
+                if not project_id:
+                    self.send_json({"error": "Invalid project id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                body = self.read_json()
+                raw_paths = body.get("paths")
+                if not isinstance(raw_paths, list) or not all(isinstance(item, str) for item in raw_paths):
+                    self.send_json({"error": "Project paths must be a list of strings."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                clean_paths = [item.strip() for item in raw_paths if item.strip()]
+                if not clean_paths:
+                    self.send_json({"error": "At least one project path is required."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    project = update_project_paths(project_id, clean_paths)
+                except ValueError as error:
+                    self.send_json({"error": str(error)}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                self.send_json({"project": project_to_json(project)})
+                return
+
             if path.startswith("/projects/") and "/specs/" in path:
                 pieces = path.removeprefix("/projects/").split("/specs/", 1)
                 project_id = unquote(pieces[0].strip("/"))
@@ -1625,6 +1651,19 @@ class BitBuddyRequestHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": "Invalid coding eval task id."}, status=HTTPStatus.BAD_REQUEST)
                     return
                 deleted = delete_eval_task(task_id)
+                self.send_json({"deleted": deleted}, status=HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
+                return
+
+            if path.startswith("/coding/runs/"):
+                coding_run_id = unquote(path.removeprefix("/coding/runs/").strip("/"))
+                if not coding_run_id or "/" in coding_run_id:
+                    self.send_json({"error": "Invalid coding run id."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                active = active_coding_run(coding_run_id)
+                if active is not None and active.status not in CODING_TERMINAL_STATUSES:
+                    self.send_json({"error": "Cannot delete an active coding run. Stop it first."}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                deleted = delete_coding_run(coding_run_id)
                 self.send_json({"deleted": deleted}, status=HTTPStatus.OK if deleted else HTTPStatus.NOT_FOUND)
                 return
 

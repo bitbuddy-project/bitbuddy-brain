@@ -314,6 +314,15 @@ def list_coding_runs(limit: int = 20, project_id: str = "", chat_id: str = "") -
     return [coding_run_from_row(row, steps_by_run.get(str(row[0]), [])) for row in rows]
 
 
+def delete_coding_run(coding_run_id: str) -> bool:
+    """Remove a coding run and its steps. Returns True if a row was deleted."""
+    ensure_coding_runs_database()
+    with db_connection(GLOBAL_DB_PATH) as connection:
+        connection.execute("delete from coding_run_steps where coding_run_id = ?", (coding_run_id,))
+        cursor = connection.execute("delete from coding_runs where id = ?", (coding_run_id,))
+        return cursor.rowcount > 0
+
+
 def coding_run_from_row(row: Any, step_rows: list[Any]) -> CodingRun:
     return CodingRun(
         id=str(row[0]),
